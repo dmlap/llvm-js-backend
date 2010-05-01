@@ -21,6 +21,6 @@ static unsigned JsBackend_TripleMatchQuality(const std::string &TT) {
 
 extern "C" void LLVMInitializeJsBackendTargetInfo() { 
   TargetRegistry::RegisterTarget(TheJsBackendTarget, "js",    
-                                  "Javascript backend",
+                                  "javascript backend",
                                   &JsBackend_TripleMatchQuality);
 }
