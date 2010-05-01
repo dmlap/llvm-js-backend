@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements the writing of the LLVM IR as a set of C++ calls to the
-// LLVM IR interface. The input module is assumed to be verified.
+// This file implements the writing of the LLVM IR as a set of Javascript
+// calls to the LLVM IR interface. The input module is assumed to be verified.
 //
 //===----------------------------------------------------------------------===//
 
@@ -84,9 +84,9 @@ namespace {
   typedef std::set<const Value*> ValueSet;
   typedef std::map<const Value*,std::string> ForwardRefMap;
 
-  /// CppWriter - This class is the main chunk of code that converts an LLVM
-  /// module to a C++ translation unit.
-  class CppWriter : public ModulePass {
+  /// JsWriter - This class is the main chunk of code that converts an LLVM
+  /// module to a Javascript translation unit.
+  class JsWriter : public ModulePass {
     formatted_raw_ostream &Out;
     const Module *TheModule;
     uint64_t uniqueNum;
@@ -102,10 +102,10 @@ namespace {
 
   public:
     static char ID;
-    explicit CppWriter(formatted_raw_ostream &o) :
+    explicit JsWriter(formatted_raw_ostream &o) :
       ModulePass(&ID), Out(o), uniqueNum(0), is_inline(false) {}
 
-    virtual const char *getPassName() const { return "C++ backend"; }
+    virtual const char *getPassName() const { return "Javascript backend"; }
 
     bool runOnModule(Module &M);
 
@@ -127,11 +127,11 @@ namespace {
     void printEscapedString(const std::string& str);
     void printCFP(const ConstantFP* CFP);
 
-    std::string getCppName(const Type* val);
-    inline void printCppName(const Type* val);
+    std::string getJsName(const Type* val);
+    inline void printJsName(const Type* val);
 
-    std::string getCppName(const Value* val);
-    inline void printCppName(const Value* val);
+    std::string getJsName(const Value* val);
+    inline void printJsName(const Value* val);
 
     void printAttributes(const AttrListPtr &PAL, const std::string &name);
     bool printTypeInternal(const Type* Ty);
@@ -174,27 +174,6 @@ namespace {
         str[i] = '_';
   }
 
-  inline std::string
-  getTypePrefix(const Type* Ty ) {
-    switch (Ty->getTypeID()) {
-    case Type::VoidTyID:     return "void_";
-    case Type::IntegerTyID:
-      return std::string("int") + utostr(cast<IntegerType>(Ty)->getBitWidth()) +
-        "_";
-    case Type::FloatTyID:    return "float_";
-    case Type::DoubleTyID:   return "double_";
-    case Type::LabelTyID:    return "label_";
-    case Type::FunctionTyID: return "func_";
-    case Type::StructTyID:   return "struct_";
-    case Type::ArrayTyID:    return "array_";
-    case Type::PointerTyID:  return "ptr_";
-    case Type::VectorTyID:   return "packed_";
-    case Type::OpaqueTyID:   return "opaque_";
-    default:                 return "other_";
-    }
-    return "unknown_";
-  }
-
   // Looks up the type in the symbol table and returns a pointer to its name or
   // a null pointer if it wasn't found. Note that this isn't the same as the
   // Mode::getTypeName function which will return an empty string, not a null
@@ -209,14 +188,14 @@ namespace {
     return 0;
   }
 
-  void CppWriter::error(const std::string& msg) {
+  void JsWriter::error(const std::string& msg) {
     report_fatal_error(msg);
   }
 
   // printCFP - Print a floating point constant .. very carefully :)
   // This makes sure that conversion to/from floating yields the same binary
   // result so that we don't lose precision.
-  void CppWriter::printCFP(const ConstantFP *CFP) {
+  void JsWriter::printCFP(const ConstantFP *CFP) {
     bool ignored;
     APFloat APF = APFloat(CFP->getValueAPF());  // copy
     if (CFP->getType() == Type::getFloatTy(CFP->getContext()))
@@ -268,7 +247,7 @@ namespace {
     Out << ")";
   }
 
-  void CppWriter::printCallingConv(CallingConv::ID cc){
+  void JsWriter::printCallingConv(CallingConv::ID cc){
     // Print the calling convention.
     switch (cc) {
     case CallingConv::C:     Out << "CallingConv::C"; break;
@@ -279,7 +258,7 @@ namespace {
     }
   }
 
-  void CppWriter::printLinkageType(GlobalValue::LinkageTypes LT) {
+  void JsWriter::printLinkageType(GlobalValue::LinkageTypes LT) {
     switch (LT) {
     case GlobalValue::InternalLinkage:
       Out << "GlobalValue::InternalLinkage"; break;
@@ -312,7 +291,7 @@ namespace {
     }
   }
 
-  void CppWriter::printVisibilityType(GlobalValue::VisibilityTypes VisType) {
+  void JsWriter::printVisibilityType(GlobalValue::VisibilityTypes VisType) {
     switch (VisType) {
     default: llvm_unreachable("Unknown GVar visibility");
     case GlobalValue::DefaultVisibility:
@@ -329,7 +308,7 @@ namespace {
 
   // printEscapedString - Print each character of the specified string, escaping
   // it if it is not printable or if it is an escape char.
-  void CppWriter::printEscapedString(const std::string &Str) {
+  void JsWriter::printEscapedString(const std::string &Str) {
     for (unsigned i = 0, e = Str.size(); i != e; ++i) {
       unsigned char C = Str[i];
       if (isprint(C) && C != '"' && C != '\\') {
@@ -342,7 +321,7 @@ namespace {
     }
   }
 
-  std::string CppWriter::getCppName(const Type* Ty) {
+  std::string JsWriter::getJsName(const Type* Ty) {
     // First, handle the primitive types .. easy
     if (Ty->isPrimitiveType() || Ty->isIntegerTy()) {
       switch (Ty->getTypeID()) {
@@ -393,23 +372,22 @@ namespace {
     return TypeNames[Ty] = name;
   }
 
-  void CppWriter::printCppName(const Type* Ty) {
-    printEscapedString(getCppName(Ty));
+  void JsWriter::printJsName(const Type* Ty) {
+    printEscapedString(getJsName(Ty));
   }
 
-  std::string CppWriter::getCppName(const Value* val) {
+  std::string JsWriter::getJsName(const Value* val) {
     std::string name;
     ValueMap::iterator I = ValueNames.find(val);
     if (I != ValueNames.end() && I->first == val)
       return  I->second;
 
-    if (const GlobalVariable* GV = dyn_cast<GlobalVariable>(val)) {
-      name = std::string("gvar_") +
-        getTypePrefix(GV->getType()->getElementType());
+    if (dyn_cast<GlobalVariable>(val)) {
+      name = std::string("gvar_");
     } else if (isa<Function>(val)) {
       name = std::string("func_");
-    } else if (const Constant* C = dyn_cast<Constant>(val)) {
-      name = std::string("const_") + getTypePrefix(C->getType());
+    } else if (dyn_cast<Constant>(val)) {
+      name = std::string("const_");
     } else if (const Argument* Arg = dyn_cast<Argument>(val)) {
       if (is_inline) {
         unsigned argNum = std::distance(Arg->getParent()->arg_begin(),
@@ -420,11 +398,7 @@ namespace {
           name += std::string("_") + utostr(uniqueNum++);
         UsedNames.insert(name);
         return ValueNames[val] = name;
-      } else {
-        name = getTypePrefix(val->getType());
       }
-    } else {
-      name = getTypePrefix(val->getType());
     }
     if (val->hasName())
       name += val->getName();
@@ -438,11 +412,11 @@ namespace {
     return ValueNames[val] = name;
   }
 
-  void CppWriter::printCppName(const Value* val) {
-    printEscapedString(getCppName(val));
+  void JsWriter::printJsName(const Value* val) {
+    printEscapedString(getJsName(val));
   }
 
-  void CppWriter::printAttributes(const AttrListPtr &PAL,
+  void JsWriter::printAttributes(const AttrListPtr &PAL,
                                   const std::string &name) {
     Out << "AttrListPtr " << name << "_PAL;";
     nl(Out);
@@ -491,7 +465,7 @@ namespace {
     }
   }
 
-  bool CppWriter::printTypeInternal(const Type* Ty) {
+  bool JsWriter::printTypeInternal(const Type* Ty) {
     // We don't print definitions for primitive types
     if (Ty->isPrimitiveType() || Ty->isIntegerTy())
       return false;
@@ -501,7 +475,7 @@ namespace {
       return false;
 
     // Everything below needs the name for the type so get it now.
-    std::string typeName(getCppName(Ty));
+    std::string typeName(getJsName(Ty));
 
     // Search the type stack for recursion. If we find it, then generate this
     // as an OpaqueType, but make sure not to do this multiple times because
@@ -537,7 +511,7 @@ namespace {
       for (; PI != PE; ++PI) {
         const Type* argTy = static_cast<const Type*>(*PI);
         bool isForward = printTypeInternal(argTy);
-        std::string argName(getCppName(argTy));
+        std::string argName(getJsName(argTy));
         Out << typeName << "_args.push_back(" << argName;
         if (isForward)
           Out << "_fwd";
@@ -545,7 +519,7 @@ namespace {
         nl(Out);
       }
       bool isForward = printTypeInternal(FT->getReturnType());
-      std::string retTypeName(getCppName(FT->getReturnType()));
+      std::string retTypeName(getJsName(FT->getReturnType()));
       Out << "FunctionType* " << typeName << " = FunctionType::get(";
       in(); nl(Out) << "/*Result=*/" << retTypeName;
       if (isForward)
@@ -566,7 +540,7 @@ namespace {
       for (; EI != EE; ++EI) {
         const Type* fieldTy = static_cast<const Type*>(*EI);
         bool isForward = printTypeInternal(fieldTy);
-        std::string fieldName(getCppName(fieldTy));
+        std::string fieldName(getJsName(fieldTy));
         Out << typeName << "_fields.push_back(" << fieldName;
         if (isForward)
           Out << "_fwd";
@@ -584,7 +558,7 @@ namespace {
       const ArrayType* AT = cast<ArrayType>(Ty);
       const Type* ET = AT->getElementType();
       bool isForward = printTypeInternal(ET);
-      std::string elemName(getCppName(ET));
+      std::string elemName(getJsName(ET));
       Out << "ArrayType* " << typeName << " = ArrayType::get("
           << elemName << (isForward ? "_fwd" : "")
           << ", " << utostr(AT->getNumElements()) << ");";
@@ -595,7 +569,7 @@ namespace {
       const PointerType* PT = cast<PointerType>(Ty);
       const Type* ET = PT->getElementType();
       bool isForward = printTypeInternal(ET);
-      std::string elemName(getCppName(ET));
+      std::string elemName(getJsName(ET));
       Out << "PointerType* " << typeName << " = PointerType::get("
           << elemName << (isForward ? "_fwd" : "")
           << ", " << utostr(PT->getAddressSpace()) << ");";
@@ -606,7 +580,7 @@ namespace {
       const VectorType* PT = cast<VectorType>(Ty);
       const Type* ET = PT->getElementType();
       bool isForward = printTypeInternal(ET);
-      std::string elemName(getCppName(ET));
+      std::string elemName(getJsName(ET));
       Out << "VectorType* " << typeName << " = VectorType::get("
           << elemName << (isForward ? "_fwd" : "")
           << ", " << utostr(PT->getNumElements()) << ");";
@@ -671,14 +645,14 @@ namespace {
 
   // Prints a type definition. Returns true if it could not resolve all the
   // types in the definition but had to use a forward reference.
-  void CppWriter::printType(const Type* Ty) {
+  void JsWriter::printType(const Type* Ty) {
     assert(TypeStack.empty());
     TypeStack.clear();
     printTypeInternal(Ty);
     assert(TypeStack.empty());
   }
 
-  void CppWriter::printTypes(const Module* M) {
+  void JsWriter::printTypes(const Module* M) {
     // Walk the symbol table and print out all its types
     const TypeSymbolTable& symtab = M->getTypeSymbolTable();
     for (TypeSymbolTable::const_iterator TI = symtab.begin(), TE = symtab.end();
@@ -690,7 +664,7 @@ namespace {
           TNI != TypeNames.end()) {
         Out << "mod->addTypeName(\"";
         printEscapedString(TI->first);
-        Out << "\", " << getCppName(TI->second) << ");";
+        Out << "\", " << getJsName(TI->second) << ");";
         nl(Out);
         // For everything else, define the type
       } else {
@@ -733,15 +707,15 @@ namespace {
 
 
   // printConstant - Print out a constant pool entry...
-  void CppWriter::printConstant(const Constant *CV) {
+  void JsWriter::printConstant(const Constant *CV) {
     // First, if the constant is actually a GlobalValue (variable or function)
     // or its already in the constant list then we've printed it already and we
     // can just return.
     if (isa<GlobalValue>(CV) || ValueNames.find(CV) != ValueNames.end())
       return;
 
-    std::string constName(getCppName(CV));
-    std::string typeName(getCppName(CV->getType()));
+    std::string constName(getJsName(CV));
+    std::string typeName(getJsName(CV->getType()));
 
     if (isa<GlobalValue>(CV)) {
       // Skip variables and functions, we emit them elsewhere
@@ -791,7 +765,7 @@ namespace {
         for (unsigned i = 0; i < N; ++i) {
           printConstant(CA->getOperand(i)); // recurse to print operands
           Out << constName << "_elems.push_back("
-              << getCppName(CA->getOperand(i)) << ");";
+              << getJsName(CA->getOperand(i)) << ");";
           nl(Out);
         }
         Out << "Constant* " << constName << " = ConstantArray::get("
@@ -804,7 +778,7 @@ namespace {
       for (unsigned i = 0; i < N; i++) {
         printConstant(CS->getOperand(i));
         Out << constName << "_fields.push_back("
-            << getCppName(CS->getOperand(i)) << ");";
+            << getJsName(CS->getOperand(i)) << ");";
         nl(Out);
       }
       Out << "Constant* " << constName << " = ConstantStruct::get("
@@ -816,7 +790,7 @@ namespace {
       for (unsigned i = 0; i < N; ++i) {
         printConstant(CP->getOperand(i));
         Out << constName << "_elems.push_back("
-            << getCppName(CP->getOperand(i)) << ");";
+            << getJsName(CP->getOperand(i)) << ");";
         nl(Out);
       }
       Out << "Constant* " << constName << " = ConstantVector::get("
@@ -832,12 +806,12 @@ namespace {
         for (unsigned i = 1; i < CE->getNumOperands(); ++i ) {
           printConstant(CE->getOperand(i));
           Out << constName << "_indices.push_back("
-              << getCppName(CE->getOperand(i)) << ");";
+              << getJsName(CE->getOperand(i)) << ");";
           nl(Out);
         }
         Out << "Constant* " << constName
             << " = ConstantExpr::getGetElementPtr("
-            << getCppName(CE->getOperand(0)) << ", "
+            << getJsName(CE->getOperand(0)) << ", "
             << "&" << constName << "_indices[0], "
             << constName << "_indices.size()"
             << ");";
@@ -859,8 +833,8 @@ namespace {
         case Instruction::IntToPtr:  Out << "Instruction::IntToPtr"; break;
         case Instruction::BitCast:  Out << "Instruction::BitCast"; break;
         }
-        Out << ", " << getCppName(CE->getOperand(0)) << ", "
-            << getCppName(CE->getType()) << ");";
+        Out << ", " << getJsName(CE->getOperand(0)) << ", "
+            << getJsName(CE->getType()) << ");";
       } else {
         unsigned N = CE->getNumOperands();
         for (unsigned i = 0; i < N; ++i ) {
@@ -932,9 +906,9 @@ namespace {
           error("Invalid constant expression");
           break;
         }
-        Out << getCppName(CE->getOperand(0));
+        Out << getJsName(CE->getOperand(0));
         for (unsigned i = 1; i < CE->getNumOperands(); ++i)
-          Out << ", " << getCppName(CE->getOperand(i));
+          Out << ", " << getJsName(CE->getOperand(i));
         Out << ");";
       }
     } else {
@@ -944,7 +918,7 @@ namespace {
     nl(Out);
   }
 
-  void CppWriter::printConstants(const Module* M) {
+  void JsWriter::printConstants(const Module* M) {
     // Traverse all the global variables looking for constant initializers
     for (Module::const_global_iterator I = TheModule->global_begin(),
            E = TheModule->global_end(); I != E; ++I)
@@ -969,7 +943,7 @@ namespace {
     }
   }
 
-  void CppWriter::printVariableUses(const GlobalVariable *GV) {
+  void JsWriter::printVariableUses(const GlobalVariable *GV) {
     nl(Out) << "// Type Definitions";
     nl(Out);
     printType(GV->getType());
@@ -992,18 +966,18 @@ namespace {
     }
   }
 
-  void CppWriter::printVariableHead(const GlobalVariable *GV) {
-    nl(Out) << "GlobalVariable* " << getCppName(GV);
+  void JsWriter::printVariableHead(const GlobalVariable *GV) {
+    nl(Out) << "GlobalVariable* " << getJsName(GV);
     if (is_inline) {
       Out << " = mod->getGlobalVariable(mod->getContext(), ";
       printEscapedString(GV->getName());
-      Out << ", " << getCppName(GV->getType()->getElementType()) << ",true)";
-      nl(Out) << "if (!" << getCppName(GV) << ") {";
-      in(); nl(Out) << getCppName(GV);
+      Out << ", " << getJsName(GV->getType()->getElementType()) << ",true)";
+      nl(Out) << "if (!" << getJsName(GV) << ") {";
+      in(); nl(Out) << getJsName(GV);
     }
     Out << " = new GlobalVariable(/*Module=*/*mod, ";
     nl(Out) << "/*Type=*/";
-    printCppName(GV->getType()->getElementType());
+    printJsName(GV->getType()->getElementType());
     Out << ",";
     nl(Out) << "/*isConstant=*/" << (GV->isConstant()?"true":"false");
     Out << ",";
@@ -1020,19 +994,19 @@ namespace {
     nl(Out);
 
     if (GV->hasSection()) {
-      printCppName(GV);
+      printJsName(GV);
       Out << "->setSection(\"";
       printEscapedString(GV->getSection());
       Out << "\");";
       nl(Out);
     }
     if (GV->getAlignment()) {
-      printCppName(GV);
+      printJsName(GV);
       Out << "->setAlignment(" << utostr(GV->getAlignment()) << ");";
       nl(Out);
     }
     if (GV->getVisibility() != GlobalValue::DefaultVisibility) {
-      printCppName(GV);
+      printJsName(GV);
       Out << "->setVisibility(";
       printVisibilityType(GV->getVisibility());
       Out << ");";
@@ -1043,18 +1017,18 @@ namespace {
     }
   }
 
-  void CppWriter::printVariableBody(const GlobalVariable *GV) {
+  void JsWriter::printVariableBody(const GlobalVariable *GV) {
     if (GV->hasInitializer()) {
-      printCppName(GV);
+      printJsName(GV);
       Out << "->setInitializer(";
-      Out << getCppName(GV->getInitializer()) << ");";
+      Out << getJsName(GV->getInitializer()) << ");";
       nl(Out);
     }
   }
 
-  std::string CppWriter::getOpName(Value* V) {
+  std::string JsWriter::getOpName(Value* V) {
     if (!isa<Instruction>(V) || DefinedValues.find(V) != DefinedValues.end())
-      return getCppName(V);
+      return getJsName(V);
 
     // See if its alread in the map of forward references, if so just return the
     // name we already set up for it
@@ -1069,16 +1043,16 @@ namespace {
     // we can make as a placeholder for the real value. We'll replace these
     // Argument instances later.
     Out << "Argument* " << result << " = new Argument("
-        << getCppName(V->getType()) << ");";
+        << getJsName(V->getType()) << ");";
     nl(Out);
     ForwardRefs[V] = result;
     return result;
   }
 
   // printInstruction - This member is called for each Instruction in a function.
-  void CppWriter::printInstruction(const Instruction *I,
+  void JsWriter::printInstruction(const Instruction *I,
                                    const std::string& bbname) {
-    std::string iName(getCppName(I));
+    std::string iName(getJsName(I));
 
     // Before we emit this instruction, we need to take care of generating any
     // forward references. So, we get the names of all the operands in advance
@@ -1269,7 +1243,7 @@ namespace {
     case Instruction::Alloca: {
       const AllocaInst* allocaI = cast<AllocaInst>(I);
       Out << "AllocaInst* " << iName << " = new AllocaInst("
-          << getCppName(allocaI->getAllocatedType()) << ", ";
+          << getJsName(allocaI->getAllocatedType()) << ", ";
       if (allocaI->isArrayAllocation())
         Out << opNames[0] << ", ";
       Out << "\"";
@@ -1326,7 +1300,7 @@ namespace {
       const PHINode* phi = cast<PHINode>(I);
 
       Out << "PHINode* " << iName << " = PHINode::Create("
-          << getCppName(phi->getType()) << ", \"";
+          << getJsName(phi->getType()) << ", \"";
       printEscapedString(phi->getName());
       Out << "\", " << bbname << ");";
       nl(Out) << iName << "->reserveOperandSpace("
@@ -1370,7 +1344,7 @@ namespace {
       default: assert(!"Unreachable"); break;
       }
       Out << "(" << opNames[0] << ", "
-          << getCppName(cst->getType()) << ", \"";
+          << getJsName(cst->getType()) << ", \"";
       printEscapedString(cst->getName());
       Out << "\", " << bbname << ");";
       break;
@@ -1378,8 +1352,8 @@ namespace {
     case Instruction::Call:{
       const CallInst* call = cast<CallInst>(I);
       if (const InlineAsm* ila = dyn_cast<InlineAsm>(call->getCalledValue())) {
-        Out << "InlineAsm* " << getCppName(ila) << " = InlineAsm::get("
-            << getCppName(ila->getFunctionType()) << ", \""
+        Out << "InlineAsm* " << getJsName(ila) << " = InlineAsm::get("
+            << getJsName(ila->getFunctionType()) << ", \""
             << ila->getAsmString() << "\", \""
             << ila->getConstraintString() << "\","
             << (ila->hasSideEffects() ? "true" : "false") << ");";
@@ -1417,7 +1391,7 @@ namespace {
     }
     case Instruction::Select: {
       const SelectInst* sel = cast<SelectInst>(I);
-      Out << "SelectInst* " << getCppName(sel) << " = SelectInst::Create(";
+      Out << "SelectInst* " << getJsName(sel) << " = SelectInst::Create(";
       Out << opNames[0] << ", " << opNames[1] << ", " << opNames[2] << ", \"";
       printEscapedString(sel->getName());
       Out << "\", " << bbname << ");";
@@ -1431,15 +1405,15 @@ namespace {
     }
     case Instruction::VAArg: {
       const VAArgInst* va = cast<VAArgInst>(I);
-      Out << "VAArgInst* " << getCppName(va) << " = new VAArgInst("
-          << opNames[0] << ", " << getCppName(va->getType()) << ", \"";
+      Out << "VAArgInst* " << getJsName(va) << " = new VAArgInst("
+          << opNames[0] << ", " << getJsName(va->getType()) << ", \"";
       printEscapedString(va->getName());
       Out << "\", " << bbname << ");";
       break;
     }
     case Instruction::ExtractElement: {
       const ExtractElementInst* eei = cast<ExtractElementInst>(I);
-      Out << "ExtractElementInst* " << getCppName(eei)
+      Out << "ExtractElementInst* " << getJsName(eei)
           << " = new ExtractElementInst(" << opNames[0]
           << ", " << opNames[1] << ", \"";
       printEscapedString(eei->getName());
@@ -1448,7 +1422,7 @@ namespace {
     }
     case Instruction::InsertElement: {
       const InsertElementInst* iei = cast<InsertElementInst>(I);
-      Out << "InsertElementInst* " << getCppName(iei)
+      Out << "InsertElementInst* " << getJsName(iei)
           << " = InsertElementInst::Create(" << opNames[0]
           << ", " << opNames[1] << ", " << opNames[2] << ", \"";
       printEscapedString(iei->getName());
@@ -1457,7 +1431,7 @@ namespace {
     }
     case Instruction::ShuffleVector: {
       const ShuffleVectorInst* svi = cast<ShuffleVectorInst>(I);
-      Out << "ShuffleVectorInst* " << getCppName(svi)
+      Out << "ShuffleVectorInst* " << getJsName(svi)
           << " = new ShuffleVectorInst(" << opNames[0]
           << ", " << opNames[1] << ", " << opNames[2] << ", \"";
       printEscapedString(svi->getName());
@@ -1473,7 +1447,7 @@ namespace {
             << evi->idx_begin()[i] << ");";
         nl(Out);
       }
-      Out << "ExtractValueInst* " << getCppName(evi)
+      Out << "ExtractValueInst* " << getJsName(evi)
           << " = ExtractValueInst::Create(" << opNames[0]
           << ", "
           << iName << "_indices.begin(), " << iName << "_indices.end(), \"";
@@ -1490,7 +1464,7 @@ namespace {
             << ivi->idx_begin()[i] << ");";
         nl(Out);
       }
-      Out << "InsertValueInst* " << getCppName(ivi)
+      Out << "InsertValueInst* " << getJsName(ivi)
           << " = InsertValueInst::Create(" << opNames[0]
           << ", " << opNames[1] << ", "
           << iName << "_indices.begin(), " << iName << "_indices.end(), \"";
@@ -1505,7 +1479,7 @@ namespace {
 }
 
   // Print out the types, constants and declarations needed by one function
-  void CppWriter::printFunctionUses(const Function* F) {
+  void JsWriter::printFunctionUses(const Function* F) {
     nl(Out) << "// Type Definitions"; nl(Out);
     if (!is_inline) {
       // Print the function's return type
@@ -1585,17 +1559,17 @@ namespace {
     }
   }
 
-  void CppWriter::printFunctionHead(const Function* F) {
-    nl(Out) << "Function* " << getCppName(F);
+  void JsWriter::printFunctionHead(const Function* F) {
+    nl(Out) << "Function* " << getJsName(F);
     if (is_inline) {
       Out << " = mod->getFunction(\"";
       printEscapedString(F->getName());
-      Out << "\", " << getCppName(F->getFunctionType()) << ");";
-      nl(Out) << "if (!" << getCppName(F) << ") {";
-      nl(Out) << getCppName(F);
+      Out << "\", " << getJsName(F->getFunctionType()) << ");";
+      nl(Out) << "if (!" << getJsName(F) << ") {";
+      nl(Out) << getJsName(F);
     }
     Out<< " = Function::Create(";
-    nl(Out,1) << "/*Type=*/" << getCppName(F->getFunctionType()) << ",";
+    nl(Out,1) << "/*Type=*/" << getJsName(F->getFunctionType()) << ",";
     nl(Out) << "/*Linkage=*/";
     printLinkageType(F->getLinkage());
     Out << ",";
@@ -1603,30 +1577,30 @@ namespace {
     printEscapedString(F->getName());
     Out << "\", mod); " << (F->isDeclaration()? "// (external, no body)" : "");
     nl(Out,-1);
-    printCppName(F);
+    printJsName(F);
     Out << "->setCallingConv(";
     printCallingConv(F->getCallingConv());
     Out << ");";
     nl(Out);
     if (F->hasSection()) {
-      printCppName(F);
+      printJsName(F);
       Out << "->setSection(\"" << F->getSection() << "\");";
       nl(Out);
     }
     if (F->getAlignment()) {
-      printCppName(F);
+      printJsName(F);
       Out << "->setAlignment(" << F->getAlignment() << ");";
       nl(Out);
     }
     if (F->getVisibility() != GlobalValue::DefaultVisibility) {
-      printCppName(F);
+      printJsName(F);
       Out << "->setVisibility(";
       printVisibilityType(F->getVisibility());
       Out << ");";
       nl(Out);
     }
     if (F->hasGC()) {
-      printCppName(F);
+      printJsName(F);
       Out << "->setGC(\"" << F->getGC() << "\");";
       nl(Out);
     }
@@ -1634,13 +1608,13 @@ namespace {
       Out << "}";
       nl(Out);
     }
-    printAttributes(F->getAttributes(), getCppName(F));
-    printCppName(F);
-    Out << "->setAttributes(" << getCppName(F) << "_PAL);";
+    printAttributes(F->getAttributes(), getJsName(F));
+    printJsName(F);
+    Out << "->setAttributes(" << getJsName(F) << "_PAL);";
     nl(Out);
   }
 
-  void CppWriter::printFunctionBody(const Function *F) {
+  void JsWriter::printFunctionBody(const Function *F) {
     if (F->isDeclaration())
       return; // external functions have no bodies.
 
@@ -1652,16 +1626,16 @@ namespace {
     // Create all the argument values
     if (!is_inline) {
       if (!F->arg_empty()) {
-        Out << "Function::arg_iterator args = " << getCppName(F)
+        Out << "Function::arg_iterator args = " << getJsName(F)
             << "->arg_begin();";
         nl(Out);
       }
       for (Function::const_arg_iterator AI = F->arg_begin(), AE = F->arg_end();
            AI != AE; ++AI) {
-        Out << "Value* " << getCppName(AI) << " = args++;";
+        Out << "Value* " << getJsName(AI) << " = args++;";
         nl(Out);
         if (AI->hasName()) {
-          Out << getCppName(AI) << "->setName(\"" << AI->getName() << "\");";
+          Out << getJsName(AI) << "->setName(\"" << AI->getName() << "\");";
           nl(Out);
         }
       }
@@ -1671,19 +1645,19 @@ namespace {
     nl(Out);
     for (Function::const_iterator BI = F->begin(), BE = F->end();
          BI != BE; ++BI) {
-      std::string bbname(getCppName(BI));
+      std::string bbname(getJsName(BI));
       Out << "BasicBlock* " << bbname <<
              " = BasicBlock::Create(mod->getContext(), \"";
       if (BI->hasName())
         printEscapedString(BI->getName());
-      Out << "\"," << getCppName(BI->getParent()) << ",0);";
+      Out << "\"," << getJsName(BI->getParent()) << ",0);";
       nl(Out);
     }
 
     // Output all of its basic blocks... for the function
     for (Function::const_iterator BI = F->begin(), BE = F->end();
          BI != BE; ++BI) {
-      std::string bbname(getCppName(BI));
+      std::string bbname(getJsName(BI));
       nl(Out) << "// Block " << BI->getName() << " (" << bbname << ")";
       nl(Out);
 
@@ -1704,13 +1678,13 @@ namespace {
     while (!ForwardRefs.empty()) {
       ForwardRefMap::iterator I = ForwardRefs.begin();
       Out << I->second << "->replaceAllUsesWith("
-          << getCppName(I->first) << "); delete " << I->second << ";";
+          << getJsName(I->first) << "); delete " << I->second << ";";
       nl(Out);
       ForwardRefs.erase(I);
     }
   }
 
-  void CppWriter::printInline(const std::string& fname,
+  void JsWriter::printInline(const std::string& fname,
                               const std::string& func) {
     const Function* F = TheModule->getFunction(func);
     if (!F) {
@@ -1722,7 +1696,7 @@ namespace {
       return;
     }
     nl(Out) << "BasicBlock* " << fname << "(Module* mod, Function *"
-            << getCppName(F);
+            << getJsName(F);
     unsigned arg_count = 1;
     for (Function::const_arg_iterator AI = F->arg_begin(), AE = F->arg_end();
          AI != AE; ++AI) {
@@ -1734,12 +1708,12 @@ namespace {
     printFunctionUses(F);
     printFunctionBody(F);
     is_inline = false;
-    Out << "return " << getCppName(F->begin()) << ";";
+    Out << "return " << getJsName(F->begin()) << ";";
     nl(Out) << "}";
     nl(Out);
   }
 
-  void CppWriter::printModuleBody() {
+  void JsWriter::printModuleBody() {
     // Print out all the type definitions
     nl(Out) << "// Type Definitions"; nl(Out);
     printTypes(TheModule);
@@ -1779,7 +1753,7 @@ namespace {
     for (Module::const_iterator I = TheModule->begin(), E = TheModule->end();
          I != E; ++I) {
       if (!I->isDeclaration()) {
-        nl(Out) << "// Function: " << I->getName() << " (" << getCppName(I)
+        nl(Out) << "// Function: " << I->getName() << " (" << getJsName(I)
                 << ")";
         nl(Out) << "{";
         nl(Out,1);
@@ -1790,7 +1764,7 @@ namespace {
     }
   }
 
-  void CppWriter::printProgram(const std::string& fname,
+  void JsWriter::printProgram(const std::string& fname,
                                const std::string& mName) {
     Out << "#include <llvm/LLVMContext.h>\n";
     Out << "#include <llvm/Module.h>\n";
@@ -1823,7 +1797,7 @@ namespace {
     printModule(fname,mName);
   }
 
-  void CppWriter::printModule(const std::string& fname,
+  void JsWriter::printModule(const std::string& fname,
                               const std::string& mName) {
     nl(Out) << "Module* " << fname << "() {";
     nl(Out,1) << "// Module Construction";
@@ -1859,7 +1833,7 @@ namespace {
     nl(Out);
   }
 
-  void CppWriter::printContents(const std::string& fname,
+  void JsWriter::printContents(const std::string& fname,
                                 const std::string& mName) {
     Out << "\nModule* " << fname << "(Module *mod) {\n";
     Out << "\nmod->setModuleIdentifier(\"";
@@ -1870,7 +1844,7 @@ namespace {
     Out << "\n}\n";
   }
 
-  void CppWriter::printFunction(const std::string& fname,
+  void JsWriter::printFunction(const std::string& fname,
                                 const std::string& funcName) {
     const Function* F = TheModule->getFunction(funcName);
     if (!F) {
@@ -1881,11 +1855,11 @@ namespace {
     printFunctionUses(F);
     printFunctionHead(F);
     printFunctionBody(F);
-    Out << "return " << getCppName(F) << ";\n";
+    Out << "return " << getJsName(F) << ";\n";
     Out << "}\n";
   }
 
-  void CppWriter::printFunctions() {
+  void JsWriter::printFunctions() {
     const Module::FunctionListType &funcs = TheModule->getFunctionList();
     Module::const_iterator I  = funcs.begin();
     Module::const_iterator IE = funcs.end();
@@ -1900,7 +1874,7 @@ namespace {
     }
   }
 
-  void CppWriter::printVariable(const std::string& fname,
+  void JsWriter::printVariable(const std::string& fname,
                                 const std::string& varName) {
     const GlobalVariable* GV = TheModule->getNamedGlobal(varName);
 
@@ -1912,11 +1886,11 @@ namespace {
     printVariableUses(GV);
     printVariableHead(GV);
     printVariableBody(GV);
-    Out << "return " << getCppName(GV) << ";\n";
+    Out << "return " << getJsName(GV) << ";\n";
     Out << "}\n";
   }
 
-  void CppWriter::printType(const std::string& fname,
+  void JsWriter::printType(const std::string& fname,
                             const std::string& typeName) {
     const Type* Ty = TheModule->getTypeByName(typeName);
     if (!Ty) {
@@ -1925,11 +1899,11 @@ namespace {
     }
     Out << "\nType* " << fname << "(Module *mod) {\n";
     printType(Ty);
-    Out << "return " << getCppName(Ty) << ";\n";
+    Out << "return " << getJsName(Ty) << ";\n";
     Out << "}\n";
   }
 
-  bool CppWriter::runOnModule(Module &M) {
+  bool JsWriter::runOnModule(Module &M) {
     TheModule = &M;
 
     // Emit a header
@@ -2000,7 +1974,7 @@ namespace {
   }
 }
 
-char CppWriter::ID = 0;
+char JsWriter::ID = 0;
 
 //===----------------------------------------------------------------------===//
 //                       External Interface declaration
@@ -2012,6 +1986,6 @@ bool JsTargetMachine::addPassesToEmitWholeFile(PassManager &PM,
                                                 CodeGenOpt::Level OptLevel,
                                                 bool DisableVerify) {
   if (FileType != TargetMachine::CGFT_AssemblyFile) return true;
-  PM.add(new CppWriter(o));
+  PM.add(new JsWriter(o));
   return false;
 }
