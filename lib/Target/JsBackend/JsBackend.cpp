@@ -327,7 +327,7 @@ namespace {
     }
 
     void outputLValue(Instruction *I) {
-      Out << "  " << GetValueName(I) << " = ";
+      Out << GetValueName(I) << " = ";
     }
 
     bool isGotoCodeNecessary(BasicBlock *From, BasicBlock *To);
@@ -1001,14 +1001,14 @@ void JsWriter::printConstant(Constant *CPV, bool Static) {
     if (Ty == Type::getInt1Ty(CPV->getContext()))
       Out << (CI->getZExtValue() ? '1' : '0');
     else if (Ty == Type::getInt32Ty(CPV->getContext()))
-      Out << CI->getZExtValue() << 'u';
+      Out << CI->getSExtValue();
     else if (Ty->getPrimitiveSizeInBits() > 32)
       Out << CI->getZExtValue() << "ull";
     else {
       Out << "((";
       printSimpleType(Out, Ty, false) << ')';
       if (CI->isMinValue(true)) 
-        Out << CI->getZExtValue() << 'u';
+        Out << CI->getZExtValue();
       else
         Out << CI->getSExtValue();
       Out << ')';
@@ -1514,139 +1514,6 @@ void JsWriter::writeOperandWithCast(Value* Operand, const ICmpInst &Cmp) {
   Out << ")";
 }
 
-// generateCompilerSpecificCode - This is where we add conditional compilation
-// directives to cater to specific compilers as need be.
-//
-static void generateCompilerSpecificCode(formatted_raw_ostream& Out,
-                                         const TargetData *TD) {
-  // Alloca is hard to get, and we don't want to include stdlib.h here.
-  Out << "/* get a declaration for alloca */\n"
-      << "#if defined(__CYGWIN__) || defined(__MINGW32__)\n"
-      << "#define  alloca(x) __builtin_alloca((x))\n"
-      << "#define _alloca(x) __builtin_alloca((x))\n"
-      << "#elif defined(__APPLE__)\n"
-      << "extern void *__builtin_alloca(unsigned long);\n"
-      << "#define alloca(x) __builtin_alloca(x)\n"
-      << "#define longjmp _longjmp\n"
-      << "#define setjmp _setjmp\n"
-      << "#elif defined(__sun__)\n"
-      << "#if defined(__sparcv9)\n"
-      << "extern void *__builtin_alloca(unsigned long);\n"
-      << "#else\n"
-      << "extern void *__builtin_alloca(unsigned int);\n"
-      << "#endif\n"
-      << "#define alloca(x) __builtin_alloca(x)\n"
-      << "#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__arm__)\n"
-      << "#define alloca(x) __builtin_alloca(x)\n"
-      << "#elif defined(_MSC_VER)\n"
-      << "#define inline _inline\n"
-      << "#define alloca(x) _alloca(x)\n"
-      << "#else\n"
-      << "#include <alloca.h>\n"
-      << "#endif\n\n";
-
-  // We output GCC specific attributes to preserve 'linkonce'ness on globals.
-  // If we aren't being compiled with GCC, just drop these attributes.
-  Out << "#ifndef __GNUC__  /* Can only support \"linkonce\" vars with GCC */\n"
-      << "#define __attribute__(X)\n"
-      << "#endif\n\n";
-
-  // On Mac OS X, "external weak" is spelled "__attribute__((weak_import))".
-  Out << "#if defined(__GNUC__) && defined(__APPLE_CC__)\n"
-      << "#define __EXTERNAL_WEAK__ __attribute__((weak_import))\n"
-      << "#elif defined(__GNUC__)\n"
-      << "#define __EXTERNAL_WEAK__ __attribute__((weak))\n"
-      << "#else\n"
-      << "#define __EXTERNAL_WEAK__\n"
-      << "#endif\n\n";
-
-  // For now, turn off the weak linkage attribute on Mac OS X. (See above.)
-  Out << "#if defined(__GNUC__) && defined(__APPLE_CC__)\n"
-      << "#define __ATTRIBUTE_WEAK__\n"
-      << "#elif defined(__GNUC__)\n"
-      << "#define __ATTRIBUTE_WEAK__ __attribute__((weak))\n"
-      << "#else\n"
-      << "#define __ATTRIBUTE_WEAK__\n"
-      << "#endif\n\n";
-
-  // Add hidden visibility support. FIXME: APPLE_CC?
-  Out << "#if defined(__GNUC__)\n"
-      << "#define __HIDDEN__ __attribute__((visibility(\"hidden\")))\n"
-      << "#endif\n\n";
-    
-  // Define NaN and Inf as GCC builtins if using GCC, as 0 otherwise
-  // From the GCC documentation:
-  //
-  //   double __builtin_nan (const char *str)
-  //
-  // This is an implementation of the ISO C99 function nan.
-  //
-  // Since ISO C99 defines this function in terms of strtod, which we do
-  // not implement, a description of the parsing is in order. The string is
-  // parsed as by strtol; that is, the base is recognized by leading 0 or
-  // 0x prefixes. The number parsed is placed in the significand such that
-  // the least significant bit of the number is at the least significant
-  // bit of the significand. The number is truncated to fit the significand
-  // field provided. The significand is forced to be a quiet NaN.
-  //
-  // This function, if given a string literal, is evaluated early enough
-  // that it is considered a compile-time constant.
-  //
-  //   float __builtin_nanf (const char *str)
-  //
-  // Similar to __builtin_nan, except the return type is float.
-  //
-  //   double __builtin_inf (void)
-  //
-  // Similar to __builtin_huge_val, except a warning is generated if the
-  // target floating-point format does not support infinities. This
-  // function is suitable for implementing the ISO C99 macro INFINITY.
-  //
-  //   float __builtin_inff (void)
-  //
-  // Similar to __builtin_inf, except the return type is float.
-  Out << "#ifdef __GNUC__\n"
-      << "#define LLVM_NAN(NanStr)   __builtin_nan(NanStr)   /* Double */\n"
-      << "#define LLVM_NANF(NanStr)  __builtin_nanf(NanStr)  /* Float */\n"
-      << "#define LLVM_NANS(NanStr)  __builtin_nans(NanStr)  /* Double */\n"
-      << "#define LLVM_NANSF(NanStr) __builtin_nansf(NanStr) /* Float */\n"
-      << "#define LLVM_INF           __builtin_inf()         /* Double */\n"
-      << "#define LLVM_INFF          __builtin_inff()        /* Float */\n"
-      << "#define LLVM_PREFETCH(addr,rw,locality) "
-                              "__builtin_prefetch(addr,rw,locality)\n"
-      << "#define __ATTRIBUTE_CTOR__ __attribute__((constructor))\n"
-      << "#define __ATTRIBUTE_DTOR__ __attribute__((destructor))\n"
-      << "#define LLVM_ASM           __asm__\n"
-      << "#else\n"
-      << "#define LLVM_NAN(NanStr)   ((double)0.0)           /* Double */\n"
-      << "#define LLVM_NANF(NanStr)  0.0F                    /* Float */\n"
-      << "#define LLVM_NANS(NanStr)  ((double)0.0)           /* Double */\n"
-      << "#define LLVM_NANSF(NanStr) 0.0F                    /* Float */\n"
-      << "#define LLVM_INF           ((double)0.0)           /* Double */\n"
-      << "#define LLVM_INFF          0.0F                    /* Float */\n"
-      << "#define LLVM_PREFETCH(addr,rw,locality)            /* PREFETCH */\n"
-      << "#define __ATTRIBUTE_CTOR__\n"
-      << "#define __ATTRIBUTE_DTOR__\n"
-      << "#define LLVM_ASM(X)\n"
-      << "#endif\n\n";
-  
-  Out << "#if __GNUC__ < 4 /* Old GCC's, or compilers not GCC */ \n"
-      << "#define __builtin_stack_save() 0   /* not implemented */\n"
-      << "#define __builtin_stack_restore(X) /* noop */\n"
-      << "#endif\n\n";
-
-  // Output typedefs for 128-bit integers. If these are needed with a
-  // 32-bit target or with a C compiler that doesn't support mode(TI),
-  // more drastic measures will be needed.
-  Out << "#if __GNUC__ && __LP64__ /* 128-bit integer types */\n"
-      << "typedef int __attribute__((mode(TI))) llvmInt128;\n"
-      << "typedef unsigned __attribute__((mode(TI))) llvmUInt128;\n"
-      << "#endif\n\n";
-
-  // Output target-specific code that should be inserted into main.
-  Out << "#define CODE_FOR_MAIN() /* Any target-specific code for main()*/\n";
-}
-
 /// FindStaticTors - Given a static ctor/dtor list, unpack its contents into
 /// the StaticTors set.
 static void FindStaticTors(GlobalVariable *GV, std::set<Function*> &StaticTors){
@@ -1757,25 +1624,8 @@ bool JsWriter::doInitialization(Module &M) {
     }
   }
   
-  // get declaration for alloca
-  Out << "/* Provide Declarations */\n";
-  Out << "#include <stdarg.h>\n";      // Varargs support
-  Out << "#include <setjmp.h>\n";      // Unwind support
-  generateCompilerSpecificCode(Out, TD);
-
   // Provide a definition for `bool' if not compiling with a C++ compiler.
-  Out << "\n"
-      << "#ifndef __cplusplus\ntypedef unsigned char bool;\n#endif\n"
-
-      << "\n\n/* Support for floating point constants */\n"
-      << "typedef unsigned long long ConstantDoubleTy;\n"
-      << "typedef unsigned int        ConstantFloatTy;\n"
-      << "typedef struct { unsigned long long f1; unsigned short f2; "
-         "unsigned short pad[3]; } ConstantFP80Ty;\n"
-      // This is used for both kinds of 128-bit long double; meaning differs.
-      << "typedef struct { unsigned long long f1; unsigned long long f2; }"
-         " ConstantFP128Ty;\n"
-      << "\n\n/* Global Declarations */\n";
+  Out << "/* Global Declarations */\n";
 
   // First output all the declarations for the program, because C requires
   // Functions & globals to be declared before they are used.
@@ -2074,14 +1924,6 @@ void JsWriter::printFloatingPointConstants(const Constant *C) {
 /// type name is found, emit its declaration...
 ///
 void JsWriter::printModuleTypes(const TypeSymbolTable &TST) {
-  Out << "/* Helper union for bitcasts */\n";
-  Out << "typedef union {\n";
-  Out << "  unsigned int Int32;\n";
-  Out << "  unsigned long long Int64;\n";
-  Out << "  float Float;\n";
-  Out << "  double Double;\n";
-  Out << "} llvmBitCastUnion;\n";
-
   // We are only interested in the type plane of the symbol table.
   TypeSymbolTable::const_iterator I   = TST.begin();
   TypeSymbolTable::const_iterator End = TST.end();
@@ -2152,121 +1994,21 @@ void JsWriter::printContainedStructs(const Type *Ty,
 }
 
 void JsWriter::printFunctionSignature(const Function *F, bool Prototype) {
-  /// isStructReturn - Should this function actually return a struct by-value?
-  bool isStructReturn = F->hasStructRetAttr();
-  
-  if (F->hasLocalLinkage()) Out << "static ";
-//   if (F->hasDLLImportLinkage()) Out << "__declspec(dllimport) ";
-//   if (F->hasDLLExportLinkage()) Out << "__declspec(dllexport) ";  
-//   switch (F->getCallingConv()) {
-//    case CallingConv::X86_StdCall:
-//     Out << "__attribute__((stdcall)) ";
-//     break;
-//    case CallingConv::X86_FastCall:
-//     Out << "__attribute__((fastcall)) ";
-//     break;
-//    default:
-//     break;
-//   }
-  
-  // Loop over the arguments, printing them...
-  const FunctionType *FT = cast<FunctionType>(F->getFunctionType());
-  const AttrListPtr &PAL = F->getAttributes();
-
-  std::string tstr;
-  raw_string_ostream FunctionInnards(tstr);
-
-  // Print out the name...
-  FunctionInnards << GetValueName(F) << '(';
-
-  bool PrintedArg = false;
-  if (!F->isDeclaration()) {
-    if (!F->arg_empty()) {
-      Function::const_arg_iterator I = F->arg_begin(), E = F->arg_end();
-      unsigned Idx = 1;
-      
-      // If this is a struct-return function, don't print the hidden
-      // struct-return argument.
-      if (isStructReturn) {
-        assert(I != E && "Invalid struct return function!");
-        ++I;
-        ++Idx;
-      }
-      
-      std::string ArgName;
-      for (; I != E; ++I) {
-        if (PrintedArg) FunctionInnards << ", ";
-        if (I->hasName() || !Prototype)
-          ArgName = GetValueName(I);
-        else
-          ArgName = "";
-        const Type *ArgTy = I->getType();
-        if (PAL.paramHasAttr(Idx, Attribute::ByVal)) {
-          ArgTy = cast<PointerType>(ArgTy)->getElementType();
-          ByValParams.insert(I);
-        }
-        printType(FunctionInnards, ArgTy,
-            /*isSigned=*/PAL.paramHasAttr(Idx, Attribute::SExt),
-            ArgName);
-        PrintedArg = true;
-        ++Idx;
-      }
-    }
-  } else {
-    // Loop over the arguments, printing them.
-    FunctionType::param_iterator I = FT->param_begin(), E = FT->param_end();
-    unsigned Idx = 1;
-    
-    // If this is a struct-return function, don't print the hidden
-    // struct-return argument.
-    if (isStructReturn) {
-      assert(I != E && "Invalid struct return function!");
-      ++I;
-      ++Idx;
-    }
-    
-    for (; I != E; ++I) {
-      if (PrintedArg) FunctionInnards << ", ";
-      const Type *ArgTy = *I;
-      if (PAL.paramHasAttr(Idx, Attribute::ByVal)) {
-        assert(ArgTy->isPointerTy());
-        ArgTy = cast<PointerType>(ArgTy)->getElementType();
-      }
-      printType(FunctionInnards, ArgTy,
-             /*isSigned=*/PAL.paramHasAttr(Idx, Attribute::SExt));
-      PrintedArg = true;
-      ++Idx;
+  if(Prototype || F->isDeclaration()) {
+    Out << "var " << GetValueName(F);
+    return;
+  } 
+  Out << GetValueName(F) << " = function " << GetValueName(F) << "(";
+  if(!F->arg_empty()) {
+    // print out arguments
+    Function::const_arg_iterator AI = F->arg_begin(), AE = F->arg_end();
+    Out << GetValueName(AI);
+    ++AI;
+    for(; AI != AE; ++AI) {
+      Out << ", " << GetValueName(AI);
     }
   }
-
-  if (!PrintedArg && FT->isVarArg()) {
-    FunctionInnards << "int vararg_dummy_arg";
-    PrintedArg = true;
-  }
-
-  // Finish printing arguments... if this is a vararg function, print the ...,
-  // unless there are no known types, in which case, we just emit ().
-  //
-  if (FT->isVarArg() && PrintedArg) {
-    FunctionInnards << ",...";  // Output varargs portion of signature!
-  } else if (!FT->isVarArg() && !PrintedArg) {
-    FunctionInnards << "void"; // ret() -> ret(void) in C.
-  }
-  FunctionInnards << ')';
-  
-  // Get the return tpe for the function.
-  const Type *RetTy;
-  if (!isStructReturn)
-    RetTy = F->getReturnType();
-  else {
-    // If this is a struct-return function, print the struct-return type.
-    RetTy = cast<PointerType>(FT->getParamType(0))->getElementType();
-  }
-    
-  // Print out the return type and the signature built above.
-  printType(Out, RetTy, 
-            /*isSigned=*/PAL.paramHasAttr(0, Attribute::SExt),
-            FunctionInnards.str());
+  Out << ")";
 }
 
 static inline bool isFPIntBitCast(const Instruction &I) {
@@ -2279,48 +2021,24 @@ static inline bool isFPIntBitCast(const Instruction &I) {
 }
 
 void JsWriter::printFunction(Function &F) {
-  /// isStructReturn - Should this function actually return a struct by-value?
-  bool isStructReturn = F.hasStructRetAttr();
-
   printFunctionSignature(&F, false);
   Out << " {\n";
   
-  // If this is a struct return function, handle the result with magic.
-  if (isStructReturn) {
-    const Type *StructTy =
-      cast<PointerType>(F.arg_begin()->getType())->getElementType();
-    Out << "  ";
-    printType(Out, StructTy, false, "StructReturn");
-    Out << ";  /* Struct return temporary */\n";
-
-    Out << "  ";
-    printType(Out, F.arg_begin()->getType(), false, 
-              GetValueName(F.arg_begin()));
-    Out << " = &StructReturn;\n";
-  }
-
   bool PrintedVar = false;
   
   // print local variable information for the function
   for (inst_iterator I = inst_begin(&F), E = inst_end(&F); I != E; ++I) {
-    if (const AllocaInst *AI = isDirectAlloca(&*I)) {
-      Out << "  ";
-      printType(Out, AI->getAllocatedType(), false, GetValueName(AI));
-      Out << ";    /* Address-exposed local */\n";
-      PrintedVar = true;
-    } else if (I->getType() != Type::getVoidTy(F.getContext()) && 
-               !isInlinableInst(*I)) {
-      Out << "  ";
-      printType(Out, I->getType(), false, GetValueName(&*I));
-      Out << ";\n";
-
-      if (isa<PHINode>(*I)) {  // Print out PHI node temporaries as well...
-        Out << "  ";
-        printType(Out, I->getType(), false,
-                  GetValueName(&*I)+"__PHI_TEMPORARY");
-        Out << ";\n";
+    if (isDirectAlloca(&*I) || (I->getType() != Type::getVoidTy(F.getContext()) && 
+						       !isInlinableInst(*I))) {
+      if(!PrintedVar) {
+	Out << "  var " << GetValueName(&*I);
+	PrintedVar = true;
+      } else {
+	Out << ", " << GetValueName(&*I);
       }
-      PrintedVar = true;
+      if(isa<PHINode>(*I)) {
+	Out << ", " << GetValueName(&*I) << "_";
+      }
     }
     // We need a temporary for the BitCast to use so it can pluck a value out
     // of a union to do the BitCast. This is separate from the need for a
@@ -2332,14 +2050,37 @@ void JsWriter::printFunction(Function &F) {
     }
   }
 
-  if (PrintedVar)
-    Out << '\n';
+  if (PrintedVar) {
+    Out << ";\n";
+  }
 
   if (F.hasExternalLinkage() && F.getName() == "main")
     Out << "  CODE_FOR_MAIN();\n";
 
+  std::string cls = "";
+  raw_string_ostream Closing(cls);
+
   // print the basic blocks
-  for (Function::iterator BB = F.begin(), E = F.end(); BB != E; ++BB) {
+  Function::iterator BB = F.begin(), E = F.end();
+  if(BB != E) {
+    Out << "  var _ = '" << GetValueName(BB) << "'; /* jump variable */\n";
+    Out << "  while(1) {\n";
+    Out << "    switch(_) {\n";
+    Out << "      case '" << GetValueName(BB) << "':\n";
+
+    if (Loop *L = LI->getLoopFor(BB)) {
+      if (L->getHeader() == BB && L->getParentLoop() == 0)
+        printLoop(L);
+    } else {
+      printBasicBlock(BB);
+    }
+    
+    Closing << "    }\n";
+    Closing << "  }\n";
+    ++BB;
+  }
+  for(; BB != E; ++BB) {
+    Out << "      case '" << GetValueName(BB) << "':\n";
     if (Loop *L = LI->getLoopFor(BB)) {
       if (L->getHeader() == BB && L->getParentLoop() == 0)
         printLoop(L);
@@ -2348,7 +2089,8 @@ void JsWriter::printFunction(Function &F) {
     }
   }
 
-  Out << "}\n\n";
+  Out << Closing.str();
+  Out << "};\n\n";
 }
 
 void JsWriter::printLoop(Loop *L) {
@@ -2367,30 +2109,15 @@ void JsWriter::printLoop(Loop *L) {
 }
 
 void JsWriter::printBasicBlock(BasicBlock *BB) {
-
-  // Don't print the label for the basic block if there are no uses, or if
-  // the only terminator use is the predecessor basic block's terminator.
-  // We have to scan the use list because PHI nodes use basic blocks too but
-  // do not require a label to be generated.
-  //
-  bool NeedsLabel = false;
-  for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI)
-    if (isGotoCodeNecessary(*PI, BB)) {
-      NeedsLabel = true;
-      break;
-    }
-
-  if (NeedsLabel) Out << GetValueName(BB) << ":\n";
-
   // Output all of the instructions in the basic block...
   for (BasicBlock::iterator II = BB->begin(), E = --BB->end(); II != E;
        ++II) {
     if (!isInlinableInst(*II) && !isDirectAlloca(II)) {
+      Out << "        ";
       if (II->getType() != Type::getVoidTy(BB->getContext()) &&
-          !isInlineAsm(*II))
-        outputLValue(II);
-      else
-        Out << "  ";
+          !isInlineAsm(*II)) {
+	outputLValue(II);
+      }
       writeInstComputationInline(*II);
       Out << ";\n";
     }
@@ -2409,22 +2136,12 @@ void JsWriter::visitReturnInst(ReturnInst &I) {
   bool isStructReturn = I.getParent()->getParent()->hasStructRetAttr();
 
   if (isStructReturn) {
-    Out << "  return StructReturn;\n";
+    Out << "        return StructReturn;\n";
     return;
   }
   
-  // Don't output a void return if this is the last basic block in the function
-  if (I.getNumOperands() == 0 &&
-      &*--I.getParent()->getParent()->end() == I.getParent() &&
-      !I.getParent()->size() == 1) {
-    return;
-  }
-
   if (I.getNumOperands() > 1) {
-    Out << "  {\n";
-    Out << "    ";
-    printType(Out, I.getParent()->getParent()->getReturnType());
-    Out << "   llvm_cbe_mrv_temp = {\n";
+    Out << "  return [\n";
     for (unsigned i = 0, e = I.getNumOperands(); i != e; ++i) {
       Out << "      ";
       writeOperand(I.getOperand(i));
@@ -2432,13 +2149,12 @@ void JsWriter::visitReturnInst(ReturnInst &I) {
         Out << ",";
       Out << "\n";
     }
-    Out << "    };\n";
-    Out << "    return llvm_cbe_mrv_temp;\n";
+    Out << "    ];\n";
     Out << "  }\n";
     return;
   }
 
-  Out << "  return";
+  Out << "        return";
   if (I.getNumOperands()) {
     Out << ' ';
     writeOperand(I.getOperand(0));
@@ -2451,7 +2167,7 @@ void JsWriter::visitSwitchInst(SwitchInst &SI) {
   Out << "  switch (";
   writeOperand(SI.getOperand(0));
   Out << ") {\n  default:\n";
-  printPHICopiesForSuccessor (SI.getParent(), SI.getDefaultDest(), 2);
+  printPHICopiesForSuccessor (SI.getParent(), SI.getDefaultDest(), 8);
   printBranchToBlock(SI.getParent(), SI.getDefaultDest(), 2);
   Out << ";\n";
   for (unsigned i = 2, e = SI.getNumOperands(); i != e; i += 2) {
@@ -2459,7 +2175,7 @@ void JsWriter::visitSwitchInst(SwitchInst &SI) {
     writeOperand(SI.getOperand(i));
     Out << ":\n";
     BasicBlock *Succ = cast<BasicBlock>(SI.getOperand(i+1));
-    printPHICopiesForSuccessor (SI.getParent(), Succ, 2);
+    printPHICopiesForSuccessor (SI.getParent(), Succ, 8);
     printBranchToBlock(SI.getParent(), Succ, 2);
     if (Function::iterator(Succ) == llvm::next(Function::iterator(SI.getParent())))
       Out << "    break;\n";
@@ -2500,7 +2216,7 @@ void JsWriter::printPHICopiesForSuccessor (BasicBlock *CurBlock,
     Value *IV = PN->getIncomingValueForBlock(CurBlock);
     if (!isa<UndefValue>(IV)) {
       Out << std::string(Indent, ' ');
-      Out << "  " << GetValueName(I) << "__PHI_TEMPORARY = ";
+      Out << "  " << GetValueName(I) << "_ = ";
       writeOperand(IV);
       Out << ";   /* for PHI node */\n";
     }
@@ -2508,11 +2224,11 @@ void JsWriter::printPHICopiesForSuccessor (BasicBlock *CurBlock,
 }
 
 void JsWriter::printBranchToBlock(BasicBlock *CurBB, BasicBlock *Succ,
-                                 unsigned Indent) {
+				  unsigned Indent) {
+  std::string Leading(Indent, ' ');
   if (isGotoCodeNecessary(CurBB, Succ)) {
-    Out << std::string(Indent, ' ') << "  goto ";
-    writeOperand(Succ);
-    Out << ";\n";
+    Out << Leading << "_ = '" << GetValueName(Succ) << "';\n";
+    Out << Leading << "continue;\n";
   }
 }
 
@@ -2523,32 +2239,32 @@ void JsWriter::visitBranchInst(BranchInst &I) {
 
   if (I.isConditional()) {
     if (isGotoCodeNecessary(I.getParent(), I.getSuccessor(0))) {
-      Out << "  if (";
+      Out << "        if (";
       writeOperand(I.getCondition());
       Out << ") {\n";
 
-      printPHICopiesForSuccessor (I.getParent(), I.getSuccessor(0), 2);
-      printBranchToBlock(I.getParent(), I.getSuccessor(0), 2);
+      printPHICopiesForSuccessor (I.getParent(), I.getSuccessor(0), 8);
+      printBranchToBlock(I.getParent(), I.getSuccessor(0), 10);
 
       if (isGotoCodeNecessary(I.getParent(), I.getSuccessor(1))) {
-        Out << "  } else {\n";
-        printPHICopiesForSuccessor (I.getParent(), I.getSuccessor(1), 2);
-        printBranchToBlock(I.getParent(), I.getSuccessor(1), 2);
+        Out << "        } else {\n";
+        printPHICopiesForSuccessor (I.getParent(), I.getSuccessor(1), 8);
+        printBranchToBlock(I.getParent(), I.getSuccessor(1), 10);
       }
     } else {
       // First goto not necessary, assume second one is...
-      Out << "  if (!";
+      Out << "        if (!";
       writeOperand(I.getCondition());
       Out << ") {\n";
 
-      printPHICopiesForSuccessor (I.getParent(), I.getSuccessor(1), 2);
-      printBranchToBlock(I.getParent(), I.getSuccessor(1), 2);
+      printPHICopiesForSuccessor (I.getParent(), I.getSuccessor(1), 8);
+      printBranchToBlock(I.getParent(), I.getSuccessor(1), 10);
     }
 
-    Out << "  }\n";
+    Out << "        }\n";
   } else {
-    printPHICopiesForSuccessor (I.getParent(), I.getSuccessor(0), 0);
-    printBranchToBlock(I.getParent(), I.getSuccessor(0), 0);
+    printPHICopiesForSuccessor (I.getParent(), I.getSuccessor(0), 6);
+    printBranchToBlock(I.getParent(), I.getSuccessor(0), 8);
   }
   Out << "\n";
 }
@@ -2558,7 +2274,7 @@ void JsWriter::visitBranchInst(BranchInst &I) {
 // the PHI.
 void JsWriter::visitPHINode(PHINode &I) {
   writeOperand(&I);
-  Out << "__PHI_TEMPORARY";
+  Out << "_";
 }
 
 
@@ -2601,14 +2317,10 @@ void JsWriter::visitBinaryOperator(Instruction &I) {
     Out << ")";
   } else {
 
-    // Write out the cast of the instruction's value back to the proper type
-    // if necessary.
-    bool NeedsClosingParens = writeInstructionCast(I);
-
     // Certain instructions require the operand to be forced to a specific type
     // so we use writeOperandWithCast here instead of writeOperand. Similarly
     // below for operand 1
-    writeOperandWithCast(I.getOperand(0), I.getOpcode());
+    writeOperand(I.getOperand(0), I.getOpcode());
 
     switch (I.getOpcode()) {
     case Instruction::Add:
@@ -2636,9 +2348,7 @@ void JsWriter::visitBinaryOperator(Instruction &I) {
        llvm_unreachable(0);
     }
 
-    writeOperandWithCast(I.getOperand(1), I.getOpcode());
-    if (NeedsClosingParens)
-      Out << "))";
+    writeOperand(I.getOperand(1), I.getOpcode());
   }
 
   if (needsCast) {
