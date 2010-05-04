@@ -9984,3 +9984,66 @@ pshufb	CPI1_0(%rip), %xmm1
 // CHECK: bsrw	305419896, %bx
 // CHECK:  encoding: [0x66,0x0f,0xbd,0x1d,0x78,0x56,0x34,0x12]
           bsrw  305419896, %bx
+
+// radr://7901779
+// CHECK: pushl   $127
+// CHECK:  encoding: [0x6a,0xfe]
+          pushl   $127
+
+// CHECK: pushw   $254
+// CHECK:  encoding: [0x66,0x68,0xfe,0x00]
+          pushw   $254
+
+// CHECK: pushl   $254
+// CHECK:  encoding: [0x68,0xfe,0x00,0x00,0x00]
+          pushl   $254
+
+// radr://7928400
+// CHECK: movq    %mm3, 3735928559(%ebx,%ecx,8)
+// CHECK:  encoding: [0x0f,0x7f,0x9c,0xcb,0xef,0xbe,0xad,0xde]
+          movq    %mm3, 3735928559(%ebx,%ecx,8)
+
+// CHECK: movd    %mm3, 3735928559(%ebx,%ecx,8)
+// CHECK:  encoding: [0x0f,0x7e,0x9c,0xcb,0xef,0xbe,0xad,0xde]
+          movd    %mm3, 3735928559(%ebx,%ecx,8)
+
+// CHECK: movq    3735928559(%ebx,%ecx,8), %xmm5
+// CHECK:  encoding: [0xf3,0x0f,0x7e,0xac,0xcb,0xef,0xbe,0xad,0xde]
+          movq    3735928559(%ebx,%ecx,8), %xmm5
+
+// CHECK: movd    3735928559(%ebx,%ecx,8), %xmm5
+// CHECK:  encoding: [0x66,0x0f,0x6e,0xac,0xcb,0xef,0xbe,0xad,0xde]
+          movd    3735928559(%ebx,%ecx,8), %xmm5
+
+// radr://7914715
+// CHECK: fcoml   3735928559(%ebx,%ecx,8)
+// CHECK:  encoding: [0xdc,0x94,0xcb,0xef,0xbe,0xad,0xde]
+          fcoml   3735928559(%ebx,%ecx,8) 
+
+// CHECK: fcoms   32493
+// CHECK:  encoding: [0xd8,0x15,0xed,0x7e,0x00,0x00]
+          fcoms   32493
+
+// CHECK: fcompl  3735928559(%ebx,%ecx,8)
+// CHECK:  encoding: [0xdc,0x9c,0xcb,0xef,0xbe,0xad,0xde]
+          fcompl  3735928559(%ebx,%ecx,8)
+
+// CHECK: fcomps  32493
+// CHECK:  encoding: [0xd8,0x1d,0xed,0x7e,0x00,0x00]
+          fcomps  32493
+
+// CHECK: ficoml  3735928559(%ebx,%ecx,8)
+// CHECK:  encoding: [0xda,0x94,0xcb,0xef,0xbe,0xad,0xde]
+          ficoml  3735928559(%ebx,%ecx,8)
+
+// CHECK: ficoms  32493
+// CHECK:  encoding: [0xde,0x15,0xed,0x7e,0x00,0x00]
+          ficoms  32493
+
+// CHECK: ficompl 3735928559(%ebx,%ecx,8)
+// CHECK:  encoding: [0xda,0x9c,0xcb,0xef,0xbe,0xad,0xde]
+          ficompl 3735928559(%ebx,%ecx,8)
+
+// CHECK: ficomps 32493
+// CHECK:  encoding: [0xde,0x1d,0xed,0x7e,0x00,0x00]
+          ficomps 32493
