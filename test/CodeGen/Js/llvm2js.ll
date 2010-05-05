@@ -2,8 +2,10 @@
 ; RUN: llc < %s -march=js -o %t2
 ; RUN: llc < %s -march=js | FileCheck %s
 
-; CHECK: var factorial;
-; CHECK: factorial = function factorial({{.*X}}) {
+; CHECK: (function($w) {
+; CHECK-NEXT: $w["<stdin>"] = {};
+; CHECK-NEXT: var _ = $w["<stdin>"];
+; CHECK: _.factorial = function factorial({{.*X}}) {
 define i32 @factorial(i32 %X) nounwind readnone {
 ; CHECK: var {{[_A-z0-9]+, [_A-z0-9]+, [_A-z0-9]+, [_A-z0-9]+, [_A-z0-9]+}};
 
@@ -49,11 +51,4 @@ bb2:                                              ; preds = %entry
 ; CHECK: return 1;
   ret i32 1
 }
-
-; while(1) {
-;   switch(_) {
-;     case 0: continue;
-;     case 1: continue;
-;     case 2: return;
-;   }
-; }
+; CHECK: })(window);

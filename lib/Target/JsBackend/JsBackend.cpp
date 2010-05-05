@@ -42,6 +42,7 @@
 #include "llvm/Target/TargetRegistry.h"
 #include "llvm/Support/CallSite.h"
 #include "llvm/Support/CFG.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
@@ -144,6 +145,12 @@ namespace {
     }
 
     virtual bool doFinalization(Module &M) {
+      Out << "})(window);\n";
+      if(M.getFunction("main")) {
+	Out << "</script>\n";
+	Out << "</body>\n";
+	Out << "</html>";
+      }
       // Free memory...
       delete IL;
       delete TD;
@@ -201,6 +208,7 @@ namespace {
 
     void printModule(Module *M);
     void printModuleTypes(const TypeSymbolTable &ST);
+    std::string getOperand(Value *Operand, bool Static = false);
     void printContainedStructs(const Type *Ty, std::set<const Type *> &);
     void printFloatingPointConstants(Function &F);
     void printFloatingPointConstants(const Constant *C);
@@ -211,6 +219,7 @@ namespace {
     void printLoop(Loop *L);
 
     void printCast(unsigned opcode, const Type *SrcTy, const Type *DstTy);
+    void printConstant(Constant *CPV, bool Static, raw_ostream &Out);
     void printConstant(Constant *CPV, bool Static);
     void printConstantWithCast(Constant *CPV, unsigned Opcode);
     bool printConstExprCast(const ConstantExpr *CE, bool Static);
@@ -825,8 +834,7 @@ void JsWriter::printCast(unsigned opc, const Type *SrcTy, const Type *DstTy) {
   }
 }
 
-// printConstant - The LLVM Constant to C Constant converter.
-void JsWriter::printConstant(Constant *CPV, bool Static) {
+void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
   if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(CPV)) {
     switch (CE->getOpcode()) {
     case Instruction::Trunc:
@@ -1102,7 +1110,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static) {
       printType(Out, CPV->getType());
       Out << ")";
     }
-    Out << "{ "; // Arrays are wrapped in struct types.
     if (ConstantArray *CA = dyn_cast<ConstantArray>(CPV)) {
       printConstantArray(CA, Static);
     } else {
@@ -1120,7 +1127,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static) {
       }
       Out << " }";
     }
-    Out << " }"; // Arrays are wrapped in struct types.
     break;
 
   case Type::VectorTyID:
@@ -1196,6 +1202,11 @@ void JsWriter::printConstant(Constant *CPV, bool Static) {
 #endif
     llvm_unreachable(0);
   }
+}
+
+// printConstant - The LLVM Constant to C Constant converter.
+void JsWriter::printConstant(Constant *CPV, bool Static) {
+  printConstant(CPV, Static, Out);
 }
 
 // Some constant expressions need to be casted back to the original types
@@ -1388,14 +1399,7 @@ void JsWriter::writeOperandInternal(Value *Operand, bool Static) {
 }
 
 void JsWriter::writeOperand(Value *Operand, bool Static) {
-  bool isAddressImplicit = isAddressExposed(Operand);
-  if (isAddressImplicit)
-    Out << "(&";  // Global variables are referenced as their addresses by llvm
-
   writeOperandInternal(Operand, Static);
-
-  if (isAddressImplicit)
-    Out << ')';
 }
 
 // Some instructions need to have their result value casted back to the 
@@ -1595,18 +1599,22 @@ bool JsWriter::doInitialization(Module &M) {
   IL = new IntrinsicLowering(*TD);
   IL->AddPrototypes(M);
 
-#if 0
-  std::string Triple = TheModule->getTargetTriple();
-  if (Triple.empty())
-    Triple = llvm::sys::getHostTriple();
-  
-  std::string E;
-  if (const Target *Match = TargetRegistry::lookupTarget(Triple, E))
-    TAsm = Match->createAsmInfo(Triple);
-#endif    
   TAsm = new CBEMCAsmInfo();
   TCtx = new MCContext(*TAsm);
   Mang = new Mangler(*TCtx, *TD);
+
+  if(M.getFunction("main")) {
+    Out << "<!doctype html>\n";
+    Out << "<html>\n";
+    Out << "<head>\n";
+    Out << "<title>" << M.getModuleIdentifier() << "</title>\n";
+    Out << "</head>\n";
+    Out << "<body>\n";
+    Out << "<script>\n";
+  }
+  Out << "(function($w) {\n";
+  Out << "$w[\"" << M.getModuleIdentifier() << "\"] = {};\n";
+  Out << "var _ = $w[\"" << M.getModuleIdentifier() << "\"];\n";
 
   // Keep track of which functions are static ctors/dtors so they can have
   // an attribute added to their prototypes.
@@ -1624,9 +1632,6 @@ bool JsWriter::doInitialization(Module &M) {
     }
   }
   
-  // Provide a definition for `bool' if not compiling with a C++ compiler.
-  Out << "/* Global Declarations */\n";
-
   // First output all the declarations for the program, because C requires
   // Functions & globals to be declared before they are used.
   //
@@ -1683,169 +1688,85 @@ bool JsWriter::doInitialization(Module &M) {
     }
   }
 
-  // Function declarations
-  Out << "\n/* Function Declarations */\n";
-  Out << "double fmod(double, double);\n";   // Support for FP rem
-  Out << "float fmodf(float, float);\n";
-  Out << "long double fmodl(long double, long double);\n";
+  // Output the module-level locals
+  if (!M.global_empty()) {
+    Module::global_iterator I = M.global_begin(), E = M.global_end();
+    bool Found = false;
+    for(;I != E; ++I) {
+      if (!I->isDeclaration() && !getGlobalVariableClass(I) && (I->hasLocalLinkage() || I->hasHiddenVisibility())) {
+	Out << "\n/* Module Local Variables */\n";
+	Out << "var " << GetValueName(I) << " = ";
+	writeOperand(I->getInitializer(), true);
+	Found = true;
+	continue;
+      }
+    }
+    for (; I != E; ++I) {
+      if (!I->isDeclaration() && !getGlobalVariableClass(I) && (I->hasLocalLinkage() || I->hasHiddenVisibility())) {      
+	Out << ", " << GetValueName(I) << " = ";
+	writeOperand(I->getInitializer(), true);
+	continue;
+      }
+    }
+    if(Found) {
+      Out << ";\n";
+    }
+  }
   
-  for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I) {
-    // Don't print declarations for intrinsic functions.
-    if (!I->isIntrinsic() && I->getName() != "setjmp" &&
-        I->getName() != "longjmp" && I->getName() != "_setjmp") {
-      if (I->hasExternalWeakLinkage())
-        Out << "extern ";
-      printFunctionSignature(I, true);
-      if (I->hasWeakLinkage() || I->hasLinkOnceLinkage()) 
-        Out << " __ATTRIBUTE_WEAK__";
-      if (I->hasExternalWeakLinkage())
-        Out << " __EXTERNAL_WEAK__";
-      if (StaticCtors.count(I))
-        Out << " __ATTRIBUTE_CTOR__";
-      if (StaticDtors.count(I))
-        Out << " __ATTRIBUTE_DTOR__";
-      if (I->hasHiddenVisibility())
-        Out << " __HIDDEN__";
-      
-      if (I->hasName() && I->getName()[0] == 1)
-        Out << " LLVM_ASM(\"" << I->getName().substr(1) << "\")";
-          
+  // Output the module members
+  if (!M.global_empty()) {
+    Module::global_iterator I = M.global_begin(), E = M.global_end();
+    bool Found = false;
+    for(;I != E; ++I) {
+      if (!I->isDeclaration() && !getGlobalVariableClass(I) && !(I->hasLocalLinkage() || I->hasHiddenVisibility())) {
+	if (I->hasDLLImportLinkage()) {
+	  // can't import from DLLs
+	  llvm_unreachable(0);
+	}
+	if (I->hasDLLExportLinkage()) {
+	  // can't export to DLLs
+	  llvm_unreachable(0);
+	}
+        if (I->isThreadLocal()) {
+	  // no support for thread locals
+	  llvm_unreachable(0);
+	}
+	Out << "\n/* Module Members */\n";
+
+	Out << "_." << GetValueName(I) << " = ";
+	writeOperand(I->getInitializer(), true);
+	Found = true;
+	continue;
+      }
+    }
+    for (; I != E; ++I) {
+      if (!I->isDeclaration() && !getGlobalVariableClass(I) && !(I->hasLocalLinkage() || I->hasHiddenVisibility())) {
+	if (I->hasDLLImportLinkage()) {
+	  // can't import from DLLs
+	  llvm_unreachable(0);
+	}
+	if (I->hasDLLExportLinkage()) {
+	  // can't export to DLLs
+	  llvm_unreachable(0);
+	}
+        if (I->isThreadLocal()) {
+	  // no support for thread locals
+	  llvm_unreachable(0);
+	}
+
+	Out << ", _." << GetValueName(I) << " = ";
+	writeOperand(I->getInitializer(), true);
+	continue;
+      }
+    }
+    if(Found) {
       Out << ";\n";
     }
   }
 
-  // Output the global variable declarations
-  if (!M.global_empty()) {
-    Out << "\n\n/* Global Variable Declarations */\n";
-    for (Module::global_iterator I = M.global_begin(), E = M.global_end();
-         I != E; ++I)
-      if (!I->isDeclaration()) {
-        // Ignore special globals, such as debug info.
-        if (getGlobalVariableClass(I))
-          continue;
-
-        if (I->hasLocalLinkage())
-          Out << "static ";
-        else
-          Out << "extern ";
-
-        // Thread Local Storage
-        if (I->isThreadLocal())
-          Out << "__thread ";
-
-        printType(Out, I->getType()->getElementType(), false, 
-                  GetValueName(I));
-
-        if (I->hasLinkOnceLinkage())
-          Out << " __attribute__((common))";
-        else if (I->hasCommonLinkage())     // FIXME is this right?
-          Out << " __ATTRIBUTE_WEAK__";
-        else if (I->hasWeakLinkage())
-          Out << " __ATTRIBUTE_WEAK__";
-        else if (I->hasExternalWeakLinkage())
-          Out << " __EXTERNAL_WEAK__";
-        if (I->hasHiddenVisibility())
-          Out << " __HIDDEN__";
-        Out << ";\n";
-      }
+  if (!M.empty()) {
+    Out << "\n/* Function Bodies */\n";
   }
-
-  // Output the global variable definitions and contents...
-  if (!M.global_empty()) {
-    Out << "\n\n/* Global Variable Definitions and Initialization */\n";
-    for (Module::global_iterator I = M.global_begin(), E = M.global_end(); 
-         I != E; ++I)
-      if (!I->isDeclaration()) {
-        // Ignore special globals, such as debug info.
-        if (getGlobalVariableClass(I))
-          continue;
-
-        if (I->hasLocalLinkage())
-          Out << "static ";
-        else if (I->hasDLLImportLinkage())
-          Out << "__declspec(dllimport) ";
-        else if (I->hasDLLExportLinkage())
-          Out << "__declspec(dllexport) ";
-
-        // Thread Local Storage
-        if (I->isThreadLocal())
-          Out << "__thread ";
-
-        printType(Out, I->getType()->getElementType(), false, 
-                  GetValueName(I));
-        if (I->hasLinkOnceLinkage())
-          Out << " __attribute__((common))";
-        else if (I->hasWeakLinkage())
-          Out << " __ATTRIBUTE_WEAK__";
-        else if (I->hasCommonLinkage())
-          Out << " __ATTRIBUTE_WEAK__";
-
-        if (I->hasHiddenVisibility())
-          Out << " __HIDDEN__";
-        
-        // If the initializer is not null, emit the initializer.  If it is null,
-        // we try to avoid emitting large amounts of zeros.  The problem with
-        // this, however, occurs when the variable has weak linkage.  In this
-        // case, the assembler will complain about the variable being both weak
-        // and common, so we disable this optimization.
-        // FIXME common linkage should avoid this problem.
-        if (!I->getInitializer()->isNullValue()) {
-          Out << " = " ;
-          writeOperand(I->getInitializer(), true);
-        } else if (I->hasWeakLinkage()) {
-          // We have to specify an initializer, but it doesn't have to be
-          // complete.  If the value is an aggregate, print out { 0 }, and let
-          // the compiler figure out the rest of the zeros.
-          Out << " = " ;
-          if (I->getInitializer()->getType()->isStructTy() ||
-              I->getInitializer()->getType()->isVectorTy()) {
-            Out << "{ 0 }";
-          } else if (I->getInitializer()->getType()->isArrayTy()) {
-            // As with structs and vectors, but with an extra set of braces
-            // because arrays are wrapped in structs.
-            Out << "{ { 0 } }";
-          } else {
-            // Just print it out normally.
-            writeOperand(I->getInitializer(), true);
-          }
-        }
-        Out << ";\n";
-      }
-  }
-
-  if (!M.empty())
-    Out << "\n\n/* Function Bodies */\n";
-
-  // Emit some helper functions for dealing with FCMP instruction's 
-  // predicates
-  Out << "static inline int llvm_fcmp_ord(double X, double Y) { ";
-  Out << "return X == X && Y == Y; }\n";
-  Out << "static inline int llvm_fcmp_uno(double X, double Y) { ";
-  Out << "return X != X || Y != Y; }\n";
-  Out << "static inline int llvm_fcmp_ueq(double X, double Y) { ";
-  Out << "return X == Y || llvm_fcmp_uno(X, Y); }\n";
-  Out << "static inline int llvm_fcmp_une(double X, double Y) { ";
-  Out << "return X != Y; }\n";
-  Out << "static inline int llvm_fcmp_ult(double X, double Y) { ";
-  Out << "return X <  Y || llvm_fcmp_uno(X, Y); }\n";
-  Out << "static inline int llvm_fcmp_ugt(double X, double Y) { ";
-  Out << "return X >  Y || llvm_fcmp_uno(X, Y); }\n";
-  Out << "static inline int llvm_fcmp_ule(double X, double Y) { ";
-  Out << "return X <= Y || llvm_fcmp_uno(X, Y); }\n";
-  Out << "static inline int llvm_fcmp_uge(double X, double Y) { ";
-  Out << "return X >= Y || llvm_fcmp_uno(X, Y); }\n";
-  Out << "static inline int llvm_fcmp_oeq(double X, double Y) { ";
-  Out << "return X == Y ; }\n";
-  Out << "static inline int llvm_fcmp_one(double X, double Y) { ";
-  Out << "return X != Y && llvm_fcmp_ord(X, Y); }\n";
-  Out << "static inline int llvm_fcmp_olt(double X, double Y) { ";
-  Out << "return X <  Y ; }\n";
-  Out << "static inline int llvm_fcmp_ogt(double X, double Y) { ";
-  Out << "return X >  Y ; }\n";
-  Out << "static inline int llvm_fcmp_ole(double X, double Y) { ";
-  Out << "return X <= Y ; }\n";
-  Out << "static inline int llvm_fcmp_oge(double X, double Y) { ";
-  Out << "return X >= Y ; }\n";
   return false;
 }
 
@@ -1924,46 +1845,7 @@ void JsWriter::printFloatingPointConstants(const Constant *C) {
 /// type name is found, emit its declaration...
 ///
 void JsWriter::printModuleTypes(const TypeSymbolTable &TST) {
-  // We are only interested in the type plane of the symbol table.
-  TypeSymbolTable::const_iterator I   = TST.begin();
-  TypeSymbolTable::const_iterator End = TST.end();
-
-  // If there are no type names, exit early.
-  if (I == End) return;
-
-  // Print out forward declarations for structure types before anything else!
-  Out << "/* Structure forward decls */\n";
-  for (; I != End; ++I) {
-    std::string Name = "struct " + CBEMangle("l_"+I->first);
-    Out << Name << ";\n";
-    TypeNames.insert(std::make_pair(I->second, Name));
-  }
-
-  Out << '\n';
-
-  // Now we can print out typedefs.  Above, we guaranteed that this can only be
-  // for struct or opaque types.
-  Out << "/* Typedefs */\n";
-  for (I = TST.begin(); I != End; ++I) {
-    std::string Name = CBEMangle("l_"+I->first);
-    Out << "typedef ";
-    printType(Out, I->second, false, Name);
-    Out << ";\n";
-  }
-
-  Out << '\n';
-
-  // Keep track of which structures have been printed so far...
-  std::set<const Type *> StructPrinted;
-
-  // Loop over all structures then push them into the stack so they are
-  // printed in the correct order.
-  //
-  Out << "/* Structure contents */\n";
-  for (I = TST.begin(); I != End; ++I)
-    if (I->second->isStructTy() || I->second->isArrayTy())
-      // Only print out used types!
-      printContainedStructs(I->second, StructPrinted);
+  // No need to explicitly define types
 }
 
 // Push the struct onto the stack and recursively push all structs
@@ -1998,7 +1880,7 @@ void JsWriter::printFunctionSignature(const Function *F, bool Prototype) {
     Out << "var " << GetValueName(F);
     return;
   } 
-  Out << GetValueName(F) << " = function " << GetValueName(F) << "(";
+  Out << "_." << GetValueName(F) << " = function " << GetValueName(F) << "(";
   if(!F->arg_empty()) {
     // print out arguments
     Function::const_arg_iterator AI = F->arg_begin(), AE = F->arg_end();
@@ -2054,9 +1936,6 @@ void JsWriter::printFunction(Function &F) {
     Out << ";\n";
   }
 
-  if (F.hasExternalLinkage() && F.getName() == "main")
-    Out << "  CODE_FOR_MAIN();\n";
-
   std::string cls = "";
   raw_string_ostream Closing(cls);
 
@@ -2090,7 +1969,11 @@ void JsWriter::printFunction(Function &F) {
   }
 
   Out << Closing.str();
-  Out << "};\n\n";
+  Out << "};\n";
+  if (F.hasExternalLinkage() && F.getName() == "main") {
+    Out << "_.main();\n";
+  }
+  Out << "\n";
 }
 
 void JsWriter::printLoop(Loop *L) {
@@ -2303,18 +2186,6 @@ void JsWriter::visitBinaryOperator(Instruction &I) {
     Out << "-(";
     writeOperand(BinaryOperator::getFNegArgument(cast<BinaryOperator>(&I)));
     Out << ")";
-  } else if (I.getOpcode() == Instruction::FRem) {
-    // Output a call to fmod/fmodf instead of emitting a%b
-    if (I.getType() == Type::getFloatTy(I.getContext()))
-      Out << "fmodf(";
-    else if (I.getType() == Type::getDoubleTy(I.getContext()))
-      Out << "fmod(";
-    else  // all 3 flavors of long double
-      Out << "fmodl(";
-    writeOperand(I.getOperand(0));
-    Out << ", ";
-    writeOperand(I.getOperand(1));
-    Out << ")";
   } else {
 
     // Certain instructions require the operand to be forced to a specific type
@@ -2406,32 +2277,73 @@ void JsWriter::visitFCmpInst(FCmpInst &I) {
     return;
   }
 
-  const char* op = 0;
-  switch (I.getPredicate()) {
-  default: llvm_unreachable("Illegal FCmp predicate");
-  case FCmpInst::FCMP_ORD: op = "ord"; break;
-  case FCmpInst::FCMP_UNO: op = "uno"; break;
-  case FCmpInst::FCMP_UEQ: op = "ueq"; break;
-  case FCmpInst::FCMP_UNE: op = "une"; break;
-  case FCmpInst::FCMP_ULT: op = "ult"; break;
-  case FCmpInst::FCMP_ULE: op = "ule"; break;
-  case FCmpInst::FCMP_UGT: op = "ugt"; break;
-  case FCmpInst::FCMP_UGE: op = "uge"; break;
-  case FCmpInst::FCMP_OEQ: op = "oeq"; break;
-  case FCmpInst::FCMP_ONE: op = "one"; break;
-  case FCmpInst::FCMP_OLT: op = "olt"; break;
-  case FCmpInst::FCMP_OLE: op = "ole"; break;
-  case FCmpInst::FCMP_OGT: op = "ogt"; break;
-  case FCmpInst::FCMP_OGE: op = "oge"; break;
+  FCmpInst::Predicate Pred = I.getPredicate();
+  bool done = false;
+  while(!done) {
+    Out << "(";
+    switch (Pred) {
+    default: llvm_unreachable("Illegal FCmp predicate");
+    case FCmpInst::FCMP_ORD:
+      Out << I.getOperand(0) << " == " << I.getOperand(0);
+      Out << " && " << I.getOperand(1)<< " == " << I.getOperand(1);
+      done = true;
+      break;
+    case FCmpInst::FCMP_UNO:
+      Out << I.getOperand(0)<< " != " << I.getOperand(0) << " || ";
+      Out << I.getOperand(1) << " != " << I.getOperand(1);
+      done = true;
+      break;
+    case FCmpInst::FCMP_UEQ:
+      Out << I.getOperand(0) << " == " << I.getOperand(1) << " || ";
+      Pred = FCmpInst::FCMP_UNO;
+      break;
+    case FCmpInst::FCMP_UNE:
+      Out << I.getOperand(0) << " != " << I.getOperand(1);
+      done = true;
+      break;
+    case FCmpInst::FCMP_ULT:
+      Out << I.getOperand(0) <<" <  " << I.getOperand(1) << " || ";
+      Pred = FCmpInst::FCMP_UNO;
+      break;
+    case FCmpInst::FCMP_ULE:
+      Out << I.getOperand(0) << " >  " << I.getOperand(1) << " || ";
+      Pred = FCmpInst::FCMP_UNO;
+      break;
+    case FCmpInst::FCMP_UGT:
+      Out << I.getOperand(0) << " <= " << I.getOperand(1) << " || ";
+      Pred = FCmpInst::FCMP_UNO;
+      break;
+    case FCmpInst::FCMP_UGE:
+      Out << I.getOperand(0) << " >= " << I.getOperand(1) << " || ";
+      Pred = FCmpInst::FCMP_UNO;
+      break;
+    case FCmpInst::FCMP_OEQ:
+      Out << I.getOperand(0) << " == " << I.getOperand(1);
+      done = true;
+      break;
+    case FCmpInst::FCMP_ONE:
+      Out << I.getOperand(0) << " != " << I.getOperand(1) << " && ";
+      Pred = FCmpInst::FCMP_ORD;
+      break;
+    case FCmpInst::FCMP_OLT:
+      Out << I.getOperand(0) << " <  " << I.getOperand(1);
+      done = true;
+      break;
+    case FCmpInst::FCMP_OLE:
+      Out << I.getOperand(0) << " >  " << I.getOperand(1);
+      done = true;
+      break;
+    case FCmpInst::FCMP_OGT:
+      Out << I.getOperand(0) << " <= " << I.getOperand(1);
+      done = true;
+      break;
+    case FCmpInst::FCMP_OGE:
+      Out << I.getOperand(0) << " >= " << I.getOperand(1);
+      done = true;
+      break;
+    }
+    Out << ")";
   }
-
-  Out << "llvm_fcmp_" << op << "(";
-  // Write the first operand
-  writeOperand(I.getOperand(0));
-  Out << ", ";
-  // Write the second operand
-  writeOperand(I.getOperand(1));
-  Out << ")";
 }
 
 static const char * getFloatBitCastField(const Type *Ty) {
