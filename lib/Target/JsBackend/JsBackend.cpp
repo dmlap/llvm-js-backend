@@ -1014,16 +1014,10 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
       Out << (CI->getZExtValue() ? '1' : '0');
     else if (Ty == Type::getInt32Ty(CPV->getContext()))
       Out << CI->getSExtValue();
-    else if (Ty->getPrimitiveSizeInBits() > 32)
-      Out << CI->getZExtValue() << "ull";
-    else {
-      Out << "((";
-      printSimpleType(Out, Ty, false) << ')';
-      if (CI->isMinValue(true)) 
-        Out << CI->getZExtValue();
-      else
-        Out << CI->getSExtValue();
-      Out << ')';
+    else if (CI->isMinValue(true)) {
+      Out << CI->getZExtValue();
+    } else {
+      Out << CI->getSExtValue();
     }
     return;
   } 
@@ -2928,94 +2922,25 @@ void JsWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
     writeOperand(Ptr);
     return;
   }
-
-  // If all indices are zero, just print out the pointer
-  bool NonZeroOperand = false;
-  for(gep_type_iterator TmpI = I; TmpI != E; ++TmpI) {
-    Value *TmpOp = TmpI.getOperand();
-    if(!isa<Constant>(TmpOp) || !cast<Constant>(TmpOp)->isNullValue()) {
-      NonZeroOperand = true;
-      break;
-    }
+  Out << "(";
+  gep_type_iterator N = I;
+  ++N;
+  writeOperand(Ptr);
+  for(; N != E; ++I, ++N) {
+    Out << "[";
+    writeOperand(I.getOperand());
+    Out << "]";
   }
-  if(!NonZeroOperand) {
-    writeOperand(Ptr);
+  // unrolled last iteration
+  Value *LastOp = I.getOperand();
+  if(isa<Constant>(LastOp) && cast<Constant>(LastOp)->isNullValue()) {
+    // forall i: &i == &i[0] so drop the last index
+    Out << ")";
     return;
   }
-  // Find out if the last index is into a vector.  If so, we have to print this
-  // specially.  Since vectors can't have elements of indexable type, only the
-  // last index could possibly be of a vector element.
-  const VectorType *LastIndexIsVector = 0;
-  {
-    for (gep_type_iterator TmpI = I; TmpI != E; ++TmpI)
-      LastIndexIsVector = dyn_cast<VectorType>(*TmpI);
-  }
-  
-  Out << "(";
-  
-  // If the last index is into a vector, we can't print it as &a[i][j] because
-  // we can't index into a vector with j in GCC.  Instead, emit this as
-  // (((float*)&a[i])+j)
-  if (LastIndexIsVector) {
-    Out << "((";
-    printType(Out, PointerType::getUnqual(LastIndexIsVector->getElementType()));
-    Out << ")(";
-  }
-  
-  Out << '&';
-
-  // If the first index is 0 (very typical) we can do a number of
-  // simplifications to clean up the code.
-  Value *FirstOp = I.getOperand();
-  if (!isa<Constant>(FirstOp) || !cast<Constant>(FirstOp)->isNullValue()) {
-    // First index isn't simple, print it the hard way.
-    writeOperand(Ptr);
-  } else {
-    ++I;  // Skip the zero index.
-
-    // Okay, emit the first operand. If Ptr is something that is already address
-    // exposed, like a global, avoid emitting (&foo)[0], just emit foo instead.
-    if (isAddressExposed(Ptr)) {
-      writeOperandInternal(Ptr, Static);
-    } else if (I != E && (*I)->isStructTy()) {
-      // If we didn't already emit the first operand, see if we can print it as
-      // P->f instead of "P[0].f"
-      writeOperand(Ptr);
-      Out << "->field" << cast<ConstantInt>(I.getOperand())->getZExtValue();
-      ++I;  // eat the struct index as well.
-    } else {
-      // Instead of emitting P[0][1], emit (*P)[1], which is more idiomatic.
-      Out << "(*";
-      writeOperand(Ptr);
-      Out << ")";
-    }
-  }
-
-  for (; I != E; ++I) {
-    if ((*I)->isStructTy()) {
-      Out << ".field" << cast<ConstantInt>(I.getOperand())->getZExtValue();
-    } else if ((*I)->isArrayTy()) {
-      Out << ".array[";
-      writeOperandWithCast(I.getOperand(), Instruction::GetElementPtr);
-      Out << ']';
-    } else if (!(*I)->isVectorTy()) {
-      Out << '[';
-      writeOperandWithCast(I.getOperand(), Instruction::GetElementPtr);
-      Out << ']';
-    } else {
-      // If the last index is into a vector, then print it out as "+j)".  This
-      // works with the 'LastIndexIsVector' code above.
-      if (isa<Constant>(I.getOperand()) &&
-          cast<Constant>(I.getOperand())->isNullValue()) {
-        Out << "))";  // avoid "+0".
-      } else {
-        Out << ")+(";
-        writeOperandWithCast(I.getOperand(), Instruction::GetElementPtr);
-        Out << "))";
-      }
-    }
-  }
-  Out << ")";
+  Out << "[";
+  writeOperand(I.getOperand());
+  Out << "])";
 }
 
 void JsWriter::writeMemoryAccess(Value *Operand, const Type *OperandType,
