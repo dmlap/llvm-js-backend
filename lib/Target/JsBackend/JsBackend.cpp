@@ -145,8 +145,12 @@ namespace {
     }
 
     virtual bool doFinalization(Module &M) {
+      Function *Main = M.getFunction("main");
+      if(Main) {
+	Out << "_.main();\n";
+      }
       Out << "})(window);\n";
-      if(M.getFunction("main")) {
+      if(Main) {
 	Out << "</script>\n";
 	Out << "</body>\n";
 	Out << "</html>";
@@ -1970,9 +1974,6 @@ void JsWriter::printFunction(Function &F) {
 
   Out << Closing.str();
   Out << "};\n";
-  if (F.hasExternalLinkage() && F.getName() == "main") {
-    Out << "_.main();\n";
-  }
   Out << "\n";
 }
 
@@ -2927,7 +2928,20 @@ void JsWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
     writeOperand(Ptr);
     return;
   }
-    
+
+  // If all indices are zero, just print out the pointer
+  bool NonZeroOperand = false;
+  for(gep_type_iterator TmpI = I; TmpI != E; ++TmpI) {
+    Value *TmpOp = TmpI.getOperand();
+    if(!isa<Constant>(TmpOp) || !cast<Constant>(TmpOp)->isNullValue()) {
+      NonZeroOperand = true;
+      break;
+    }
+  }
+  if(!NonZeroOperand) {
+    writeOperand(Ptr);
+    return;
+  }
   // Find out if the last index is into a vector.  If so, we have to print this
   // specially.  Since vectors can't have elements of indexable type, only the
   // last index could possibly be of a vector element.

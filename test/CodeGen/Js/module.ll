@@ -19,12 +19,15 @@
 ; CHECK: _.main = function main() {
 define i32 @main() nounwind {
 entry:
+; CHECK: printf(({{[_$A-z0-9]+}}));
   %0 = tail call i32 (i8*, ...)* @printf(i8* noalias getelementptr inbounds ([12 x i8]* @.str, i64 0, i64 0)) nounwind ; <i32> [#uses=0]
+; CHECK: return 0;
   ret i32 0
 }
 
 declare i32 @printf(i8* nocapture, ...) nounwind
-; CHECK: })(window);
+; CHECK: _.main();
+; CHECK-NEXT: })(window);
 ; CHECK-NEXT: </script>
 ; CHECK-NEXT: </body>
 ; CHECK-NEXT: </html>
