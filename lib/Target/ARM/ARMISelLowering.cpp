@@ -94,7 +94,10 @@ void ARMTargetLowering::addTypeForNEON(EVT VT, EVT PromotedLdStVT,
   }
   setOperationAction(ISD::BUILD_VECTOR, VT.getSimpleVT(), Custom);
   setOperationAction(ISD::VECTOR_SHUFFLE, VT.getSimpleVT(), Custom);
-  setOperationAction(ISD::CONCAT_VECTORS, VT.getSimpleVT(), Custom);
+  if (llvm::ModelWithRegSequence())
+    setOperationAction(ISD::CONCAT_VECTORS, VT.getSimpleVT(), Legal);
+  else
+    setOperationAction(ISD::CONCAT_VECTORS, VT.getSimpleVT(), Custom);
   setOperationAction(ISD::EXTRACT_SUBVECTOR, VT.getSimpleVT(), Expand);
   setOperationAction(ISD::SELECT, VT.getSimpleVT(), Expand);
   setOperationAction(ISD::SELECT_CC, VT.getSimpleVT(), Expand);
@@ -360,8 +363,11 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
     setOperationAction(ISD::BSWAP, MVT::i32, Expand);
 
   // These are expanded into libcalls.
-  setOperationAction(ISD::SDIV,  MVT::i32, Expand);
-  setOperationAction(ISD::UDIV,  MVT::i32, Expand);
+  if (!Subtarget->hasDivide()) {
+    // v7M has a hardware divider
+    setOperationAction(ISD::SDIV,  MVT::i32, Expand);
+    setOperationAction(ISD::UDIV,  MVT::i32, Expand);
+  }
   setOperationAction(ISD::SREM,  MVT::i32, Expand);
   setOperationAction(ISD::UREM,  MVT::i32, Expand);
   setOperationAction(ISD::SDIVREM, MVT::i32, Expand);
@@ -387,7 +393,8 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
   setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i32, Expand);
   setOperationAction(ISD::MEMBARRIER,         MVT::Other, Custom);
 
-  if (!Subtarget->hasV6Ops() && !Subtarget->isThumb2()) {
+  if (!Subtarget->hasV6Ops() && (!Subtarget->isThumb2()
+      || !Subtarget->hasT2ExtractPack())) {
     setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i16, Expand);
     setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i8,  Expand);
   }

@@ -1334,9 +1334,6 @@ DIE *DwarfDebug::createSubprogramDIE(const DISubprogram &SP, bool MakeDecl) {
   if (SP.isOptimized())
     addUInt(SPDie, dwarf::DW_AT_APPLE_optimized, dwarf::DW_FORM_flag, 1);
 
-  if (!DisableFramePointerElim(*Asm->MF))
-    addUInt(SPDie, dwarf::DW_AT_APPLE_omit_frame_ptr, dwarf::DW_FORM_flag, 1);
-
   // DW_TAG_inlined_subroutine may refer to this DIE.
   ModuleCU->insertDIE(SP.getNode(), SPDie);
 
@@ -2153,8 +2150,20 @@ void DwarfDebug::collectVariableInfo() {
 void DwarfDebug::beginScope(const MachineInstr *MI) {
   // Check location.
   DebugLoc DL = MI->getDebugLoc();
-  if (DL.isUnknown())
+  if (DL.isUnknown()) {
+    // This instruction has no debug location. If the preceding instruction
+    // did, emit debug location information to indicate that the debug
+    // location is now unknown.
+    MCSymbol *Label = NULL;
+    if (DL == PrevInstLoc)
+      Label = PrevLabel;
+    else {
+      Label = recordSourceLine(DL.getLine(), DL.getCol(), 0);
+      PrevInstLoc = DL;
+      PrevLabel = Label;
+    }
     return;
+  }
 
   MDNode *Scope = DL.getScope(Asm->MF->getFunction()->getContext());
   
@@ -2533,8 +2542,13 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
            AE = AbstractScopesList.end(); AI != AE; ++AI)
       constructScopeDIE(*AI);
     
-    constructScopeDIE(CurrentFnDbgScope);
+    DIE *CurFnDIE = constructScopeDIE(CurrentFnDbgScope);
     
+    if (!DisableFramePointerElim(*MF))
+      addUInt(CurFnDIE, dwarf::DW_AT_APPLE_omit_frame_ptr, 
+              dwarf::DW_FORM_flag, 1);
+
+
     DebugFrames.push_back(FunctionDebugFrameInfo(Asm->getFunctionNumber(),
                                                  MMI->getFrameMoves()));
   }
@@ -2562,23 +2576,28 @@ MCSymbol *DwarfDebug::recordSourceLine(unsigned Line, unsigned Col, MDNode *S) {
   StringRef Dir;
   StringRef Fn;
 
-  DIDescriptor Scope(S);
-  if (Scope.isCompileUnit()) {
-    DICompileUnit CU(S);
-    Dir = CU.getDirectory();
-    Fn = CU.getFilename();
-  } else if (Scope.isSubprogram()) {
-    DISubprogram SP(S);
-    Dir = SP.getDirectory();
-    Fn = SP.getFilename();
-  } else if (Scope.isLexicalBlock()) {
-    DILexicalBlock DB(S);
-    Dir = DB.getDirectory();
-    Fn = DB.getFilename();
-  } else
-    assert(0 && "Unexpected scope info");
+  unsigned Src = 1;
+  if (S) {
+    DIDescriptor Scope(S);
 
-  unsigned Src = GetOrCreateSourceID(Dir, Fn);
+    if (Scope.isCompileUnit()) {
+      DICompileUnit CU(S);
+      Dir = CU.getDirectory();
+      Fn = CU.getFilename();
+    } else if (Scope.isSubprogram()) {
+      DISubprogram SP(S);
+      Dir = SP.getDirectory();
+      Fn = SP.getFilename();
+    } else if (Scope.isLexicalBlock()) {
+      DILexicalBlock DB(S);
+      Dir = DB.getDirectory();
+      Fn = DB.getFilename();
+    } else
+      assert(0 && "Unexpected scope info");
+
+    Src = GetOrCreateSourceID(Dir, Fn);
+  }
+
   MCSymbol *Label = MMI->getContext().CreateTempSymbol();
   Lines.push_back(SrcLineInfo(Line, Col, Src, Label));
 
@@ -2964,8 +2983,6 @@ void DwarfDebug::emitDebugLines() {
       const SrcLineInfo &LineInfo = LineInfos[i];
       MCSymbol *Label = LineInfo.getLabel();
       if (!Label->isDefined()) continue; // Not emitted, in dead code.
-
-      if (LineInfo.getLine() == 0) continue;
 
       if (Asm->isVerbose()) {
         std::pair<unsigned, unsigned> SrcID =

@@ -128,6 +128,8 @@ def NoVFP     : Predicate<"!Subtarget->hasVFP2()">;
 def HasVFP2   : Predicate<"Subtarget->hasVFP2()">;
 def HasVFP3   : Predicate<"Subtarget->hasVFP3()">;
 def HasNEON   : Predicate<"Subtarget->hasNEON()">;
+def HasDivide : Predicate<"Subtarget->hasDivide()">;
+def HasT2ExtractPack : Predicate<"Subtarget->hasT2ExtractPack()">;
 def UseNEONForFP : Predicate<"Subtarget->useNEONForSinglePrecisionFP()">;
 def DontUseNEONForFP : Predicate<"!Subtarget->useNEONForSinglePrecisionFP()">;
 def IsThumb   : Predicate<"Subtarget->isThumb()">;

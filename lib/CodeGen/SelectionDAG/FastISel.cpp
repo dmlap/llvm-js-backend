@@ -84,6 +84,17 @@ unsigned FastISel::getRegForValue(const Value *V) {
   if (Reg != 0)
     return Reg;
 
+  // In bottom-up mode, just create the virtual register which will be used
+  // to hold the value. It will be materialized later.
+  if (IsBottomUp) {
+    Reg = createResultReg(TLI.getRegClassFor(VT));
+    if (isa<Instruction>(V))
+      ValueMap[V] = Reg;
+    else
+      LocalValueMap[V] = Reg;
+    return Reg;
+  }
+
   return materializeRegForValue(V, VT);
 }
 
@@ -782,7 +793,8 @@ FastISel::FastISel(MachineFunction &mf,
     TM(MF.getTarget()),
     TD(*TM.getTargetData()),
     TII(*TM.getInstrInfo()),
-    TLI(*TM.getTargetLowering()) {
+    TLI(*TM.getTargetLowering()),
+    IsBottomUp(false) {
 }
 
 FastISel::~FastISel() {}

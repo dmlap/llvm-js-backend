@@ -967,8 +967,8 @@ const SCEV *ScalarEvolution::getZeroExtendExpr(const SCEV *Op,
         } else if (isKnownNegative(Step)) {
           const SCEV *N = getConstant(APInt::getMaxValue(BitWidth) -
                                       getSignedRange(Step).getSignedMin());
-          if (isLoopBackedgeGuardedByCond(L, ICmpInst::ICMP_UGT, AR, N) &&
-              (isLoopEntryGuardedByCond(L, ICmpInst::ICMP_UGT, Start, N) ||
+          if (isLoopBackedgeGuardedByCond(L, ICmpInst::ICMP_UGT, AR, N) ||
+              (isLoopEntryGuardedByCond(L, ICmpInst::ICMP_UGT, Start, N) &&
                isLoopBackedgeGuardedByCond(L, ICmpInst::ICMP_UGT,
                                            AR->getPostIncExpr(*this), N)))
             // Return the expression with the addrec on the outside.
@@ -5049,15 +5049,13 @@ bool ScalarEvolution::isKnownPredicate(ICmpInst::Predicate Pred,
     if (isLoopEntryGuardedByCond(
           AR->getLoop(), Pred, AR->getStart(), RHS) &&
         isLoopBackedgeGuardedByCond(
-          AR->getLoop(), Pred,
-          getAddExpr(AR, AR->getStepRecurrence(*this)), RHS))
+          AR->getLoop(), Pred, AR->getPostIncExpr(*this), RHS))
       return true;
   if (const SCEVAddRecExpr *AR = dyn_cast<SCEVAddRecExpr>(RHS))
     if (isLoopEntryGuardedByCond(
           AR->getLoop(), Pred, LHS, AR->getStart()) &&
         isLoopBackedgeGuardedByCond(
-          AR->getLoop(), Pred,
-          LHS, getAddExpr(AR, AR->getStepRecurrence(*this))))
+          AR->getLoop(), Pred, LHS, AR->getPostIncExpr(*this)))
       return true;
 
   // Otherwise see what can be done with known constant ranges.

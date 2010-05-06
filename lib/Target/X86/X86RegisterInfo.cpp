@@ -37,7 +37,6 @@
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 using namespace llvm;
 
@@ -1307,7 +1306,7 @@ X86RegisterInfo::getInitialFrameState(std::vector<MachineMove> &Moves) const {
   // Calculate amount of bytes used for return address storing
   int stackGrowth = (Is64Bit ? -8 : -4);
 
-  // Initial state of the frame pointer is esp+4.
+  // Initial state of the frame pointer is esp+stackGrowth.
   MachineLocation Dst(MachineLocation::VirtualFP);
   MachineLocation Src(StackPtr, stackGrowth);
   Moves.push_back(MachineMove(0, Dst, Src));

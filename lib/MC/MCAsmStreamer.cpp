@@ -218,6 +218,7 @@ void MCAsmStreamer::SwitchSection(const MCSection *Section) {
 
 void MCAsmStreamer::EmitLabel(MCSymbol *Symbol) {
   assert(Symbol->isUndefined() && "Cannot define a symbol twice!");
+  assert(!Symbol->isVariable() && "Cannot emit a variable symbol!");
   assert(CurSection && "Cannot emit before setting section!");
 
   OS << *Symbol << ":";
@@ -234,16 +235,11 @@ void MCAsmStreamer::EmitAssemblerFlag(MCAssemblerFlag Flag) {
 }
 
 void MCAsmStreamer::EmitAssignment(MCSymbol *Symbol, const MCExpr *Value) {
-  // Only absolute symbols can be redefined.
-  assert((Symbol->isUndefined() || Symbol->isAbsolute()) &&
-         "Cannot define a symbol twice!");
-
   OS << *Symbol << " = " << *Value;
   EmitEOL();
 
   // FIXME: Lift context changes into super class.
-  // FIXME: Set associated section.
-  Symbol->setValue(Value);
+  Symbol->setVariableValue(Value);
 }
 
 void MCAsmStreamer::EmitSymbolAttribute(MCSymbol *Symbol,
