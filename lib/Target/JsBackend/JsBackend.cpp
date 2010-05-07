@@ -1108,6 +1108,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
       printType(Out, CPV->getType());
       Out << ")";
     }
+    Out << "["; // wrap arrays in an array to simulate pointers
     if (ConstantArray *CA = dyn_cast<ConstantArray>(CPV)) {
       printConstantArray(CA, Static);
     } else {
@@ -1125,6 +1126,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
       }
       Out << " }";
     }
+    Out << "]"; // wrap arrays in an array to simulate pointers
     break;
 
   case Type::VectorTyID:
@@ -3121,12 +3123,19 @@ bool JsTargetMachine::addPassesToEmitWholeFile(PassManager &PM,
                                               CodeGenOpt::Level OptLevel,
                                               bool DisableVerify) {
   if (FileType != TargetMachine::CGFT_AssemblyFile) return true;
+  switch(OptLevel) {
+  case CodeGenOpt::None:
+    PM.add(new JsBackendNameAllUsedStructsAndMergeFunctions());
+    PM.add(new JsWriter(o));
+    break;
+  default:
+    PM.add(createGCLoweringPass());
+    PM.add(createLowerInvokePass());
+    PM.add(createCFGSimplificationPass());   // clean up after lower invoke.
+    PM.add(new JsBackendNameAllUsedStructsAndMergeFunctions());
+    PM.add(new JsWriter(o));
+    PM.add(createGCInfoDeleter());
+  }
 
-  PM.add(createGCLoweringPass());
-  PM.add(createLowerInvokePass());
-  PM.add(createCFGSimplificationPass());   // clean up after lower invoke.
-  PM.add(new JsBackendNameAllUsedStructsAndMergeFunctions());
-  PM.add(new JsWriter(o));
-  PM.add(createGCInfoDeleter());
   return false;
 }

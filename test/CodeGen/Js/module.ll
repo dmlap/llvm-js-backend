@@ -1,5 +1,5 @@
 ; RUN: llvm-as < %s | llvm-dis > %t1
-; RUN: llc < %s -march=js -o %t2
+; RUN: llc < %s -march=js -o %t2.html
 ; RUN: llc < %s -march=js | FileCheck %s
 
 ; CHECK: <!doctype html>
@@ -13,7 +13,7 @@
 ; CHECK-NEXT: $w["<stdin>"] = {};
 ; CHECK-NEXT: var _ = $w["<stdin>"];
 
-; CHECK: var {{[_$A-z0-9]+}} = "Hello World";
+; CHECK: var {{[_$A-z0-9]+}} = ["Hello World"];
 @.str = private constant [12 x i8] c"Hello World\00", align 1 ; <[12 x i8]*> [#uses=1]
 
 ; CHECK: _.main = function main() {
