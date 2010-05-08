@@ -303,9 +303,7 @@ namespace {
       llvm_unreachable("Lowerinvoke pass didn't work!");
     }
 
-    void visitUnwindInst(UnwindInst &I) {
-      llvm_unreachable("Lowerinvoke pass didn't work!");
-    }
+    void visitUnwindInst(UnwindInst &I);
     void visitUnreachableInst(UnreachableInst &I);
 
     void visitPHINode(PHINode &I);
@@ -1945,8 +1943,6 @@ void JsWriter::printFunction(Function &F) {
     Out << "  var _ = '" << GetValueName(BB) << "'; /* jump variable */\n";
     Out << "  while(1) {\n";
     Out << "    switch(_) {\n";
-    Out << "      case '" << GetValueName(BB) << "':\n";
-
     if (Loop *L = LI->getLoopFor(BB)) {
       if (L->getHeader() == BB && L->getParentLoop() == 0)
         printLoop(L);
@@ -1959,7 +1955,6 @@ void JsWriter::printFunction(Function &F) {
     ++BB;
   }
   for(; BB != E; ++BB) {
-    Out << "      case '" << GetValueName(BB) << "':\n";
     if (Loop *L = LI->getLoopFor(BB)) {
       if (L->getHeader() == BB && L->getParentLoop() == 0)
         printLoop(L);
@@ -1974,8 +1969,6 @@ void JsWriter::printFunction(Function &F) {
 }
 
 void JsWriter::printLoop(Loop *L) {
-  Out << "  do {     /* Syntactic loop '" << L->getHeader()->getName()
-      << "' to make GCC happy */\n";
   for (unsigned i = 0, e = L->getBlocks().size(); i != e; ++i) {
     BasicBlock *BB = L->getBlocks()[i];
     Loop *BBLoop = LI->getLoopFor(BB);
@@ -1984,11 +1977,10 @@ void JsWriter::printLoop(Loop *L) {
     else if (BB == BBLoop->getHeader() && BBLoop->getParentLoop() == L)
       printLoop(BBLoop);
   }
-  Out << "  } while (1); /* end of syntactic loop '"
-      << L->getHeader()->getName() << "' */\n";
 }
 
 void JsWriter::printBasicBlock(BasicBlock *BB) {
+  Out << "      case '" << GetValueName(BB) << "':\n";
   // Output all of the instructions in the basic block...
   for (BasicBlock::iterator II = BB->begin(), E = --BB->end(); II != E;
        ++II) {
@@ -2043,24 +2035,20 @@ void JsWriter::visitReturnInst(ReturnInst &I) {
 }
 
 void JsWriter::visitSwitchInst(SwitchInst &SI) {
-
-  Out << "  switch (";
+  Out << "        switch (";
   writeOperand(SI.getOperand(0));
-  Out << ") {\n  default:\n";
-  printPHICopiesForSuccessor (SI.getParent(), SI.getDefaultDest(), 8);
-  printBranchToBlock(SI.getParent(), SI.getDefaultDest(), 2);
-  Out << ";\n";
+  Out << ") {\n          default:\n";
+  printPHICopiesForSuccessor (SI.getParent(), SI.getDefaultDest(), 12);
+  printBranchToBlock(SI.getParent(), SI.getDefaultDest(), 12);
   for (unsigned i = 2, e = SI.getNumOperands(); i != e; i += 2) {
-    Out << "  case ";
+    Out << "          case ";
     writeOperand(SI.getOperand(i));
     Out << ":\n";
     BasicBlock *Succ = cast<BasicBlock>(SI.getOperand(i+1));
-    printPHICopiesForSuccessor (SI.getParent(), Succ, 8);
-    printBranchToBlock(SI.getParent(), Succ, 2);
-    if (Function::iterator(Succ) == llvm::next(Function::iterator(SI.getParent())))
-      Out << "    break;\n";
+    printPHICopiesForSuccessor (SI.getParent(), Succ, 12);
+    printBranchToBlock(SI.getParent(), Succ, 12);
   }
-  Out << "  }\n";
+  Out << "        }\n";
 }
 
 void JsWriter::visitIndirectBrInst(IndirectBrInst &IBI) {
@@ -2070,7 +2058,11 @@ void JsWriter::visitIndirectBrInst(IndirectBrInst &IBI) {
 }
 
 void JsWriter::visitUnreachableInst(UnreachableInst &I) {
-  Out << "  /*UNREACHABLE*/;\n";
+  Out << "        throw 'unreachable code';\n";
+}
+
+void JsWriter::visitUnwindInst(UnwindInst &I) {
+  Out << "        throw 'unwind';\n";
 }
 
 bool JsWriter::isGotoCodeNecessary(BasicBlock *From, BasicBlock *To) {
