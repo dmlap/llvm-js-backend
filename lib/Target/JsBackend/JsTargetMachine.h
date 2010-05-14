@@ -1,11 +1,11 @@
-//=== JsTargetMachine.h - TargetMachine for the Javscript backend -*- js -*-===//
+//== JsTargetMachine.h - TargetMachine for the Javscript backend -*- C++ -*-==//
 //
 //                     The LLVM Compiler Infrastructure
 //
 // This file is distributed under the University of Illinois Open Source
 // License. See LICENSE.TXT for details.
 //
-//===----------------------------------------------------------------------===//
+//==------------------------------------------------------------------------==//
 //
 // This file declares the TargetMachine that is used by the Javascript backend.
 //
@@ -26,12 +26,11 @@ struct JsTargetMachine : public TargetMachine {
                    const std::string &FS)
     : TargetMachine(T) {}
 
-  virtual bool WantsWholeFile() const { return true; }
-  virtual bool addPassesToEmitWholeFile(PassManager &PM,
-                                        formatted_raw_ostream &Out,
-                                        CodeGenFileType FileType,
-                                        CodeGenOpt::Level OptLevel,
-                                        bool DisableVerify);
+  virtual bool addPassesToEmitFile(PassManagerBase &PM,
+				   formatted_raw_ostream &Out,
+				   CodeGenFileType FileType,
+				   CodeGenOpt::Level OptLevel,
+				   bool DisableVerify);
 
   virtual const TargetData *getTargetData() const { return 0; }
 };

@@ -3109,11 +3109,11 @@ void JsWriter::visitExtractValueInst(ExtractValueInst &EVI) {
 //                       External Interface declaration
 //===----------------------------------------------------------------------===//
 
-bool JsTargetMachine::addPassesToEmitWholeFile(PassManager &PM,
-                                              formatted_raw_ostream &o,
-                                              CodeGenFileType FileType,
-                                              CodeGenOpt::Level OptLevel,
-                                              bool DisableVerify) {
+bool JsTargetMachine::addPassesToEmitFile(PassManagerBase &PM,
+					  formatted_raw_ostream &o,
+					  CodeGenFileType FileType,
+					  CodeGenOpt::Level OptLevel,
+					  bool DisableVerify) {
   if (FileType != TargetMachine::CGFT_AssemblyFile) return true;
   switch(OptLevel) {
   case CodeGenOpt::None:
