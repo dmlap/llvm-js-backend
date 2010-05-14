@@ -460,7 +460,7 @@ bool SimpleRegisterCoalescing::RemoveCopyByCommutingDef(LiveInterval &IntA,
     unsigned SrcReg, DstReg, SrcSubIdx, DstSubIdx;
     if (!tii_->isMoveInstr(*UseMI, SrcReg, DstReg, SrcSubIdx, DstSubIdx))
       continue;
-    if (DstReg == IntB.reg) {
+    if (DstReg == IntB.reg && DstSubIdx == 0) {
       // This copy will become a noop. If it's defining a new val#,
       // remove that val# as well. However this live range is being
       // extended to the end of the existing live range defined by the copy.
@@ -624,7 +624,7 @@ SimpleRegisterCoalescing::TrimLiveIntervalToLastUse(SlotIndex CopyIdx,
     LR->valno->addKill(LastUseIdx.getDefIndex());
     unsigned SrcReg, DstReg, SrcSubIdx, DstSubIdx;
     if (tii_->isMoveInstr(*LastUseMI, SrcReg, DstReg, SrcSubIdx, DstSubIdx) &&
-        DstReg == li.reg) {
+        DstReg == li.reg && DstSubIdx == 0) {
       // Last use is itself an identity code.
       int DeadIdx = LastUseMI->findRegisterDefOperandIdx(li.reg, false, tri_);
       LastUseMI->getOperand(DeadIdx).setIsDead();
@@ -810,6 +810,8 @@ SimpleRegisterCoalescing::UpdateRegDefsUses(unsigned SrcReg, unsigned DstReg,
       unsigned CopySrcReg, CopyDstReg, CopySrcSubIdx, CopyDstSubIdx;
       if (tii_->isMoveInstr(*UseMI, CopySrcReg, CopyDstReg,
                             CopySrcSubIdx, CopyDstSubIdx) &&
+          CopySrcSubIdx == 0 &&
+          CopyDstSubIdx == 0 &&
           CopySrcReg != CopyDstReg &&
           CopySrcReg == SrcReg && CopyDstReg != UseDstReg) {
         // If the use is a copy and it won't be coalesced away, and its source
@@ -1255,7 +1257,12 @@ SimpleRegisterCoalescing::CanJoinExtractSubRegToPhysReg(unsigned DstReg,
                                                unsigned &RealDstReg) {
   const TargetRegisterClass *RC = mri_->getRegClass(SrcReg);
   RealDstReg = tri_->getMatchingSuperReg(DstReg, SubIdx, RC);
-  assert(RealDstReg && "Invalid extract_subreg instruction!");
+  if (!RealDstReg) {
+    DEBUG(dbgs() << "\tIncompatible source regclass: "
+                 << "none of the super-registers of " << tri_->getName(DstReg)
+                 << " are in " << RC->getName() << ".\n");
+    return false;
+  }
 
   LiveInterval &RHS = li_->getInterval(SrcReg);
   // For this type of EXTRACT_SUBREG, conservatively
@@ -1293,7 +1300,12 @@ SimpleRegisterCoalescing::CanJoinInsertSubRegToPhysReg(unsigned DstReg,
                                                unsigned &RealSrcReg) {
   const TargetRegisterClass *RC = mri_->getRegClass(DstReg);
   RealSrcReg = tri_->getMatchingSuperReg(SrcReg, SubIdx, RC);
-  assert(RealSrcReg && "Invalid extract_subreg instruction!");
+  if (!RealSrcReg) {
+    DEBUG(dbgs() << "\tIncompatible destination regclass: "
+                 << "none of the super-registers of " << tri_->getName(SrcReg)
+                 << " are in " << RC->getName() << ".\n");
+    return false;
+  }
 
   LiveInterval &LHS = li_->getInterval(DstReg);
   if (li_->hasInterval(RealSrcReg) &&
@@ -1419,7 +1431,8 @@ bool SimpleRegisterCoalescing::JoinCopy(CopyRec &TheCopy, bool &Again) {
     assert(DstSubRC && "Illegal subregister index");
     if (!DstSubRC->contains(SrcSubReg)) {
       DEBUG(dbgs() << "\tIncompatible destination regclass: "
-                   << tri_->getName(SrcSubReg) << " not in "
+                   << "none of the super-registers of "
+                   << tri_->getName(SrcSubReg) << " are in "
                    << DstSubRC->getName() << ".\n");
       return false;             // Not coalescable.
     }
@@ -1436,7 +1449,8 @@ bool SimpleRegisterCoalescing::JoinCopy(CopyRec &TheCopy, bool &Again) {
     assert(SrcSubRC && "Illegal subregister index");
     if (!SrcSubRC->contains(DstSubReg)) {
       DEBUG(dbgs() << "\tIncompatible source regclass: "
-                   << tri_->getName(DstSubReg) << " not in "
+                   << "none of the super-registers of "
+                   << tri_->getName(DstSubReg) << " are in "
                    << SrcSubRC->getName() << ".\n");
       (void)DstSubReg;
       return false;             // Not coalescable.
@@ -2625,7 +2639,7 @@ SimpleRegisterCoalescing::lastRegisterUse(SlotIndex Start,
       MachineInstr *UseMI = Use.getParent();
       unsigned SrcReg, DstReg, SrcSubIdx, DstSubIdx;
       if (tii_->isMoveInstr(*UseMI, SrcReg, DstReg, SrcSubIdx, DstSubIdx) &&
-          SrcReg == DstReg)
+          SrcReg == DstReg && SrcSubIdx == DstSubIdx)
         // Ignore identity copies.
         continue;
       SlotIndex Idx = li_->getInstructionIndex(UseMI);
@@ -2654,7 +2668,7 @@ SimpleRegisterCoalescing::lastRegisterUse(SlotIndex Start,
     // Ignore identity copies.
     unsigned SrcReg, DstReg, SrcSubIdx, DstSubIdx;
     if (!(tii_->isMoveInstr(*MI, SrcReg, DstReg, SrcSubIdx, DstSubIdx) &&
-          SrcReg == DstReg))
+          SrcReg == DstReg && SrcSubIdx == DstSubIdx))
       for (unsigned i = 0, NumOps = MI->getNumOperands(); i != NumOps; ++i) {
         MachineOperand &Use = MI->getOperand(i);
         if (Use.isReg() && Use.isUse() && Use.getReg() &&
@@ -2785,7 +2799,7 @@ bool SimpleRegisterCoalescing::runOnMachineFunction(MachineFunction &fn) {
 
       // If the move will be an identity move delete it
       bool isMove= tii_->isMoveInstr(*MI, SrcReg, DstReg, SrcSubIdx, DstSubIdx);
-      if (isMove && SrcReg == DstReg) {
+      if (isMove && SrcReg == DstReg && SrcSubIdx == DstSubIdx) {
         if (li_->hasInterval(SrcReg)) {
           LiveInterval &RegInt = li_->getInterval(SrcReg);
           // If def of this move instruction is dead, remove its live range

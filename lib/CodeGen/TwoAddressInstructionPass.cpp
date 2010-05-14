@@ -1048,7 +1048,8 @@ bool TwoAddressInstructionPass::runOnMachineFunction(MachineFunction &MF) {
             ReMatRegs.set(regB);
             ++NumReMats;
           } else {
-            bool Emitted = TII->copyRegToReg(*mbbi, mi, regA, regB, rc, rc);
+            bool Emitted = TII->copyRegToReg(*mbbi, mi, regA, regB, rc, rc,
+                                             mi->getDebugLoc());
             (void)Emitted;
             assert(Emitted && "Unable to issue a copy instruction!\n");
           }
@@ -1134,10 +1135,11 @@ static void UpdateRegSequenceSrcs(unsigned SrcReg,
                                   unsigned DstReg, unsigned SrcIdx,
                                   MachineRegisterInfo *MRI) {
   for (MachineRegisterInfo::reg_iterator RI = MRI->reg_begin(SrcReg),
-         UE = MRI->reg_end(); RI != UE; ) {
+         RE = MRI->reg_end(); RI != RE; ) {
     MachineOperand &MO = RI.getOperand();
     ++RI;
     MO.setReg(DstReg);
+    assert(MO.getSubReg() == 0);
     MO.setSubReg(SrcIdx);
   }
 }
@@ -1163,6 +1165,8 @@ bool TwoAddressInstructionPass::EliminateRegSequences() {
       DEBUG(dbgs() << "Illegal REG_SEQUENCE instruction:" << *MI);
       llvm_unreachable(0);
     }
+
+    SmallSet<unsigned, 4> Seen;
     for (unsigned i = 1, e = MI->getNumOperands(); i < e; i += 2) {
       unsigned SrcReg = MI->getOperand(i).getReg();
       if (MI->getOperand(i).getSubReg() ||
@@ -1170,6 +1174,42 @@ bool TwoAddressInstructionPass::EliminateRegSequences() {
         DEBUG(dbgs() << "Illegal REG_SEQUENCE instruction:" << *MI);
         llvm_unreachable(0);
       }
+
+      MachineInstr *DefMI = MRI->getVRegDef(SrcReg);
+      if (!Seen.insert(SrcReg) || MI->getParent() != DefMI->getParent()) {
+        // REG_SEQUENCE cannot have duplicated operands, add a copy.
+        // Also add an copy if the source if live-in the block. We don't want
+        // to end up with a partial-redef of a livein, e.g.
+        // BB0:
+        // reg1051:10<def> =
+        // ...
+        // BB1:
+        // ... = reg1051:10
+        // BB2:
+        // reg1051:9<def> =
+        // LiveIntervalAnalysis won't like it.
+        const TargetRegisterClass *RC = MRI->getRegClass(SrcReg);
+        unsigned NewReg = MRI->createVirtualRegister(RC);
+        MachineBasicBlock::iterator InsertLoc = MI;
+        bool Emitted =
+          TII->copyRegToReg(*MI->getParent(), InsertLoc, NewReg, SrcReg, RC, RC,
+                            MI->getDebugLoc());
+        (void)Emitted;
+        assert(Emitted && "Unable to issue a copy instruction!\n");
+        MI->getOperand(i).setReg(NewReg);
+        if (MI->getOperand(i).isKill()) {
+          MachineBasicBlock::iterator CopyMI = prior(InsertLoc);
+          MachineOperand *KillMO = CopyMI->findRegisterUseOperand(SrcReg);
+          KillMO->setIsKill();
+          if (LV)
+            // Update live variables
+            LV->replaceKillInstruction(SrcReg, MI, &*CopyMI);
+        }
+      }
+    }
+
+    for (unsigned i = 1, e = MI->getNumOperands(); i < e; i += 2) {
+      unsigned SrcReg = MI->getOperand(i).getReg();
       unsigned SrcIdx = MI->getOperand(i+1).getImm();
       UpdateRegSequenceSrcs(SrcReg, DstReg, SrcIdx, MRI);
     }
@@ -1178,5 +1218,6 @@ bool TwoAddressInstructionPass::EliminateRegSequences() {
     MI->eraseFromParent();
   }
 
+  RegSequences.clear();
   return true;
 }

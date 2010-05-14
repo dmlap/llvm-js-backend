@@ -3726,6 +3726,12 @@ SelectionDAGBuilder::EmitFuncArgumentDbgValue(const DbgValueInst &DI,
   return true;
 }
 
+// VisualStudio defines setjmp as _setjmp
+#if defined(_MSC_VER) && defined(setjmp)
+#define setjmp_undefined_for_visual_studio
+#undef setjmp
+#endif
+
 /// visitIntrinsicCall - Lower the call to the specified intrinsic function.  If
 /// we want to emit this as a call to a named external function, return the name
 /// otherwise lower it and return null.
@@ -3818,7 +3824,7 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
   }
   case Intrinsic::dbg_declare: {
     const DbgDeclareInst &DI = cast<DbgDeclareInst>(I);
-    if (!DIDescriptor::ValidDebugInfo(DI.getVariable(), CodeGenOpt::None))
+    if (!DIVariable(DI.getVariable()).Verify())
       return 0;
 
     MDNode *Variable = DI.getVariable();
@@ -3881,7 +3887,7 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
   }
   case Intrinsic::dbg_value: {
     const DbgValueInst &DI = cast<DbgValueInst>(I);
-    if (!DIDescriptor::ValidDebugInfo(DI.getVariable(), CodeGenOpt::None))
+    if (!DIVariable(DI.getVariable()).Verify())
       return 0;
 
     MDNode *Variable = DI.getVariable();
@@ -4938,7 +4944,7 @@ isAllocatableRegister(unsigned Reg, MachineFunction &MF,
 namespace llvm {
 /// AsmOperandInfo - This contains information for each constraint that we are
 /// lowering.
-class VISIBILITY_HIDDEN SDISelAsmOperandInfo :
+class LLVM_LIBRARY_VISIBILITY SDISelAsmOperandInfo :
     public TargetLowering::AsmOperandInfo {
 public:
   /// CallOperand - If this is the result output operand or a clobber

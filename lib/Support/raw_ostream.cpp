@@ -400,21 +400,27 @@ raw_fd_ostream::raw_fd_ostream(const char *Filename, std::string &ErrorInfo,
   if (Flags & F_Excl)
     OpenFlags |= O_EXCL;
 
-  FD = open(Filename, OpenFlags, 0664);
-  if (FD < 0) {
-    ErrorInfo = "Error opening output file '" + std::string(Filename) + "'";
-    ShouldClose = false;
-  } else {
-    ShouldClose = true;
+  while ((FD = open(Filename, OpenFlags, 0664)) < 0) {
+    if (errno != EINTR) {
+      ErrorInfo = "Error opening output file '" + std::string(Filename) + "'";
+      ShouldClose = false;
+      return;
+    }
   }
+
+  // Ok, we successfully opened the file, so it'll need to be closed.
+  ShouldClose = true;
 }
 
 raw_fd_ostream::~raw_fd_ostream() {
   if (FD < 0) return;
   flush();
   if (ShouldClose)
-    if (::close(FD) != 0)
-      error_detected();
+    while (::close(FD) != 0)
+      if (errno != EINTR) {
+        error_detected();
+        break;
+      }
 }
 
 
@@ -422,19 +428,45 @@ void raw_fd_ostream::write_impl(const char *Ptr, size_t Size) {
   assert(FD >= 0 && "File already closed.");
   pos += Size;
   ssize_t ret;
+
   do {
     ret = ::write(FD, Ptr, Size);
-  } while (ret < 0 && (errno == EAGAIN || errno == EINTR));
-  if (ret != (ssize_t) Size)
-    error_detected();
+
+    if (ret < 0) {
+      // If it's a recoverable error, swallow it and retry the write.
+      // EAGAIN and EWOULDBLOCK are not unambiguously recoverable, but
+      // some programs, such as bjam, assume that their child processes
+      // will treat them as if they are. If you don't want this code to
+      // spin, don't use O_NONBLOCK file descriptors with raw_ostream.
+      if (errno == EINTR || errno == EAGAIN
+#ifdef EWOULDBLOCK
+          || errno == EWOULDBLOCK
+#endif
+          )
+        continue;
+
+      // Otherwise it's a non-recoverable error. Note it and quit.
+      error_detected();
+      break;
+    }
+
+    // The write may have written some or all of the data. Update the
+    // size and buffer pointer to reflect the remainder that needs
+    // to be written. If there are no bytes left, we're done.
+    Ptr += ret;
+    Size -= ret;
+  } while (Size > 0);
 }
 
 void raw_fd_ostream::close() {
   assert(ShouldClose);
   ShouldClose = false;
   flush();
-  if (::close(FD) != 0)
-    error_detected();
+  while (::close(FD) != 0)
+    if (errno != EINTR) {
+      error_detected();
+      break;
+    }
   FD = -1;
 }
 

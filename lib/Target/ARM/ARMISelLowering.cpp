@@ -266,6 +266,11 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
     addQRTypeForNEON(MVT::v4i32);
     addQRTypeForNEON(MVT::v2i64);
 
+    // Map v4i64 to QQ registers but do not make the type legal for any
+    // operations. v4i64 is only used for REG_SEQUENCE to load / store quad
+    // D registers.
+    addRegisterClass(MVT::v4i64, ARM::QQPRRegisterClass);
+
     // v2f64 is legal so that QR subregs can be extracted as f64 elements, but
     // neither Neon nor VFP support any arithmetic operations on it.
     setOperationAction(ISD::FADD, MVT::v2f64, Expand);
@@ -379,6 +384,8 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
   setOperationAction(ISD::GlobalTLSAddress, MVT::i32, Custom);
   setOperationAction(ISD::BlockAddress, MVT::i32, Custom);
 
+  setOperationAction(ISD::TRAP, MVT::Other, Legal);
+
   // Use the default implementation.
   setOperationAction(ISD::VASTART,            MVT::Other, Custom);
   setOperationAction(ISD::VAARG,              MVT::Other, Expand);
@@ -393,8 +400,11 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
   setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i32, Expand);
   setOperationAction(ISD::MEMBARRIER,         MVT::Other, Custom);
 
-  if (!Subtarget->hasV6Ops() && (!Subtarget->isThumb2()
-      || !Subtarget->hasT2ExtractPack())) {
+  // If the subtarget does not have extract instructions, sign_extend_inreg
+  // needs to be expanded. Extract is available in ARM mode on v6 and up,
+  // and on most Thumb2 implementations.
+  if ((!Subtarget->isThumb() && !Subtarget->hasV6Ops())
+      || (Subtarget->isThumb2() && !Subtarget->hasT2ExtractPack())) {
     setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i16, Expand);
     setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i8,  Expand);
   }
@@ -2112,116 +2122,6 @@ SDValue ARMTargetLowering::LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const {
     FrameAddr = DAG.getLoad(VT, dl, DAG.getEntryNode(), FrameAddr, NULL, 0,
                             false, false, 0);
   return FrameAddr;
-}
-
-SDValue
-ARMTargetLowering::EmitTargetCodeForMemcpy(SelectionDAG &DAG, DebugLoc dl,
-                                           SDValue Chain,
-                                           SDValue Dst, SDValue Src,
-                                           SDValue Size, unsigned Align,
-                                           bool isVolatile, bool AlwaysInline,
-                                           const Value *DstSV,
-                                           uint64_t DstSVOff,
-                                           const Value *SrcSV,
-                                           uint64_t SrcSVOff) const {
-  // Do repeated 4-byte loads and stores. To be improved.
-  // This requires 4-byte alignment.
-  if ((Align & 3) != 0)
-    return SDValue();
-  // This requires the copy size to be a constant, preferrably
-  // within a subtarget-specific limit.
-  ConstantSDNode *ConstantSize = dyn_cast<ConstantSDNode>(Size);
-  if (!ConstantSize)
-    return SDValue();
-  uint64_t SizeVal = ConstantSize->getZExtValue();
-  if (!AlwaysInline && SizeVal > getSubtarget()->getMaxInlineSizeThreshold())
-    return SDValue();
-
-  unsigned BytesLeft = SizeVal & 3;
-  unsigned NumMemOps = SizeVal >> 2;
-  unsigned EmittedNumMemOps = 0;
-  EVT VT = MVT::i32;
-  unsigned VTSize = 4;
-  unsigned i = 0;
-  const unsigned MAX_LOADS_IN_LDM = 6;
-  SDValue TFOps[MAX_LOADS_IN_LDM];
-  SDValue Loads[MAX_LOADS_IN_LDM];
-  uint64_t SrcOff = 0, DstOff = 0;
-
-  // Emit up to MAX_LOADS_IN_LDM loads, then a TokenFactor barrier, then the
-  // same number of stores.  The loads and stores will get combined into
-  // ldm/stm later on.
-  while (EmittedNumMemOps < NumMemOps) {
-    for (i = 0;
-         i < MAX_LOADS_IN_LDM && EmittedNumMemOps + i < NumMemOps; ++i) {
-      Loads[i] = DAG.getLoad(VT, dl, Chain,
-                             DAG.getNode(ISD::ADD, dl, MVT::i32, Src,
-                                         DAG.getConstant(SrcOff, MVT::i32)),
-                             SrcSV, SrcSVOff + SrcOff, isVolatile, false, 0);
-      TFOps[i] = Loads[i].getValue(1);
-      SrcOff += VTSize;
-    }
-    Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, &TFOps[0], i);
-
-    for (i = 0;
-         i < MAX_LOADS_IN_LDM && EmittedNumMemOps + i < NumMemOps; ++i) {
-      TFOps[i] = DAG.getStore(Chain, dl, Loads[i],
-                              DAG.getNode(ISD::ADD, dl, MVT::i32, Dst,
-                                          DAG.getConstant(DstOff, MVT::i32)),
-                              DstSV, DstSVOff + DstOff, isVolatile, false, 0);
-      DstOff += VTSize;
-    }
-    Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, &TFOps[0], i);
-
-    EmittedNumMemOps += i;
-  }
-
-  if (BytesLeft == 0)
-    return Chain;
-
-  // Issue loads / stores for the trailing (1 - 3) bytes.
-  unsigned BytesLeftSave = BytesLeft;
-  i = 0;
-  while (BytesLeft) {
-    if (BytesLeft >= 2) {
-      VT = MVT::i16;
-      VTSize = 2;
-    } else {
-      VT = MVT::i8;
-      VTSize = 1;
-    }
-
-    Loads[i] = DAG.getLoad(VT, dl, Chain,
-                           DAG.getNode(ISD::ADD, dl, MVT::i32, Src,
-                                       DAG.getConstant(SrcOff, MVT::i32)),
-                           SrcSV, SrcSVOff + SrcOff, false, false, 0);
-    TFOps[i] = Loads[i].getValue(1);
-    ++i;
-    SrcOff += VTSize;
-    BytesLeft -= VTSize;
-  }
-  Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, &TFOps[0], i);
-
-  i = 0;
-  BytesLeft = BytesLeftSave;
-  while (BytesLeft) {
-    if (BytesLeft >= 2) {
-      VT = MVT::i16;
-      VTSize = 2;
-    } else {
-      VT = MVT::i8;
-      VTSize = 1;
-    }
-
-    TFOps[i] = DAG.getStore(Chain, dl, Loads[i],
-                            DAG.getNode(ISD::ADD, dl, MVT::i32, Dst,
-                                        DAG.getConstant(DstOff, MVT::i32)),
-                            DstSV, DstSVOff + DstOff, false, false, 0);
-    ++i;
-    DstOff += VTSize;
-    BytesLeft -= VTSize;
-  }
-  return DAG.getNode(ISD::TokenFactor, dl, MVT::Other, &TFOps[0], i);
 }
 
 /// ExpandBIT_CONVERT - If the target supports VFP, this function is called to

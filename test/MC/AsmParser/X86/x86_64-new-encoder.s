@@ -52,3 +52,27 @@ testq %rax, %rbx
 // CHECK: cmpq	%rbx, %r14
 // CHECK:   encoding: [0x49,0x39,0xde]
         cmpq %rbx, %r14
+
+// rdar://7947167
+
+movsq
+// CHECK: movsq
+// CHECK:   encoding: [0x48,0xa5]
+
+movsl
+// CHECK: movsl
+// CHECK:   encoding: [0xa5]
+
+stosq
+// CHECK: stosq
+// CHECK:   encoding: [0x48,0xab]
+stosl
+// CHECK: stosl
+// CHECK:   encoding: [0xab]
+
+
+// Not moffset forms of moves, they are x86-32 only! rdar://7947184
+movb	0, %al    // CHECK: movb 0, %al # encoding: [0x8a,0x04,0x25,A,A,A,A]
+movw	0, %ax    // CHECK: movw 0, %ax # encoding: [0x66,0x8b,0x04,0x25,A,A,A,A]
+movl	0, %eax   // CHECK: movl 0, %eax # encoding: [0x8b,0x04,0x25,A,A,A,A]
+

@@ -162,6 +162,12 @@ public:
   /// register or null if none is found.  This assumes that the code is in SSA
   /// form, so there should only be one definition.
   MachineInstr *getVRegDef(unsigned Reg) const;
+
+  /// clearKillFlags - Iterate over all the uses of the given register and
+  /// clear the kill flag from the MachineOperand. This function is used by
+  /// optimization passes which extend register lifetimes and need only
+  /// preserve conservative kill flag information.
+  void clearKillFlags(unsigned Reg) const;
   
 #ifndef NDEBUG
   void dumpUses(unsigned RegNo) const;
@@ -229,11 +235,18 @@ public:
   /// setPhysRegUsed - Mark the specified register used in this function.
   /// This should only be called during and after register allocation.
   void setPhysRegUsed(unsigned Reg) { UsedPhysRegs[Reg] = true; }
-  
+
+  /// addPhysRegsUsed - Mark the specified registers used in this function.
+  /// This should only be called during and after register allocation.
+  void addPhysRegsUsed(const BitVector &Regs) { UsedPhysRegs |= Regs; }
+
   /// setPhysRegUnused - Mark the specified register unused in this function.
   /// This should only be called during and after register allocation.
   void setPhysRegUnused(unsigned Reg) { UsedPhysRegs[Reg] = false; }
-  
+
+  /// closePhysRegsUsed - Expand UsedPhysRegs to its transitive closure over
+  /// subregisters. That means that if R is used, so are all subregisters.
+  void closePhysRegsUsed(const TargetRegisterInfo&);
 
   //===--------------------------------------------------------------------===//
   // LiveIn/LiveOut Management

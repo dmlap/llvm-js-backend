@@ -677,11 +677,16 @@ void SlotTracker::processFunction() {
       if (!I->getType()->isVoidTy() && !I->hasName())
         CreateFunctionSlot(I);
       
-      // Intrinsics can directly use metadata.
-      if (isa<IntrinsicInst>(I))
-        for (unsigned i = 0, e = I->getNumOperands(); i != e; ++i)
-          if (MDNode *N = dyn_cast_or_null<MDNode>(I->getOperand(i)))
-            CreateMetadataSlot(N);
+      // Intrinsics can directly use metadata.  We allow direct calls to any
+      // llvm.foo function here, because the target may not be linked into the
+      // optimizer.
+      if (const CallInst *CI = dyn_cast<CallInst>(I)) {
+        if (Function *F = CI->getCalledFunction())
+          if (F->getName().startswith("llvm."))
+            for (unsigned i = 0, e = I->getNumOperands(); i != e; ++i)
+              if (MDNode *N = dyn_cast_or_null<MDNode>(I->getOperand(i)))
+                CreateMetadataSlot(N);
+      }
 
       // Process metadata attached with this instruction.
       I->getAllMetadata(MDForInst);
@@ -2024,9 +2029,9 @@ static void WriteMDNodeComment(const MDNode *Node,
     return;
   ConstantInt *CI = dyn_cast_or_null<ConstantInt>(Node->getOperand(0));
   if (!CI) return;
-  unsigned Val = CI->getZExtValue();
-  unsigned Tag = Val & ~LLVMDebugVersionMask;
-  if (Val < LLVMDebugVersion)
+  APInt Val = CI->getValue();
+  APInt Tag = Val & ~APInt(Val.getBitWidth(), LLVMDebugVersionMask);
+  if (Val.ult(LLVMDebugVersion))
     return;
   
   Out.PadToColumn(50);
@@ -2040,8 +2045,10 @@ static void WriteMDNodeComment(const MDNode *Node,
     Out << "; [ DW_TAG_vector_type ]";
   else if (Tag == dwarf::DW_TAG_user_base)
     Out << "; [ DW_TAG_user_base ]";
-  else if (const char *TagName = dwarf::TagString(Tag))
-    Out << "; [ " << TagName << " ]";
+  else if (Tag.isIntN(32)) {
+    if (const char *TagName = dwarf::TagString(Tag.getZExtValue()))
+      Out << "; [ " << TagName << " ]";
+  }
 }
 
 void AssemblyWriter::writeAllMDNodes() {

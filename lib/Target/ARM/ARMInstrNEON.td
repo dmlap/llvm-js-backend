@@ -123,11 +123,6 @@ def VLDMQ
   : AXDI5<(outs QPR:$dst), (ins addrmode5:$addr, pred:$p),
           IndexModeNone, IIC_fpLoadm,
           "vldm${addr:submode}${p}\t${addr:base}, ${dst:dregpair}", "", []>;
-def VLDMQ_UPD
-  : AXDI5<(outs QPR:$dst, GPR:$wb), (ins addrmode5:$addr, pred:$p),
-          IndexModeUpd, IIC_fpLoadm,
-          "vldm${addr:submode}${p}\t${addr:base}!, ${dst:dregpair}",
-          "$addr.base = $wb", []>;
 
 // Use vld1 to load a Q register as a D register pair.
 // This alternative to VLDMQ allows an alignment to be specified.
@@ -135,10 +130,6 @@ def VLDMQ_UPD
 def VLD1q
   : NLdSt<0,0b10,0b1010,0b1100, (outs QPR:$dst), (ins addrmode6:$addr),
           IIC_VLD1, "vld1", "64", "${dst:dregpair}, $addr", "", []>;
-def VLD1q_UPD
-  : NLdSt<0,0b10,0b1010,0b1100, (outs QPR:$dst, GPR:$wb),
-          (ins addrmode6:$addr, am6offset:$offset), IIC_VLD1, "vld1", "64",
-          "${dst:dregpair}, $addr$offset", "$addr.addr = $wb", []>;
 } // mayLoad = 1
 
 let mayStore = 1 in {
@@ -149,11 +140,6 @@ def VSTMQ
   : AXDI5<(outs), (ins QPR:$src, addrmode5:$addr, pred:$p),
           IndexModeNone, IIC_fpStorem,
           "vstm${addr:submode}${p}\t${addr:base}, ${src:dregpair}", "", []>;
-def VSTMQ_UPD
-  : AXDI5<(outs GPR:$wb), (ins QPR:$src, addrmode5:$addr, pred:$p),
-          IndexModeUpd, IIC_fpStorem,
-          "vstm${addr:submode}${p}\t${addr:base}!, ${src:dregpair}",
-          "$addr.base = $wb", []>;
 
 // Use vst1 to store a Q register as a D register pair.
 // This alternative to VSTMQ allows an alignment to be specified.
@@ -161,11 +147,6 @@ def VSTMQ_UPD
 def VST1q
   : NLdSt<0,0b00,0b1010,0b1100, (outs), (ins addrmode6:$addr, QPR:$src),
           IIC_VST, "vst1", "64", "${src:dregpair}, $addr", "", []>;
-def VST1q_UPD
-  : NLdSt<0,0b00,0b1010,0b1100, (outs GPR:$wb),
-          (ins addrmode6:$addr, am6offset:$offset, QPR:$src),
-          IIC_VST, "vst1", "64", "{$src:dregpair}, $addr$offset",
-          "$addr.addr = $wb", []>;
 } // mayStore = 1
 
 let mayLoad = 1, hasExtraDefRegAllocReq = 1 in {
@@ -2829,10 +2810,17 @@ def  VSWPq    : N2VX<0b11, 0b11, 0b00, 0b10, 0b00000, 1, 0,
 
 //   VMOV     : Vector Move (Register)
 
+let neverHasSideEffects = 1 in {
 def  VMOVDneon: N3VX<0, 0, 0b10, 0b0001, 0, 1, (outs DPR:$dst), (ins DPR:$src),
                      N3RegFrm, IIC_VMOVD, "vmov", "$dst, $src", "", []>;
 def  VMOVQ    : N3VX<0, 0, 0b10, 0b0001, 1, 1, (outs QPR:$dst), (ins QPR:$src),
                      N3RegFrm, IIC_VMOVD, "vmov", "$dst, $src", "", []>;
+
+// Pseudo vector move instruction for QQ (a pair of Q) registers. This should
+// be expanded after register allocation is completed.
+def  VMOVQQ   : PseudoInst<(outs QQPR:$dst), (ins QQPR:$src),
+                NoItinerary, "@ vmov\t$dst, $src", []>;
+} // neverHasSideEffects
 
 //   VMOV     : Vector Move (Immediate)
 

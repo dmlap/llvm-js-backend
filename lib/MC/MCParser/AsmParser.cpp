@@ -703,6 +703,8 @@ bool AsmParser::ParseStatement() {
       return ParseDirectiveDarwinSymbolDesc();
     if (IDVal == ".lsym")
       return ParseDirectiveDarwinLsym();
+    if (IDVal == ".tbss")
+      return ParseDirectiveDarwinTBSS();
 
     if (IDVal == ".subsections_via_symbols")
       return ParseDirectiveDarwinSubsectionsViaSymbols();
@@ -1316,7 +1318,7 @@ bool AsmParser::ParseDirectiveComm(bool IsLocal) {
     return Error(SizeLoc, "invalid '.comm' or '.lcomm' directive size, can't "
                  "be less than zero");
 
-  // NOTE: The alignment in the directive is a power of 2 value, the assember
+  // NOTE: The alignment in the directive is a power of 2 value, the assembler
   // may internally end up wanting an alignment in bytes.
   // FIXME: Diagnose overflow.
   if (Pow2Alignment < 0)
@@ -1344,22 +1346,18 @@ bool AsmParser::ParseDirectiveComm(bool IsLocal) {
 ///  ::= .zerofill segname , sectname [, identifier , size_expression [
 ///      , align_expression ]]
 bool AsmParser::ParseDirectiveDarwinZerofill() {
-  // FIXME: Handle quoted names here.
-
-  if (Lexer.isNot(AsmToken::Identifier))
+  StringRef Segment;
+  if (ParseIdentifier(Segment))
     return TokError("expected segment name after '.zerofill' directive");
-  StringRef Segment = getTok().getString();
-  Lex();
 
   if (Lexer.isNot(AsmToken::Comma))
     return TokError("unexpected token in directive");
   Lex();
- 
-  if (Lexer.isNot(AsmToken::Identifier))
+
+  StringRef Section;
+  if (ParseIdentifier(Section))
     return TokError("expected section name after comma in '.zerofill' "
                     "directive");
-  StringRef Section = getTok().getString();
-  Lex();
 
   // If this is the end of the line all that was wanted was to create the
   // the section but with no symbol.
@@ -1375,13 +1373,13 @@ bool AsmParser::ParseDirectiveDarwinZerofill() {
     return TokError("unexpected token in directive");
   Lex();
 
-  if (Lexer.isNot(AsmToken::Identifier))
+  SMLoc IDLoc = Lexer.getLoc();
+  StringRef IDStr;
+  if (ParseIdentifier(IDStr))
     return TokError("expected identifier in directive");
   
   // handle the identifier as the key symbol.
-  SMLoc IDLoc = Lexer.getLoc();
-  MCSymbol *Sym = CreateSymbol(getTok().getString());
-  Lex();
+  MCSymbol *Sym = CreateSymbol(IDStr);
 
   if (Lexer.isNot(AsmToken::Comma))
     return TokError("unexpected token in directive");
@@ -1410,7 +1408,7 @@ bool AsmParser::ParseDirectiveDarwinZerofill() {
     return Error(SizeLoc, "invalid '.zerofill' directive size, can't be less "
                  "than zero");
 
-  // NOTE: The alignment in the directive is a power of 2 value, the assember
+  // NOTE: The alignment in the directive is a power of 2 value, the assembler
   // may internally end up wanting an alignment in bytes.
   // FIXME: Diagnose overflow.
   if (Pow2Alignment < 0)
@@ -1428,6 +1426,61 @@ bool AsmParser::ParseDirectiveDarwinZerofill() {
                                        SectionKind::getBSS()),
                    Sym, Size, 1 << Pow2Alignment);
 
+  return false;
+}
+
+/// ParseDirectiveDarwinTBSS
+///  ::= .tbss identifier, size, align
+bool AsmParser::ParseDirectiveDarwinTBSS() {
+  SMLoc IDLoc = Lexer.getLoc();
+  StringRef Name;
+  if (ParseIdentifier(Name))
+    return TokError("expected identifier in directive");
+  
+  // Demangle the name output.  The trailing characters are guaranteed to be
+  // $tlv$init so just strip that off.
+  StringRef DemName = Name.substr(0, Name.size() - strlen("$tlv$init"));
+  
+  // Handle the identifier as the key symbol.
+  MCSymbol *Sym = CreateSymbol(DemName);
+
+  if (Lexer.isNot(AsmToken::Comma))
+    return TokError("unexpected token in directive");
+  Lex();
+
+  int64_t Size;
+  SMLoc SizeLoc = Lexer.getLoc();
+  if (ParseAbsoluteExpression(Size))
+    return true;
+
+  int64_t Pow2Alignment = 0;
+  SMLoc Pow2AlignmentLoc;
+  if (Lexer.is(AsmToken::Comma)) {
+    Lex();
+    Pow2AlignmentLoc = Lexer.getLoc();
+    if (ParseAbsoluteExpression(Pow2Alignment))
+      return true;
+  }
+  
+  if (Lexer.isNot(AsmToken::EndOfStatement))
+    return TokError("unexpected token in '.tbss' directive");
+  
+  Lex();
+
+  if (Size < 0)
+    return Error(SizeLoc, "invalid '.tbss' directive size, can't be less than"
+                 "zero");
+
+  // FIXME: Diagnose overflow.
+  if (Pow2Alignment < 0)
+    return Error(Pow2AlignmentLoc, "invalid '.tbss' alignment, can't be less"
+                 "than zero");
+
+  if (!Sym->isUndefined())
+    return Error(IDLoc, "invalid symbol redefinition");
+  
+  Out.EmitTBSSSymbol(Sym, Size, Pow2Alignment ? 1 << Pow2Alignment : 0);
+  
   return false;
 }
 

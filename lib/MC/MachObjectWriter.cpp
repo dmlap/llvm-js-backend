@@ -16,6 +16,7 @@
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCSymbol.h"
+#include "llvm/MC/MCMachOSymbolFlags.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MachO.h"
@@ -56,6 +57,20 @@ static bool isFixupKindPCRel(unsigned Kind) {
 static bool isFixupKindRIPRel(unsigned Kind) {
   return Kind == X86::reloc_riprel_4byte ||
     Kind == X86::reloc_riprel_4byte_movq_load;
+}
+
+static bool doesSymbolRequireExternRelocation(MCSymbolData *SD) {
+  // Undefined symbols are always extern.
+  if (SD->Symbol->isUndefined())
+    return true;
+
+  // References to weak definitions require external relocation entries; the
+  // definition may not always be the one in the same object file.
+  if (SD->getFlags() & SF_WeakDefinition)
+    return true;
+
+  // Otherwise, we can use an internal relocation.
+  return false;
 }
 
 namespace {
@@ -463,7 +478,8 @@ public:
     unsigned Log2Size = getFixupKindLog2Size(Fixup.Kind);
 
     // See <reloc.h>.
-    uint32_t Address = Layout.getFragmentOffset(Fragment) + Fixup.Offset;
+    uint32_t FixupOffset = Layout.getFragmentOffset(Fragment) + Fixup.Offset;
+    uint32_t FixupAddress = Layout.getFragmentAddress(Fragment) + Fixup.Offset;
     int64_t Value = 0;
     unsigned Index = 0;
     unsigned IsExtern = 0;
@@ -532,7 +548,7 @@ public:
       Type = RIT_X86_64_Unsigned;
 
       MachRelocationEntry MRE;
-      MRE.Word0 = Address;
+      MRE.Word0 = FixupOffset;
       MRE.Word1 = ((Index     <<  0) |
                    (IsPCRel   << 24) |
                    (Log2Size  << 25) |
@@ -569,14 +585,17 @@ public:
         // Add the local offset, if needed.
         if (Base != &SD)
           Value += Layout.getSymbolAddress(&SD) - Layout.getSymbolAddress(Base);
-      } else {
+      } else if (Symbol->isInSection()) {
         // The index is the section ordinal (1-based).
         Index = SD.getFragment()->getParent()->getOrdinal() + 1;
         IsExtern = 0;
         Value += Layout.getSymbolAddress(&SD);
 
         if (IsPCRel)
-          Value -= Address + (1 << Log2Size);
+          Value -= FixupAddress + (1 << Log2Size);
+      } else {
+        report_fatal_error("unsupported relocation of undefined symbol '" +
+                           Symbol->getName() + "'");
       }
 
       MCSymbolRefExpr::VariantKind Modifier = Target.getSymA()->getKind();
@@ -644,7 +663,7 @@ public:
 
     // struct relocation_info (8 bytes)
     MachRelocationEntry MRE;
-    MRE.Word0 = Address;
+    MRE.Word0 = FixupOffset;
     MRE.Word1 = ((Index     <<  0) |
                  (IsPCRel   << 24) |
                  (Log2Size  << 25) |
@@ -658,7 +677,7 @@ public:
                                  const MCFragment *Fragment,
                                  const MCAsmFixup &Fixup, MCValue Target,
                                  uint64_t &FixedValue) {
-    uint32_t Address = Layout.getFragmentOffset(Fragment) + Fixup.Offset;
+    uint32_t FixupOffset = Layout.getFragmentOffset(Fragment) + Fixup.Offset;
     unsigned IsPCRel = isFixupKindPCRel(Fixup.Kind);
     unsigned Log2Size = getFixupKindLog2Size(Fixup.Kind);
     unsigned Type = RIT_Vanilla;
@@ -703,10 +722,10 @@ public:
     }
 
     MachRelocationEntry MRE;
-    MRE.Word0 = ((Address   <<  0) |
-                 (Type      << 24) |
-                 (Log2Size  << 28) |
-                 (IsPCRel   << 30) |
+    MRE.Word0 = ((FixupOffset <<  0) |
+                 (Type        << 24) |
+                 (Log2Size    << 28) |
+                 (IsPCRel     << 30) |
                  RF_Scattered);
     MRE.Word1 = Value;
     Relocations[Fragment->getParent()].push_back(MRE);
@@ -725,18 +744,27 @@ public:
 
     // If this is a difference or a defined symbol plus an offset, then we need
     // a scattered relocation entry.
+    // Differences always require scattered relocations.
+    if (Target.getSymB())
+        return RecordScatteredRelocation(Asm, Layout, Fragment, Fixup,
+                                         Target, FixedValue);
+
+    // Get the symbol data, if any.
+    MCSymbolData *SD = 0;
+    if (Target.getSymA())
+      SD = &Asm.getSymbolData(Target.getSymA()->getSymbol());
+
+    // If this is an internal relocation with an offset, it also needs a
+    // scattered relocation entry.
     uint32_t Offset = Target.getConstant();
     if (IsPCRel)
       Offset += 1 << Log2Size;
-    if (Target.getSymB() ||
-        (Target.getSymA() && !Target.getSymA()->getSymbol().isUndefined() &&
-         Offset)) {
-      RecordScatteredRelocation(Asm, Layout, Fragment, Fixup,Target,FixedValue);
-      return;
-    }
+    if (Offset && SD && !doesSymbolRequireExternRelocation(SD))
+      return RecordScatteredRelocation(Asm, Layout, Fragment, Fixup,
+                                       Target, FixedValue);
 
     // See <reloc.h>.
-    uint32_t Address = Layout.getFragmentOffset(Fragment) + Fixup.Offset;
+    uint32_t FixupOffset = Layout.getFragmentOffset(Fragment) + Fixup.Offset;
     uint32_t Value = 0;
     unsigned Index = 0;
     unsigned IsExtern = 0;
@@ -750,12 +778,15 @@ public:
       Type = RIT_Vanilla;
       Value = 0;
     } else {
-      const MCSymbol *Symbol = &Target.getSymA()->getSymbol();
-      MCSymbolData *SD = &Asm.getSymbolData(*Symbol);
-
-      if (Symbol->isUndefined()) {
+      // Check whether we need an external or internal relocation.
+      if (doesSymbolRequireExternRelocation(SD)) {
         IsExtern = 1;
         Index = SD->getIndex();
+        // For external relocations, make sure to offset the fixup value to
+        // compensate for the addend of the symbol address, if it was
+        // undefined. This occurs with weak definitions, for example.
+        if (!SD->Symbol->isUndefined())
+          FixedValue -= Layout.getSymbolAddress(SD);
         Value = 0;
       } else {
         // The index is the section ordinal (1-based).
@@ -768,7 +799,7 @@ public:
 
     // struct relocation_info (8 bytes)
     MachRelocationEntry MRE;
-    MRE.Word0 = Address;
+    MRE.Word0 = FixupOffset;
     MRE.Word1 = ((Index     <<  0) |
                  (IsPCRel   << 24) |
                  (Log2Size  << 25) |

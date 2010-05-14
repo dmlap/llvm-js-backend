@@ -109,7 +109,10 @@ public:
   virtual void EmitSymbolAttribute(MCSymbol *Symbol, MCSymbolAttr Attribute);
 
   virtual void EmitSymbolDesc(MCSymbol *Symbol, unsigned DescValue);
-
+  virtual void BeginCOFFSymbolDef(const MCSymbol *Symbol);
+  virtual void EmitCOFFSymbolStorageClass(int StorageClass);
+  virtual void EmitCOFFSymbolType(int Type);
+  virtual void EndCOFFSymbolDef();
   virtual void EmitELFSize(MCSymbol *Symbol, const MCExpr *Value);
   virtual void EmitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                                 unsigned ByteAlignment);
@@ -123,6 +126,9 @@ public:
   virtual void EmitZerofill(const MCSection *Section, MCSymbol *Symbol = 0,
                             unsigned Size = 0, unsigned ByteAlignment = 0);
 
+  virtual void EmitTBSSSymbol (MCSymbol *Symbol, uint64_t Size,
+                               unsigned ByteAlignment = 0);
+                               
   virtual void EmitBytes(StringRef Data, unsigned AddrSpace);
 
   virtual void EmitValue(const MCExpr *Value, unsigned Size,unsigned AddrSpace);
@@ -293,6 +299,26 @@ void MCAsmStreamer::EmitSymbolDesc(MCSymbol *Symbol, unsigned DescValue) {
   EmitEOL();
 }
 
+void MCAsmStreamer::BeginCOFFSymbolDef(const MCSymbol *Symbol) {
+  OS << "\t.def\t " << *Symbol << ';';
+  EmitEOL();
+}
+
+void MCAsmStreamer::EmitCOFFSymbolStorageClass (int StorageClass) {
+  OS << "\t.scl\t" << StorageClass << ';';
+  EmitEOL();
+}
+
+void MCAsmStreamer::EmitCOFFSymbolType (int Type) {
+  OS << "\t.type\t" << Type << ';';
+  EmitEOL();
+}
+
+void MCAsmStreamer::EndCOFFSymbolDef() {
+  OS << "\t.endef";
+  EmitEOL();
+}
+
 void MCAsmStreamer::EmitELFSize(MCSymbol *Symbol, const MCExpr *Value) {
   assert(MAI.hasDotTypeDotSizeDirective());
   OS << "\t.size\t" << *Symbol << ", " << *Value << '\n';
@@ -334,6 +360,21 @@ void MCAsmStreamer::EmitZerofill(const MCSection *Section, MCSymbol *Symbol,
     if (ByteAlignment != 0)
       OS << ',' << Log2_32(ByteAlignment);
   }
+  EmitEOL();
+}
+
+// .tbss sym$tlv$init, size, align
+void MCAsmStreamer::EmitTBSSSymbol(MCSymbol *Symbol, uint64_t Size,
+                                   unsigned ByteAlignment) {
+  assert(Symbol != NULL && "Symbol shouldn't be NULL!");
+  OS << ".tbss ";
+  
+  // This is a mach-o specific directive and the name requires some mangling.
+  OS << *Symbol << "$tlv$init, " << Size;
+  
+  // Output align if we have it.
+  if (ByteAlignment != 0) OS << ", " << Log2_32(ByteAlignment);
+  
   EmitEOL();
 }
 

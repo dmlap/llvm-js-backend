@@ -143,7 +143,7 @@ EmitCopyFromReg(SDNode *Node, unsigned ResNo, bool IsClone, bool IsCloned,
     // Create the reg, emit the copy.
     VRBase = MRI->createVirtualRegister(DstRC);
     bool Emitted = TII->copyRegToReg(*MBB, InsertPos, VRBase, SrcReg,
-                                     DstRC, SrcRC);
+                                     DstRC, SrcRC, Node->getDebugLoc());
 
     assert(Emitted && "Unable to issue a copy instruction!\n");
     (void) Emitted;
@@ -289,7 +289,7 @@ InstrEmitter::AddRegisterOperand(MachineInstr *MI, SDValue Op,
     if (DstRC && SrcRC != DstRC && !SrcRC->hasSuperClass(DstRC)) {
       unsigned NewVReg = MRI->createVirtualRegister(DstRC);
       bool Emitted = TII->copyRegToReg(*MBB, InsertPos, NewVReg, VReg,
-                                       DstRC, SrcRC);
+                                       DstRC, SrcRC, Op.getNode()->getDebugLoc());
       assert(Emitted && "Unable to issue a copy instruction!\n");
       (void) Emitted;
       VReg = NewVReg;
@@ -297,15 +297,22 @@ InstrEmitter::AddRegisterOperand(MachineInstr *MI, SDValue Op,
   }
 
   // If this value has only one use, that use is a kill. This is a
-  // conservative approximation. Tied operands are never killed, so we need
-  // to check that. And that means we need to determine the index of the
-  // operand.
-  unsigned Idx = MI->getNumOperands();
-  while (Idx > 0 &&
-         MI->getOperand(Idx-1).isReg() && MI->getOperand(Idx-1).isImplicit())
-    --Idx;
-  bool isTied = MI->getDesc().getOperandConstraint(Idx, TOI::TIED_TO) != -1;
-  bool isKill = Op.hasOneUse() && !isTied && !IsDebug;
+  // conservative approximation. InstrEmitter does trivial coalescing
+  // with CopyFromReg nodes, so don't emit kill flags for them.
+  // Tied operands are never killed, so we need to check that. And that
+  // means we need to determine the index of the operand.
+  bool isKill = Op.hasOneUse() &&
+                Op.getNode()->getOpcode() != ISD::CopyFromReg &&
+                !IsDebug;
+  if (isKill) {
+    unsigned Idx = MI->getNumOperands();
+    while (Idx > 0 &&
+           MI->getOperand(Idx-1).isReg() && MI->getOperand(Idx-1).isImplicit())
+      --Idx;
+    bool isTied = MI->getDesc().getOperandConstraint(Idx, TOI::TIED_TO) != -1;
+    if (isTied)
+      isKill = false;
+  }
 
   MI->addOperand(MachineOperand::CreateReg(VReg, isOptDef,
                                            false/*isImp*/, isKill,
@@ -503,7 +510,7 @@ InstrEmitter::EmitCopyToRegClassNode(SDNode *Node,
   // Create the new VReg in the destination class and emit a copy.
   unsigned NewVReg = MRI->createVirtualRegister(DstRC);
   bool Emitted = TII->copyRegToReg(*MBB, InsertPos, NewVReg, VReg,
-                                   DstRC, SrcRC);
+                                   DstRC, SrcRC, Node->getDebugLoc());
   assert(Emitted &&
          "Unable to issue a copy instruction for a COPY_TO_REGCLASS node!\n");
   (void) Emitted;
@@ -532,10 +539,10 @@ void InstrEmitter::EmitRegSequence(SDNode *Node,
     if (i & 1) {
       unsigned SubIdx = cast<ConstantSDNode>(Op)->getZExtValue();
       unsigned SubReg = getVR(Node->getOperand(i-1), VRBaseMap);
-    const TargetRegisterClass *TRC = MRI->getRegClass(SubReg);
-    const TargetRegisterClass *SRC =
-      getSuperRegisterRegClass(TRC, SubIdx, Node->getValueType(0));
-    assert(SRC == RC && "Invalid subregister index in REG_SEQUENCE");
+      const TargetRegisterClass *TRC = MRI->getRegClass(SubReg);
+      const TargetRegisterClass *SRC =
+        getSuperRegisterRegClass(TRC, SubIdx, Node->getValueType(0));
+      assert(SRC == RC && "Invalid subregister index in REG_SEQUENCE");
     }
 #endif
     AddOperand(MI, Op, i+1, &II, VRBaseMap);
@@ -583,7 +590,13 @@ InstrEmitter::EmitDbgValue(SDDbgValue *SD,
   } else if (SD->getKind() == SDDbgValue::CONST) {
     const Value *V = SD->getConst();
     if (const ConstantInt *CI = dyn_cast<ConstantInt>(V)) {
-      MIB.addImm(CI->getSExtValue());
+      // FIXME: SDDbgValues aren't updated with legalization, so it's possible
+      // to have i128 values in them at this point. As a crude workaround, just
+      // drop the debug info if this happens.
+      if (!CI->getValue().isSignedIntN(64))
+        MIB.addReg(0U);
+      else
+        MIB.addImm(CI->getSExtValue());
     } else if (const ConstantFP *CF = dyn_cast<ConstantFP>(V)) {
       MIB.addFPImm(CF);
     } else {
@@ -749,7 +762,7 @@ EmitSpecialNode(SDNode *Node, bool IsClone, bool IsCloned,
                                             Node->getOperand(1).getValueType());
 
     bool Emitted = TII->copyRegToReg(*MBB, InsertPos, DestReg, SrcReg,
-                                     DstTRC, SrcTRC);
+                                     DstTRC, SrcTRC, Node->getDebugLoc());
     assert(Emitted && "Unable to issue a copy instruction!\n");
     (void) Emitted;
     break;

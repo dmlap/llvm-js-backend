@@ -205,16 +205,10 @@ void AsmPrinter::EmitLinkage(unsigned Linkage, MCSymbol *GVSym) const {
       OutStreamer.EmitSymbolAttribute(GVSym, MCSA_Global);
       // .weak_definition _foo
       OutStreamer.EmitSymbolAttribute(GVSym, MCSA_WeakDefinition);
-    } else if (const char *LinkOnce = MAI->getLinkOnceDirective()) {
+    } else if (MAI->getLinkOnceDirective() != 0) {
       // .globl _foo
       OutStreamer.EmitSymbolAttribute(GVSym, MCSA_Global);
-      // FIXME: linkonce should be a section attribute, handled by COFF Section
-      // assignment.
-      // http://sourceware.org/binutils/docs-2.20/as/Linkonce.html#Linkonce
-      // .linkonce discard
-      // FIXME: It would be nice to use .linkonce samesize for non-common
-      // globals.
-      OutStreamer.EmitRawText(StringRef(LinkOnce));
+      //NOTE: linkonce is handled by the section the symbol was assigned to.
     } else {
       // .weak _foo
       OutStreamer.EmitSymbolAttribute(GVSym, MCSA_Weak);
@@ -509,7 +503,7 @@ static bool EmitDebugValueComment(const MachineInstr *MI, AsmPrinter &AP) {
   // cast away const; DIetc do not take const operands for some reason.
   DIVariable V(const_cast<MDNode*>(MI->getOperand(2).getMetadata()));
   if (V.getContext().isSubprogram())
-    OS << DISubprogram(V.getContext().getNode()).getDisplayName() << ":";
+    OS << DISubprogram(V.getContext()).getDisplayName() << ":";
   OS << V.getName() << " <- ";
 
   // Register or immediate value. Register 0 means undef.

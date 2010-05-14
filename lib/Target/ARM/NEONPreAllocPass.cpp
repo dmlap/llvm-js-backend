@@ -33,7 +33,7 @@ namespace {
 
   private:
     bool FormsRegSequence(MachineInstr *MI,
-                          unsigned FirstOpnd, unsigned NumRegs);
+                          unsigned FirstOpnd, unsigned NumRegs) const;
     bool PreAllocNEONRegisters(MachineBasicBlock &MBB);
   };
 
@@ -338,18 +338,23 @@ static bool isNEONMultiRegOp(int Opcode, unsigned &FirstOpnd, unsigned &NumRegs,
   return false;
 }
 
-bool NEONPreAllocPass::FormsRegSequence(MachineInstr *MI,
-                                        unsigned FirstOpnd, unsigned NumRegs) {
-  MachineInstr *RegSeq = 0;
-  unsigned LastSrcReg = 0;
-  unsigned LastSubIdx = 0;
-  for (unsigned R = 0; R < NumRegs; ++R) {
-    MachineOperand &MO = MI->getOperand(FirstOpnd + R);
-    assert(MO.isReg() && MO.getSubReg() == 0 && "unexpected operand");
-    unsigned VirtReg = MO.getReg();
-    assert(TargetRegisterInfo::isVirtualRegister(VirtReg) &&
-           "expected a virtual register");
-    if (MO.isDef()) {
+bool
+NEONPreAllocPass::FormsRegSequence(MachineInstr *MI,
+                                   unsigned FirstOpnd, unsigned NumRegs) const {
+  MachineOperand &FMO = MI->getOperand(FirstOpnd);
+  assert(FMO.isReg() && FMO.getSubReg() == 0 && "unexpected operand");
+  unsigned VirtReg = FMO.getReg();
+  (void)VirtReg;
+  assert(TargetRegisterInfo::isVirtualRegister(VirtReg) &&
+         "expected a virtual register");
+  if (FMO.isDef()) {
+    MachineInstr *RegSeq = 0;
+    for (unsigned R = 0; R < NumRegs; ++R) {
+      const MachineOperand &MO = MI->getOperand(FirstOpnd + R);
+      assert(MO.isReg() && MO.getSubReg() == 0 && "unexpected operand");
+      unsigned VirtReg = MO.getReg();
+      assert(TargetRegisterInfo::isVirtualRegister(VirtReg) &&
+             "expected a virtual register");
       // Feeding into a REG_SEQUENCE.
       if (!MRI->hasOneNonDBGUse(VirtReg))
         return false;
@@ -359,23 +364,76 @@ bool NEONPreAllocPass::FormsRegSequence(MachineInstr *MI,
       if (RegSeq && RegSeq != UseMI)
         return false;
       RegSeq = UseMI;
-    } else {
-      // Extracting from a Q register.
-      MachineInstr *DefMI = MRI->getVRegDef(VirtReg);
-      if (!DefMI || !DefMI->isExtractSubreg())
-        return false;
-      VirtReg = DefMI->getOperand(1).getReg();
-      if (LastSrcReg && LastSrcReg != VirtReg)
-        return false;
-      const TargetRegisterClass *RC = MRI->getRegClass(VirtReg);
-      if (RC != ARM::QPRRegisterClass)
-        return false;
-      unsigned SubIdx = DefMI->getOperand(2).getImm();
-      if (LastSubIdx && LastSubIdx != SubIdx-1)
-        return false;
-      LastSubIdx = SubIdx;
     }
+
+    // Make sure trailing operands of REG_SEQUENCE are undef.
+    unsigned NumExps = (RegSeq->getNumOperands() - 1) / 2;
+    for (unsigned i = NumRegs * 2 + 1; i < NumExps; i += 2) {
+      const MachineOperand &MO = RegSeq->getOperand(i);
+      unsigned VirtReg = MO.getReg();
+      MachineInstr *DefMI = MRI->getVRegDef(VirtReg);
+      if (!DefMI || !DefMI->isImplicitDef())
+        return false;
+    }
+    return true;
   }
+
+  unsigned LastSrcReg = 0;
+  unsigned LastSubIdx = 0;
+  SmallVector<unsigned, 4> SubIds;
+  for (unsigned R = 0; R < NumRegs; ++R) {
+    const MachineOperand &MO = MI->getOperand(FirstOpnd + R);
+    assert(MO.isReg() && MO.getSubReg() == 0 && "unexpected operand");
+    unsigned VirtReg = MO.getReg();
+    assert(TargetRegisterInfo::isVirtualRegister(VirtReg) &&
+           "expected a virtual register");
+    // Extracting from a Q or QQ register.
+    MachineInstr *DefMI = MRI->getVRegDef(VirtReg);
+    if (!DefMI || !DefMI->isExtractSubreg())
+      return false;
+    VirtReg = DefMI->getOperand(1).getReg();
+    if (LastSrcReg && LastSrcReg != VirtReg)
+      return false;
+    LastSrcReg = VirtReg;
+    const TargetRegisterClass *RC = MRI->getRegClass(VirtReg);
+    if (RC != ARM::QPRRegisterClass && RC != ARM::QQPRRegisterClass)
+      return false;
+    unsigned SubIdx = DefMI->getOperand(2).getImm();
+    if (LastSubIdx) {
+      if (LastSubIdx != SubIdx-1)
+        return false;
+    } else {
+      // Must start from arm_dsubreg_0 or arm_qsubreg_0.
+      if (SubIdx != ARM::DSUBREG_0 && SubIdx != ARM::QSUBREG_0)
+        return false;
+    }
+    SubIds.push_back(SubIdx);
+    LastSubIdx = SubIdx;
+  }
+
+  // FIXME: Update the uses of EXTRACT_SUBREG from REG_SEQUENCE is
+  // currently required for correctness. e.g.
+  // 	%reg1041;<def> = REG_SEQUENCE %reg1040<kill>, 5, %reg1035<kill>, 6
+  //  %reg1042<def> = EXTRACT_SUBREG %reg1041, 6
+  //  %reg1043<def> = EXTRACT_SUBREG %reg1041, 5
+  //  VST1q16 %reg1025<kill>, 0, %reg1043<kill>, %reg1042<kill>,
+  // reg1025 and reg1043 should be replaced with reg1041:6 and reg1041:5
+  // respectively.
+  // We need to change how we model uses of REG_SEQUENCE.
+  for (unsigned R = 0; R < NumRegs; ++R) {
+    MachineOperand &MO = MI->getOperand(FirstOpnd + R);
+    unsigned OldReg = MO.getReg();
+    MachineInstr *DefMI = MRI->getVRegDef(OldReg);
+    assert(DefMI->isExtractSubreg());
+    MO.setReg(LastSrcReg);
+    MO.setSubReg(SubIds[R]);
+    if (R != 0)
+      MO.setIsKill(false);
+    // Delete the EXTRACT_SUBREG if its result is now dead.
+    if (MRI->use_empty(OldReg))
+      DefMI->eraseFromParent();
+  }
+
   return true;
 }
 
@@ -388,7 +446,8 @@ bool NEONPreAllocPass::PreAllocNEONRegisters(MachineBasicBlock &MBB) {
     unsigned FirstOpnd, NumRegs, Offset, Stride;
     if (!isNEONMultiRegOp(MI->getOpcode(), FirstOpnd, NumRegs, Offset, Stride))
       continue;
-    if (FormsRegSequence(MI, FirstOpnd, NumRegs))
+    if (llvm::ModelWithRegSequence() &&
+        FormsRegSequence(MI, FirstOpnd, NumRegs))
       continue;
 
     MachineBasicBlock::iterator NextI = llvm::next(MBBI);
@@ -410,7 +469,8 @@ bool NEONPreAllocPass::PreAllocNEONRegisters(MachineBasicBlock &MBB) {
       if (MO.isUse()) {
         // Insert a copy from VirtReg.
         TII->copyRegToReg(MBB, MBBI, MO.getReg(), VirtReg,
-                          ARM::DPRRegisterClass, ARM::DPRRegisterClass);
+                          ARM::DPRRegisterClass, ARM::DPRRegisterClass,
+                          DebugLoc());
         if (MO.isKill()) {
           MachineInstr *CopyMI = prior(MBBI);
           CopyMI->findRegisterUseOperand(VirtReg)->setIsKill();
@@ -419,7 +479,8 @@ bool NEONPreAllocPass::PreAllocNEONRegisters(MachineBasicBlock &MBB) {
       } else if (MO.isDef() && !MO.isDead()) {
         // Add a copy to VirtReg.
         TII->copyRegToReg(MBB, NextI, VirtReg, MO.getReg(),
-                          ARM::DPRRegisterClass, ARM::DPRRegisterClass);
+                          ARM::DPRRegisterClass, ARM::DPRRegisterClass,
+                          DebugLoc());
       }
     }
   }
