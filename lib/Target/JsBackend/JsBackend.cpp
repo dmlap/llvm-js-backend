@@ -1009,7 +1009,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
   if (ConstantInt *CI = dyn_cast<ConstantInt>(CPV)) {
     const Type* Ty = CI->getType();
     if (Ty == Type::getInt1Ty(CPV->getContext()))
-      Out << (CI->getZExtValue() ? '1' : '0');
+      Out << (CI->getZExtValue() ? "true" : "false");
     else if (Ty == Type::getInt32Ty(CPV->getContext()))
       Out << CI->getSExtValue();
     else if (CI->isMinValue(true)) {
@@ -1159,7 +1159,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
     }
     if (isa<ConstantAggregateZero>(CPV) || isa<UndefValue>(CPV)) {
       const StructType *ST = cast<StructType>(CPV->getType());
-      Out << '{';
+      Out << '[';
       if (ST->getNumElements()) {
         Out << ' ';
         printConstant(Constant::getNullValue(ST->getElementType(0)), Static);
@@ -1168,9 +1168,9 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
           printConstant(Constant::getNullValue(ST->getElementType(i)), Static);
         }
       }
-      Out << " }";
+      Out << " ]";
     } else {
-      Out << '{';
+      Out << '[';
       if (CPV->getNumOperands()) {
         Out << ' ';
         printConstant(cast<Constant>(CPV->getOperand(0)), Static);
@@ -1179,7 +1179,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
           printConstant(cast<Constant>(CPV->getOperand(i)), Static);
         }
       }
-      Out << " }";
+      Out << " ]";
     }
     break;
 
@@ -1193,6 +1193,9 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
       writeOperand(GV, Static);
       break;
     }
+  case Type::UnionTyID:
+    printConstant(cast<Constant>(CPV->getOperand(0)), Static);
+    break;
     // FALL THROUGH
   default:
 #ifndef NDEBUG
@@ -1660,32 +1663,6 @@ bool JsWriter::doInitialization(Module &M) {
   // Loop over the symbol table, emitting all named constants...
   printModuleTypes(M.getTypeSymbolTable());
 
-  // Global variable declarations...
-  if (!M.global_empty()) {
-    Out << "\n/* External Global Variable Declarations */\n";
-    for (Module::global_iterator I = M.global_begin(), E = M.global_end();
-         I != E; ++I) {
-
-      if (I->hasExternalLinkage() || I->hasExternalWeakLinkage() || 
-          I->hasCommonLinkage())
-        Out << "extern ";
-      else if (I->hasDLLImportLinkage())
-        Out << "__declspec(dllimport) ";
-      else
-        continue; // Internal Global
-
-      // Thread Local Storage
-      if (I->isThreadLocal())
-        Out << "__thread ";
-
-      printType(Out, I->getType()->getElementType(), false, GetValueName(I));
-
-      if (I->hasExternalWeakLinkage())
-         Out << " __EXTERNAL_WEAK__";
-      Out << ";\n";
-    }
-  }
-
   // Output the module-level locals
   if (!M.global_empty()) {
     Module::global_iterator I = M.global_begin(), E = M.global_end();
@@ -1696,7 +1673,8 @@ bool JsWriter::doInitialization(Module &M) {
 	Out << "var " << GetValueName(I) << " = ";
 	writeOperand(I->getInitializer(), true);
 	Found = true;
-	continue;
+	++I;
+	break;
       }
     }
     for (; I != E; ++I) {
@@ -1714,7 +1692,6 @@ bool JsWriter::doInitialization(Module &M) {
   // Output the module members
   if (!M.global_empty()) {
     Module::global_iterator I = M.global_begin(), E = M.global_end();
-    bool Found = false;
     for(;I != E; ++I) {
       if (!I->isDeclaration() && !getGlobalVariableClass(I) && !(I->hasLocalLinkage() || I->hasHiddenVisibility())) {
 	if (I->hasDLLImportLinkage()) {
@@ -1733,8 +1710,9 @@ bool JsWriter::doInitialization(Module &M) {
 
 	Out << "_." << GetValueName(I) << " = ";
 	writeOperand(I->getInitializer(), true);
-	Found = true;
-	continue;
+	Out << ";\n";
+	++I;
+	break;
       }
     }
     for (; I != E; ++I) {
@@ -1752,13 +1730,11 @@ bool JsWriter::doInitialization(Module &M) {
 	  llvm_unreachable(0);
 	}
 
-	Out << ", _." << GetValueName(I) << " = ";
+	Out << "_." << GetValueName(I) << " = ";
 	writeOperand(I->getInitializer(), true);
+	Out << ";\n";
 	continue;
       }
-    }
-    if(Found) {
-      Out << ";\n";
     }
   }
 
