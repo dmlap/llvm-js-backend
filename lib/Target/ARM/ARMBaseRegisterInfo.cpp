@@ -279,10 +279,14 @@ ARMBaseRegisterInfo::getMatchingSuperRegClass(const TargetRegisterClass *A,
       return &ARM::QPR_VFP2RegClass;
     }
 
-    assert(A->getSize() == 32 && "Expecting a QQ register class!");
-    if (B == &ARM::SPR_8RegClass)
-      return &ARM::QQPR_8RegClass;
-    return &ARM::QQPR_VFP2RegClass;
+    if (A->getSize() == 32) {
+      if (B == &ARM::SPR_8RegClass)
+        return 0;  // Do not allow coalescing!
+      return &ARM::QQPR_VFP2RegClass;
+    }
+
+    assert(A->getSize() == 64 && "Expecting a QQQQ register class!");
+    return 0;  // Do not allow coalescing!
   }
   case 5:
   case 6:
@@ -293,30 +297,176 @@ ARMBaseRegisterInfo::getMatchingSuperRegClass(const TargetRegisterClass *A,
       if (B == &ARM::DPR_VFP2RegClass)
         return &ARM::QPR_VFP2RegClass;
       if (B == &ARM::DPR_8RegClass)
-        return &ARM::QPR_8RegClass;
+        return 0;  // Do not allow coalescing!
       return A;
     }
 
-    assert(A->getSize() == 32 && "Expecting a QQ register class!");
-    if (B == &ARM::DPR_VFP2RegClass)
-      return &ARM::QQPR_VFP2RegClass;
-    if (B == &ARM::DPR_8RegClass)
-      return &ARM::QQPR_8RegClass;
+    if (A->getSize() == 32) {
+      if (B == &ARM::DPR_VFP2RegClass)
+        return &ARM::QQPR_VFP2RegClass;
+      if (B == &ARM::DPR_8RegClass)
+        return 0;  // Do not allow coalescing!
+      return A;
+    }
+
+    assert(A->getSize() == 64 && "Expecting a QQQQ register class!");
+    if (B != &ARM::DPRRegClass)
+      return 0;  // Do not allow coalescing!
     return A;
   }
   case 9:
-  case 10: {
+  case 10:
+  case 11:
+  case 12: {
+    // D sub-registers of QQQQ registers.
+    if (A->getSize() == 64 && B == &ARM::DPRRegClass)
+      return A;
+    return 0;  // Do not allow coalescing!
+  }
+
+  case 13:
+  case 14: {
     // Q sub-registers.
-    assert(A->getSize() == 32 && "Expecting a QQ register class!");
-    if (B == &ARM::QPR_VFP2RegClass)
-      return &ARM::QQPR_VFP2RegClass;
-    if (B == &ARM::QPR_8RegClass)
-      return &ARM::QQPR_8RegClass;
-    return A;
+    if (A->getSize() == 32) {
+      if (B == &ARM::QPR_VFP2RegClass)
+        return &ARM::QQPR_VFP2RegClass;
+      if (B == &ARM::QPR_8RegClass)
+        return 0;  // Do not allow coalescing!
+      return A;
+    }
+
+    assert(A->getSize() == 64 && "Expecting a QQQQ register class!");
+    if (B == &ARM::QPRRegClass)
+      return A;
+    return 0;  // Do not allow coalescing!
+  }
+  case 15:
+  case 16: {
+    // Q sub-registers of QQQQ registers.
+    if (A->getSize() == 64 && B == &ARM::QPRRegClass)
+      return A;
+    return 0;  // Do not allow coalescing!
   }
   }
   return 0;
 }
+
+bool
+ARMBaseRegisterInfo::canCombinedSubRegIndex(const TargetRegisterClass *RC,
+                                          SmallVectorImpl<unsigned> &SubIndices,
+                                          unsigned &NewSubIdx) const {
+
+  unsigned Size = RC->getSize() * 8;
+  if (Size < 6)
+    return 0;
+
+  NewSubIdx = 0;  // Whole register.
+  unsigned NumRegs = SubIndices.size();
+  if (NumRegs == 8) {
+    // 8 D registers -> 1 QQQQ register.
+    return (Size == 512 &&
+            SubIndices[0] == ARM::DSUBREG_0 &&
+            SubIndices[1] == ARM::DSUBREG_1 &&
+            SubIndices[2] == ARM::DSUBREG_2 &&
+            SubIndices[3] == ARM::DSUBREG_3 &&
+            SubIndices[4] == ARM::DSUBREG_4 &&
+            SubIndices[5] == ARM::DSUBREG_5 &&
+            SubIndices[6] == ARM::DSUBREG_6 &&
+            SubIndices[7] == ARM::DSUBREG_7);
+  } else if (NumRegs == 4) {
+    if (SubIndices[0] == ARM::QSUBREG_0) {
+      // 4 Q registers -> 1 QQQQ register.
+      return (Size == 512 &&
+              SubIndices[1] == ARM::QSUBREG_1 &&
+              SubIndices[2] == ARM::QSUBREG_2 &&
+              SubIndices[3] == ARM::QSUBREG_3);
+    } else if (SubIndices[0] == ARM::DSUBREG_0) {
+      // 4 D registers -> 1 QQ register.
+      if (Size >= 256 &&
+          SubIndices[1] == ARM::DSUBREG_1 &&
+          SubIndices[2] == ARM::DSUBREG_2 &&
+          SubIndices[3] == ARM::DSUBREG_3) {
+        if (Size == 512)
+          NewSubIdx = ARM::QQSUBREG_0;
+        return true;
+      }
+    } else if (SubIndices[0] == ARM::DSUBREG_4) {
+      // 4 D registers -> 1 QQ register (2nd).
+      if (Size == 512 &&
+          SubIndices[1] == ARM::DSUBREG_5 &&
+          SubIndices[2] == ARM::DSUBREG_6 &&
+          SubIndices[3] == ARM::DSUBREG_7) {
+        NewSubIdx = ARM::QQSUBREG_1;
+        return true;
+      }
+    } else if (SubIndices[0] == ARM::SSUBREG_0) {
+      // 4 S registers -> 1 Q register.
+      if (Size >= 128 &&
+          SubIndices[1] == ARM::SSUBREG_1 &&
+          SubIndices[2] == ARM::SSUBREG_2 &&
+          SubIndices[3] == ARM::SSUBREG_3) {
+        if (Size >= 256)
+          NewSubIdx = ARM::QSUBREG_0;
+        return true;
+      }
+    }
+  } else if (NumRegs == 2) {
+    if (SubIndices[0] == ARM::QSUBREG_0) {
+      // 2 Q registers -> 1 QQ register.
+      if (Size >= 256 && SubIndices[1] == ARM::QSUBREG_1) {
+        if (Size == 512)
+          NewSubIdx = ARM::QQSUBREG_0;
+        return true;
+      }
+    } else if (SubIndices[0] == ARM::QSUBREG_2) {
+      // 2 Q registers -> 1 QQ register (2nd).
+      if (Size == 512 && SubIndices[1] == ARM::QSUBREG_3) {
+        NewSubIdx = ARM::QQSUBREG_1;
+        return true;
+      }
+    } else if (SubIndices[0] == ARM::DSUBREG_0) {
+      // 2 D registers -> 1 Q register.
+      if (Size >= 128 && SubIndices[1] == ARM::DSUBREG_1) {
+        if (Size >= 256)
+          NewSubIdx = ARM::QSUBREG_0;
+        return true;
+      }
+    } else if (SubIndices[0] == ARM::DSUBREG_2) {
+      // 2 D registers -> 1 Q register (2nd).
+      if (Size >= 256 && SubIndices[1] == ARM::DSUBREG_3) {
+        NewSubIdx = ARM::QSUBREG_1;
+        return true;
+      }
+    } else if (SubIndices[0] == ARM::DSUBREG_4) {
+      // 2 D registers -> 1 Q register (3rd).
+      if (Size == 512 && SubIndices[1] == ARM::DSUBREG_5) {
+        NewSubIdx = ARM::QSUBREG_2;
+        return true;
+      }
+    } else if (SubIndices[0] == ARM::DSUBREG_6) {
+      // 2 D registers -> 1 Q register (3rd).
+      if (Size == 512 && SubIndices[1] == ARM::DSUBREG_7) {
+        NewSubIdx = ARM::QSUBREG_3;
+        return true;
+      }
+    } else if (SubIndices[0] == ARM::SSUBREG_0) {
+      // 2 S registers -> 1 D register.
+      if (SubIndices[1] == ARM::SSUBREG_1) {
+        if (Size >= 128)
+          NewSubIdx = ARM::DSUBREG_0;
+        return true;
+      }
+    } else if (SubIndices[0] == ARM::SSUBREG_2) {
+      // 2 S registers -> 1 D register (2nd).
+      if (Size >= 128 && SubIndices[1] == ARM::SSUBREG_3) {
+        NewSubIdx = ARM::DSUBREG_1;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 
 const TargetRegisterClass *
 ARMBaseRegisterInfo::getPointerRegClass(unsigned Kind) const {
@@ -510,7 +660,7 @@ ARMBaseRegisterInfo::UpdateRegAllocHint(unsigned Reg, unsigned NewReg,
 ///
 bool ARMBaseRegisterInfo::hasFP(const MachineFunction &MF) const {
   const MachineFrameInfo *MFI = MF.getFrameInfo();
-  return ((DisableFramePointerElim(MF) && MFI->hasCalls())||
+  return ((DisableFramePointerElim(MF) && MFI->adjustsStack())||
           needsStackRealignment(MF) ||
           MFI->hasVarSizedObjects() ||
           MFI->isFrameAddressTaken());
@@ -538,7 +688,7 @@ needsStackRealignment(const MachineFunction &MF) const {
 bool ARMBaseRegisterInfo::
 cannotEliminateFrame(const MachineFunction &MF) const {
   const MachineFrameInfo *MFI = MF.getFrameInfo();
-  if (DisableFramePointerElim(MF) && MFI->hasCalls())
+  if (DisableFramePointerElim(MF) && MFI->adjustsStack())
     return true;
   return MFI->hasVarSizedObjects() || MFI->isFrameAddressTaken()
     || needsStackRealignment(MF);

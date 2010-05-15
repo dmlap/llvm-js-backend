@@ -35,8 +35,12 @@
 #include <algorithm>
 using namespace llvm;
 
+static cl::opt<bool> VerifyFastRegalloc("verify-fast-regalloc", cl::Hidden,
+    cl::desc("Verify machine code before fast regalloc"));
+
 STATISTIC(NumStores, "Number of stores added");
 STATISTIC(NumLoads , "Number of loads added");
+STATISTIC(NumCopies, "Number of copies coalesced");
 
 static RegisterRegAlloc
   fastRegAlloc("fast", "fast register allocator", createFastRegisterAllocator);
@@ -104,8 +108,8 @@ namespace {
     // instruction, and so cannot be allocated.
     BitVector UsedInInstr;
 
-    // ReservedRegs - vector of reserved physical registers.
-    BitVector ReservedRegs;
+    // Allocatable - vector of allocatable physical registers.
+    BitVector Allocatable;
 
     // atEndOfBlock - This flag is set after allocating all instructions in a
     // block, before emitting final spills. When it is set, LiveRegMap is no
@@ -135,9 +139,10 @@ namespace {
                       LiveRegMap::iterator i, bool isKill);
     void spillVirtReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
                       unsigned VirtReg, bool isKill);
-    void killPhysReg(unsigned PhysReg);
-    void spillPhysReg(MachineBasicBlock &MBB, MachineInstr *I,
-                      unsigned PhysReg, bool isKill);
+
+    void usePhysReg(MachineOperand&);
+    void definePhysReg(MachineBasicBlock &MBB, MachineInstr *MI,
+                       unsigned PhysReg, RegState NewState);
     LiveRegMap::iterator assignVirtToPhysReg(unsigned VirtReg,
                                              unsigned PhysReg);
     LiveRegMap::iterator allocVirtReg(MachineBasicBlock &MBB, MachineInstr *MI,
@@ -146,8 +151,6 @@ namespace {
                            unsigned OpNum, unsigned VirtReg, unsigned Hint);
     unsigned reloadVirtReg(MachineBasicBlock &MBB, MachineInstr *MI,
                            unsigned OpNum, unsigned VirtReg, unsigned Hint);
-    void reservePhysReg(MachineBasicBlock &MBB, MachineInstr *MI,
-                        unsigned PhysReg);
     void spillAll(MachineBasicBlock &MBB, MachineInstr *MI);
     void setPhysReg(MachineOperand &MO, unsigned PhysReg);
   };
@@ -264,74 +267,105 @@ void RAFast::spillAll(MachineBasicBlock &MBB, MachineInstr *MI) {
     spillVirtReg(MBB, MI, Dirty[i], false);
 }
 
-/// killPhysReg - Kill any virtual register aliased by PhysReg.
-void RAFast::killPhysReg(unsigned PhysReg) {
-  // Fast path for the normal case.
-  switch (unsigned VirtReg = PhysRegState[PhysReg]) {
+/// usePhysReg - Handle the direct use of a physical register.
+/// Check that the register is not used by a virtreg.
+/// Kill the physreg, marking it free.
+/// This may add implicit kills to MO->getParent() and invalidate MO.
+void RAFast::usePhysReg(MachineOperand &MO) {
+  unsigned PhysReg = MO.getReg();
+  assert(TargetRegisterInfo::isPhysicalRegister(PhysReg) &&
+         "Bad usePhysReg operand");
+
+  switch (PhysRegState[PhysReg]) {
   case regDisabled:
     break;
-  case regFree:
-    return;
   case regReserved:
     PhysRegState[PhysReg] = regFree;
+    // Fall through
+  case regFree:
+    UsedInInstr.set(PhysReg);
+    MO.setIsKill();
     return;
   default:
-    killVirtReg(VirtReg);
-    return;
+    // The physreg was allocated to a virtual register. That means to value we
+    // wanted has been clobbered.
+    llvm_unreachable("Instruction uses an allocated register");
   }
 
-  // This is a disabled register, we have to check aliases.
+  // Maybe a superregister is reserved?
   for (const unsigned *AS = TRI->getAliasSet(PhysReg);
        unsigned Alias = *AS; ++AS) {
-    switch (unsigned VirtReg = PhysRegState[Alias]) {
+    switch (PhysRegState[Alias]) {
     case regDisabled:
-    case regFree:
       break;
     case regReserved:
+      assert(TRI->isSuperRegister(PhysReg, Alias) &&
+             "Instruction is not using a subregister of a reserved register");
+      // Leave the superregister in the working set.
       PhysRegState[Alias] = regFree;
+      UsedInInstr.set(Alias);
+      MO.getParent()->addRegisterKilled(Alias, TRI, true);
+      return;
+    case regFree:
+      if (TRI->isSuperRegister(PhysReg, Alias)) {
+        // Leave the superregister in the working set.
+        UsedInInstr.set(Alias);
+        MO.getParent()->addRegisterKilled(Alias, TRI, true);
+        return;
+      }
+      // Some other alias was in the working set - clear it.
+      PhysRegState[Alias] = regDisabled;
       break;
     default:
-      killVirtReg(VirtReg);
-      break;
+      llvm_unreachable("Instruction uses an alias of an allocated register");
     }
   }
+
+  // All aliases are disabled, bring register into working set.
+  PhysRegState[PhysReg] = regFree;
+  UsedInInstr.set(PhysReg);
+  MO.setIsKill();
 }
 
-/// spillPhysReg - Spill any dirty virtual registers that aliases PhysReg. If
-/// isKill is set, they are also killed.
-void RAFast::spillPhysReg(MachineBasicBlock &MBB, MachineInstr *MI,
-                           unsigned PhysReg, bool isKill) {
+/// definePhysReg - Mark PhysReg as reserved or free after spilling any
+/// virtregs. This is very similar to defineVirtReg except the physreg is
+/// reserved instead of allocated.
+void RAFast::definePhysReg(MachineBasicBlock &MBB, MachineInstr *MI,
+                           unsigned PhysReg, RegState NewState) {
+  UsedInInstr.set(PhysReg);
   switch (unsigned VirtReg = PhysRegState[PhysReg]) {
   case regDisabled:
     break;
-  case regFree:
-    return;
-  case regReserved:
-    if (isKill)
-      PhysRegState[PhysReg] = regFree;
-    return;
   default:
-    spillVirtReg(MBB, MI, VirtReg, isKill);
+    spillVirtReg(MBB, MI, VirtReg, true);
+    // Fall through.
+  case regFree:
+  case regReserved:
+    PhysRegState[PhysReg] = NewState;
     return;
   }
 
-  // This is a disabled register, we have to check aliases.
+  // This is a disabled register, disable all aliases.
+  PhysRegState[PhysReg] = NewState;
   for (const unsigned *AS = TRI->getAliasSet(PhysReg);
        unsigned Alias = *AS; ++AS) {
+    UsedInInstr.set(Alias);
     switch (unsigned VirtReg = PhysRegState[Alias]) {
     case regDisabled:
-    case regFree:
-      break;
-    case regReserved:
-      if (isKill)
-        PhysRegState[Alias] = regFree;
       break;
     default:
-      spillVirtReg(MBB, MI, VirtReg, isKill);
+      spillVirtReg(MBB, MI, VirtReg, true);
+      // Fall through.
+    case regFree:
+    case regReserved:
+      PhysRegState[Alias] = regDisabled;
+      if (TRI->isSuperRegister(PhysReg, Alias))
+        return;
       break;
     }
   }
 }
+
 
 /// assignVirtToPhysReg - This method updates local state so that we know
 /// that PhysReg is the proper container for VirtReg now.  The physical
@@ -360,7 +394,8 @@ RAFast::LiveRegMap::iterator RAFast::allocVirtReg(MachineBasicBlock &MBB,
 
   // Ignore invalid hints.
   if (Hint && (!TargetRegisterInfo::isPhysicalRegister(Hint) ||
-               !RC->contains(Hint) || UsedInInstr.test(Hint)))
+               !RC->contains(Hint) || UsedInInstr.test(Hint)) ||
+               !Allocatable.test(Hint))
     Hint = 0;
 
   // If there is no hint, peek at the first use of this register.
@@ -370,7 +405,8 @@ RAFast::LiveRegMap::iterator RAFast::allocVirtReg(MachineBasicBlock &MBB,
     // Copy to physreg -> use physreg as hint.
     if (TII->isMoveInstr(MI, SrcReg, DstReg, SrcSubReg, DstSubReg) &&
         SrcReg == VirtReg && TargetRegisterInfo::isPhysicalRegister(DstReg) &&
-        RC->contains(DstReg) && !UsedInInstr.test(DstReg)) {
+        RC->contains(DstReg) && !UsedInInstr.test(DstReg) &&
+        Allocatable.test(DstReg)) {
       Hint = DstReg;
       DEBUG(dbgs() << "%reg" << VirtReg << " gets hint from " << MI);
     }
@@ -379,7 +415,7 @@ RAFast::LiveRegMap::iterator RAFast::allocVirtReg(MachineBasicBlock &MBB,
   // Take hint when possible.
   if (Hint) {
     assert(RC->contains(Hint) && !UsedInInstr.test(Hint) &&
-           "Invalid hint should have been cleared");
+           Allocatable.test(Hint) && "Invalid hint should have been cleared");
     switch(PhysRegState[Hint]) {
     case regDisabled:
     case regReserved:
@@ -538,47 +574,6 @@ unsigned RAFast::reloadVirtReg(MachineBasicBlock &MBB, MachineInstr *MI,
   return LR.PhysReg;
 }
 
-/// reservePhysReg - Mark PhysReg as reserved. This is very similar to
-/// defineVirtReg except the physreg is reserved instead of allocated.
-void RAFast::reservePhysReg(MachineBasicBlock &MBB, MachineInstr *MI,
-                            unsigned PhysReg) {
-  UsedInInstr.set(PhysReg);
-  switch (unsigned VirtReg = PhysRegState[PhysReg]) {
-  case regDisabled:
-    break;
-  case regFree:
-    PhysRegState[PhysReg] = regReserved;
-    return;
-  case regReserved:
-    return;
-  default:
-    spillVirtReg(MBB, MI, VirtReg, true);
-    PhysRegState[PhysReg] = regReserved;
-    return;
-  }
-
-  // This is a disabled register, disable all aliases.
-  for (const unsigned *AS = TRI->getAliasSet(PhysReg);
-       unsigned Alias = *AS; ++AS) {
-    UsedInInstr.set(Alias);
-    switch (unsigned VirtReg = PhysRegState[Alias]) {
-    case regDisabled:
-    case regFree:
-      break;
-    case regReserved:
-      // is a super register already reserved?
-      if (TRI->isSuperRegister(PhysReg, Alias))
-        return;
-      break;
-    default:
-      spillVirtReg(MBB, MI, VirtReg, true);
-      break;
-    }
-    PhysRegState[Alias] = regDisabled;
-  }
-  PhysRegState[PhysReg] = regReserved;
-}
-
 // setPhysReg - Change MO the refer the PhysReg, considering subregs.
 void RAFast::setPhysReg(MachineOperand &MO, unsigned PhysReg) {
   if (unsigned Idx = MO.getSubReg()) {
@@ -600,9 +595,10 @@ void RAFast::AllocateBasicBlock(MachineBasicBlock &MBB) {
   // Add live-in registers as live.
   for (MachineBasicBlock::livein_iterator I = MBB.livein_begin(),
          E = MBB.livein_end(); I != E; ++I)
-    reservePhysReg(MBB, MII, *I);
+    definePhysReg(MBB, MII, *I, regReserved);
 
-  SmallVector<unsigned, 8> VirtKills, PhysKills, PhysDefs;
+  SmallVector<unsigned, 8> VirtKills, PhysDefs;
+  SmallVector<MachineInstr*, 32> Coalesced;
 
   // Otherwise, sequentially allocate each instruction in the MBB.
   while (MII != MBB.end()) {
@@ -669,29 +665,22 @@ void RAFast::AllocateBasicBlock(MachineBasicBlock &MBB) {
 
     // First scan.
     // Mark physreg uses and early clobbers as used.
-    // Collect PhysKills.
+    // Find the end of the virtreg operands
+    unsigned VirtOpEnd = 0;
     for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
       MachineOperand &MO = MI->getOperand(i);
       if (!MO.isReg()) continue;
       unsigned Reg = MO.getReg();
-      if (!Reg || !TargetRegisterInfo::isPhysicalRegister(Reg) ||
-          ReservedRegs.test(Reg)) continue;
+      if (!Reg) continue;
+      if (TargetRegisterInfo::isVirtualRegister(Reg)) {
+        VirtOpEnd = i+1;
+        continue;
+      }
+      if (!Allocatable.test(Reg)) continue;
       if (MO.isUse()) {
-#ifndef NDEBUG
-        // We are using a physreg directly. It had better not be clobbered by a
-        // virtreg.
-        assert(PhysRegState[Reg] <= regReserved && "Using clobbered physreg");
-        if (PhysRegState[Reg] == regDisabled)
-          for (const unsigned *AS = TRI->getAliasSet(Reg);
-               unsigned Alias = *AS; ++AS)
-            assert(PhysRegState[Alias] <= regReserved &&
-                   "Physreg alias was clobbered");
-#endif
-        PhysKills.push_back(Reg); // Any clean physreg use is a kill.
-        UsedInInstr.set(Reg);
+        usePhysReg(MO);
       } else if (MO.isEarlyClobber()) {
-        spillPhysReg(MBB, MI, Reg, true);
-        UsedInInstr.set(Reg);
+        definePhysReg(MBB, MI, Reg, MO.isDead() ? regFree : regReserved);
         PhysDefs.push_back(Reg);
       }
     }
@@ -699,15 +688,14 @@ void RAFast::AllocateBasicBlock(MachineBasicBlock &MBB) {
     // Second scan.
     // Allocate virtreg uses and early clobbers.
     // Collect VirtKills
-    for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
+    for (unsigned i = 0; i != VirtOpEnd; ++i) {
       MachineOperand &MO = MI->getOperand(i);
       if (!MO.isReg()) continue;
       unsigned Reg = MO.getReg();
       if (!Reg || TargetRegisterInfo::isPhysicalRegister(Reg)) continue;
       if (MO.isUse()) {
         unsigned PhysReg = reloadVirtReg(MBB, MI, i, Reg, CopyDst);
-        if (CopySrc == Reg)
-          CopySrc = PhysReg;
+        CopySrc = (CopySrc == Reg || CopySrc == PhysReg) ? PhysReg : 0;
         setPhysReg(MO, PhysReg);
         if (MO.isKill())
           VirtKills.push_back(Reg);
@@ -722,11 +710,6 @@ void RAFast::AllocateBasicBlock(MachineBasicBlock &MBB) {
     for (unsigned i = 0, e = VirtKills.size(); i != e; ++i)
       killVirtReg(VirtKills[i]);
     VirtKills.clear();
-
-    // Process physreg kills
-    for (unsigned i = 0, e = PhysKills.size(); i != e; ++i)
-      killPhysReg(PhysKills[i]);
-    PhysKills.clear();
 
     MRI->addPhysRegsUsed(UsedInInstr);
 
@@ -748,20 +731,17 @@ void RAFast::AllocateBasicBlock(MachineBasicBlock &MBB) {
       unsigned Reg = MO.getReg();
 
       if (TargetRegisterInfo::isPhysicalRegister(Reg)) {
-        if (ReservedRegs.test(Reg)) continue;
-        if (MO.isImplicit())
-          spillPhysReg(MBB, MI, Reg, true);
-        else
-          reservePhysReg(MBB, MI, Reg);
-        if (MO.isDead())
-          PhysKills.push_back(Reg);
+        if (!Allocatable.test(Reg)) continue;
+        definePhysReg(MBB, MI, Reg, (MO.isImplicit() || MO.isDead()) ?
+                                    regFree : regReserved);
         continue;
       }
-      if (MO.isDead())
-        VirtKills.push_back(Reg);
       unsigned PhysReg = defineVirtReg(MBB, MI, i, Reg, CopySrc);
-      if (CopyDst == Reg)
-        CopyDst = PhysReg;
+      if (MO.isDead()) {
+        VirtKills.push_back(Reg);
+        CopyDst = 0; // cancel coalescing;
+      } else
+        CopyDst = (CopyDst == Reg || CopyDst == PhysReg) ? PhysReg : 0;
       setPhysReg(MO, PhysReg);
     }
 
@@ -776,24 +756,39 @@ void RAFast::AllocateBasicBlock(MachineBasicBlock &MBB) {
       killVirtReg(VirtKills[i]);
     VirtKills.clear();
 
-    // Process physreg deads.
-    for (unsigned i = 0, e = PhysKills.size(); i != e; ++i)
-      killPhysReg(PhysKills[i]);
-    PhysKills.clear();
-
     MRI->addPhysRegsUsed(UsedInInstr);
 
-    DEBUG(dbgs() << "<< " << *MI);
+    if (CopyDst && CopyDst == CopySrc && CopyDstSub == CopySrcSub) {
+      DEBUG(dbgs() << "-- coalescing: " << *MI);
+      Coalesced.push_back(MI);
+    } else {
+      DEBUG(dbgs() << "<< " << *MI);
+    }
   }
 
   // Spill all physical registers holding virtual registers now.
   atEndOfBlock = true;
-  DEBUG(dbgs() << "Killing live registers at end of block.\n");
   MachineBasicBlock::iterator MI = MBB.getFirstTerminator();
-  for (LiveRegMap::iterator i = LiveVirtRegs.begin(), e = LiveVirtRegs.end();
-       i != e; ++i)
-    spillVirtReg(MBB, MI, i, true);
+  if (MI != MBB.end() && MI->getDesc().isReturn()) {
+    // This is a return block, kill all virtual registers.
+    DEBUG(dbgs() << "Killing live registers at end of return block.\n");
+    for (LiveRegMap::iterator i = LiveVirtRegs.begin(), e = LiveVirtRegs.end();
+         i != e; ++i)
+      killVirtReg(i);
+  } else {
+    // This is a normal block, spill any dirty virtregs.
+    DEBUG(dbgs() << "Spilling live registers at end of block.\n");
+    for (LiveRegMap::iterator i = LiveVirtRegs.begin(), e = LiveVirtRegs.end();
+        i != e; ++i)
+      spillVirtReg(MBB, MI, i, true);
+  }
   LiveVirtRegs.clear();
+
+  // Erase all the coalesced copies. We are delaying it until now because
+  // LiveVirtsRegs might refer to the instrs.
+  for (unsigned i = 0, e = Coalesced.size(); i != e; ++i)
+    MBB.erase(Coalesced[i]);
+  NumCopies += Coalesced.size();
 
   DEBUG(MBB.dump());
 }
@@ -804,6 +799,8 @@ bool RAFast::runOnMachineFunction(MachineFunction &Fn) {
   DEBUG(dbgs() << "********** FAST REGISTER ALLOCATION **********\n"
                << "********** Function: "
                << ((Value*)Fn.getFunction())->getName() << '\n');
+  if (VerifyFastRegalloc)
+    Fn.verify(this, true);
   MF = &Fn;
   MRI = &MF->getRegInfo();
   TM = &Fn.getTarget();
@@ -811,7 +808,7 @@ bool RAFast::runOnMachineFunction(MachineFunction &Fn) {
   TII = TM->getInstrInfo();
 
   UsedInInstr.resize(TRI->getNumRegs());
-  ReservedRegs = TRI->getReservedRegs(*MF);
+  Allocatable = TRI->getAllocatableSet(*MF);
 
   // initialize the virtual->physical register map to have a 'null'
   // mapping for all virtual registers

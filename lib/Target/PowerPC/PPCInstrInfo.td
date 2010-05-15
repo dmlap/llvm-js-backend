@@ -662,7 +662,7 @@ def STWCX : XForm_1<31, 150, (outs), (ins GPRC:$rS, memrr:$dst),
                    [(PPCstcx GPRC:$rS, xoaddr:$dst)]>,
                    isDOT;
 
-let isBarrier = 1, hasCtrlDep = 1 in
+let isTerminator = 1, isBarrier = 1, hasCtrlDep = 1 in
 def TRAP  : XForm_24<31, 4, (outs), (ins), "trap", LdStGeneral, [(trap)]>;
 
 //===----------------------------------------------------------------------===//
@@ -862,7 +862,6 @@ def STFDX : XForm_28<31, 727, (outs), (ins F8RC:$frS, memrr:$dst),
                      [(store F8RC:$frS, xaddr:$dst)]>;
 }
 
-let isBarrier = 1 in
 def SYNC : XForm_24_sync<31, 598, (outs), (ins),
                         "sync", LdStSync,
                         [(int_ppc_sync)]>;

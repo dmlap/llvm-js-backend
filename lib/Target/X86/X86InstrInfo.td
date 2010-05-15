@@ -542,8 +542,10 @@ let neverHasSideEffects = 1 in {
 }
 
 // Trap
-def INT3 : I<0xcc, RawFrm, (outs), (ins), "int\t3", []>;
-def INT : I<0xcd, RawFrm, (outs), (ins i8imm:$trap), "int\t$trap", []>;
+def INTO : I<0xce, RawFrm, (outs), (ins), "into", []>;
+def INT3 : I<0xcc, RawFrm, (outs), (ins), "int3", []>;
+// FIXME: need to make sure that "int $3" matches int3
+def INT : Ii8<0xcd, RawFrm, (outs), (ins i8imm:$trap), "int\t$trap", []>;
 def IRET16 : I<0xcf, RawFrm, (outs), (ins), "iret{w}", []>, OpSize;
 def IRET32 : I<0xcf, RawFrm, (outs), (ins), "iret{l}", []>;
 
@@ -693,6 +695,7 @@ let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1 in
   def TCRETURNri : I<0, Pseudo, (outs), 
                      (ins GR32_TC:$dst, i32imm:$offset, variable_ops),
                      "#TC_RETURN $dst $offset", []>;
+  let mayLoad = 1 in
   def TCRETURNmi : I<0, Pseudo, (outs), 
                      (ins i32mem_TC:$dst, i32imm:$offset, variable_ops),
                      "#TC_RETURN $dst $offset", []>;
@@ -706,6 +709,7 @@ let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1 in
   def TAILJMPr : I<0xFF, MRM4r, (outs), (ins GR32_TC:$dst, variable_ops), 
                    "jmp{l}\t{*}$dst  # TAILCALL",
                  []>;     
+  let mayLoad = 1 in
   def TAILJMPm : I<0xFF, MRM4m, (outs), (ins i32mem_TC:$dst, variable_ops),
                    "jmp{l}\t{*}$dst  # TAILCALL", []>;
 }
@@ -719,10 +723,12 @@ def LEAVE    : I<0xC9, RawFrm,
 
 def POPCNT16rr : I<0xB8, MRMSrcReg, (outs GR16:$dst), (ins GR16:$src),
                    "popcnt{w}\t{$src, $dst|$dst, $src}", []>, OpSize, XS;
+let mayLoad = 1 in
 def POPCNT16rm : I<0xB8, MRMSrcMem, (outs GR16:$dst), (ins i16mem:$src),
                    "popcnt{w}\t{$src, $dst|$dst, $src}", []>, OpSize, XS;
 def POPCNT32rr : I<0xB8, MRMSrcReg, (outs GR32:$dst), (ins GR32:$src),
                    "popcnt{l}\t{$src, $dst|$dst, $src}", []>, XS;
+let mayLoad = 1 in
 def POPCNT32rm : I<0xB8, MRMSrcMem, (outs GR32:$dst), (ins i32mem:$src),
                    "popcnt{l}\t{$src, $dst|$dst, $src}", []>, XS;
 
@@ -867,7 +873,7 @@ def RDTSC : I<0x31, RawFrm, (outs), (ins), "rdtsc", [(X86rdtsc)]>,
 let Defs = [RAX, RCX, RDX] in
 def RDTSCP : I<0x01, MRM_F9, (outs), (ins), "rdtscp", []>, TB;
 
-let isBarrier = 1, hasCtrlDep = 1 in {
+let isTerminator = 1, isBarrier = 1, hasCtrlDep = 1 in {
 def TRAP    : I<0x0B, RawFrm, (outs), (ins), "ud2", [(trap)]>, TB;
 }
 
@@ -3865,12 +3871,14 @@ def XADD16rr : I<0xC1, MRMDestReg, (outs GR16:$dst), (ins GR16:$src),
 def XADD32rr  : I<0xC1, MRMDestReg, (outs GR32:$dst), (ins GR32:$src),
                  "xadd{l}\t{$src, $dst|$dst, $src}", []>, TB;
 
+let mayLoad = 1, mayStore = 1 in {
 def XADD8rm   : I<0xC0, MRMDestMem, (outs), (ins i8mem:$dst, GR8:$src),
                  "xadd{b}\t{$src, $dst|$dst, $src}", []>, TB;
 def XADD16rm  : I<0xC1, MRMDestMem, (outs), (ins i16mem:$dst, GR16:$src),
                  "xadd{w}\t{$src, $dst|$dst, $src}", []>, TB, OpSize;
 def XADD32rm  : I<0xC1, MRMDestMem, (outs), (ins i32mem:$dst, GR32:$src),
                  "xadd{l}\t{$src, $dst|$dst, $src}", []>, TB;
+}
 
 def CMPXCHG8rr : I<0xB0, MRMDestReg, (outs GR8:$dst), (ins GR8:$src),
                    "cmpxchg{b}\t{$src, $dst|$dst, $src}", []>, TB;
@@ -3879,12 +3887,14 @@ def CMPXCHG16rr : I<0xB1, MRMDestReg, (outs GR16:$dst), (ins GR16:$src),
 def CMPXCHG32rr  : I<0xB1, MRMDestReg, (outs GR32:$dst), (ins GR32:$src),
                      "cmpxchg{l}\t{$src, $dst|$dst, $src}", []>, TB;
 
+let mayLoad = 1, mayStore = 1 in {
 def CMPXCHG8rm   : I<0xB0, MRMDestMem, (outs), (ins i8mem:$dst, GR8:$src),
                      "cmpxchg{b}\t{$src, $dst|$dst, $src}", []>, TB;
 def CMPXCHG16rm  : I<0xB1, MRMDestMem, (outs), (ins i16mem:$dst, GR16:$src),
                      "cmpxchg{w}\t{$src, $dst|$dst, $src}", []>, TB, OpSize;
 def CMPXCHG32rm  : I<0xB1, MRMDestMem, (outs), (ins i32mem:$dst, GR32:$src),
                      "cmpxchg{l}\t{$src, $dst|$dst, $src}", []>, TB;
+}
 
 let Defs = [EAX, EDX, EFLAGS], Uses = [EAX, EBX, ECX, EDX] in
 def CMPXCHG8B : I<0xC7, MRM1m, (outs), (ins i64mem:$dst),
@@ -3892,7 +3902,7 @@ def CMPXCHG8B : I<0xC7, MRM1m, (outs), (ins i64mem:$dst),
 
 // Optimized codegen when the non-memory output is not used.
 // FIXME: Use normal add / sub instructions and add lock prefix dynamically.
-let Defs = [EFLAGS] in {
+let Defs = [EFLAGS], mayLoad = 1, mayStore = 1 in {
 def LOCK_ADD8mr  : I<0x00, MRMDestMem, (outs), (ins i8mem:$dst, GR8:$src2),
                     "lock\n\t"
                     "add{b}\t{$src2, $dst|$dst, $src2}", []>, LOCK;
