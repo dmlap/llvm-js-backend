@@ -23,11 +23,13 @@ declare extern_weak i8* @gf(i8*)
 @gfp = global i8* (i8*)* @gf
 ; CHECK: _.aep = null;
 @aep = available_externally global i8* null
-; CHECK: _.los = [ 1, 2, 3];
+; CHECK: _.los = [ 1, 2, 3 ];
 @los = linkonce constant { i32, i32, i32 } { i32 1, i32 2, i32 3 }
 ; CHECK: _.wu = 3;
 @wu = weak global union { double, i32 } {  i32 3 }
-; CHECK: _.av = {{[[false, true, false]]}};
+; CHECK: _.av = [
+; CHECK: [
+; CHECK: false, true, false ]];
 @av = appending global [3 x i1] [i1 0, i1 1, i1 0]
 ; CHECK: _.looi = 2;
 @looi = linkonce_odr global i8 2

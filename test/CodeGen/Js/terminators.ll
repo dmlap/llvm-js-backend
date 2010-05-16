@@ -4,7 +4,7 @@
 
 define i32 @main(i32 %argc, i8** nocapture %argv) nounwind {
 entry:
-; CHECK: if (1) {
+; CHECK: if (true) {
 ; CHECK: _ =
 ; CHECK: continue;
 ; CHECK: } else {

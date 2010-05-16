@@ -701,22 +701,22 @@ void JsWriter::printConstantArray(ConstantArray *CPA, bool Static) {
       }
     }
     Out << '\"';
-  } else {
-    Out << '{';
-    if (CPA->getNumOperands()) {
-      Out << ' ';
-      printConstant(cast<Constant>(CPA->getOperand(0)), Static);
-      for (unsigned i = 1, e = CPA->getNumOperands(); i != e; ++i) {
-        Out << ", ";
-        printConstant(cast<Constant>(CPA->getOperand(i)), Static);
-      }
+    return;
+  } 
+  Out << '[';
+  if (CPA->getNumOperands()) {
+    Out << ' ';
+    printConstant(cast<Constant>(CPA->getOperand(0)), Static);
+    for (unsigned i = 1, e = CPA->getNumOperands(); i != e; ++i) {
+      Out << ", ";
+      printConstant(cast<Constant>(CPA->getOperand(i)), Static);
     }
-    Out << " }";
   }
+  Out << " ]";
 }
 
 void JsWriter::printConstantVector(ConstantVector *CP, bool Static) {
-  Out << '{';
+  Out << '[';
   if (CP->getNumOperands()) {
     Out << ' ';
     printConstant(cast<Constant>(CP->getOperand(0)), Static);
@@ -725,7 +725,7 @@ void JsWriter::printConstantVector(ConstantVector *CP, bool Static) {
       printConstant(cast<Constant>(CP->getOperand(i)), Static);
     }
   }
-  Out << " }";
+  Out << " ]";
 }
 
 // isFPCSafeToPrint - Returns true if we may assume that CFP may be written out
@@ -1084,16 +1084,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
             (FPC->getType() == Type::getFloatTy(FPC->getContext()) ? "F" : "")
             << " /*inf*/ ";
       } else {
-        std::string Num;
-#if HAVE_PRINTF_A && ENABLE_CBE_PRINTF_A
-        // Print out the constant as a floating point number.
-        char Buffer[100];
-        sprintf(Buffer, "%a", V);
-        Num = Buffer;
-#else
-        Num = ftostr(FPC->getValueAPF());
-#endif
-       Out << Num;
+	Out << ftostr(FPC->getValueAPF());
       }
     }
     break;
@@ -1112,7 +1103,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
     } else {
       assert(isa<ConstantAggregateZero>(CPV) || isa<UndefValue>(CPV));
       const ArrayType *AT = cast<ArrayType>(CPV->getType());
-      Out << '{';
+      Out << '[';
       if (AT->getNumElements()) {
         Out << ' ';
         Constant *CZ = Constant::getNullValue(AT->getElementType());
@@ -1122,7 +1113,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
           printConstant(CZ, Static);
         }
       }
-      Out << " }";
+      Out << " ]";
     }
     Out << "]"; // wrap arrays in an array to simulate pointers
     break;
@@ -1139,14 +1130,14 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
     } else {
       assert(isa<ConstantAggregateZero>(CPV) || isa<UndefValue>(CPV));
       const VectorType *VT = cast<VectorType>(CPV->getType());
-      Out << "{ ";
+      Out << "[ ";
       Constant *CZ = Constant::getNullValue(VT->getElementType());
       printConstant(CZ, Static);
       for (unsigned i = 1, e = VT->getNumElements(); i != e; ++i) {
         Out << ", ";
         printConstant(CZ, Static);
       }
-      Out << " }";
+      Out << " ]";
     }
     break;
 
@@ -1185,9 +1176,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
 
   case Type::PointerTyID:
     if (isa<ConstantPointerNull>(CPV)) {
-      Out << "((";
-      printType(Out, CPV->getType()); // sign doesn't matter
-      Out << ")/*NULL*/0)";
+      Out << "null";
       break;
     } else if (GlobalValue *GV = dyn_cast<GlobalValue>(CPV)) {
       writeOperand(GV, Static);
@@ -1739,7 +1728,7 @@ bool JsWriter::doInitialization(Module &M) {
   }
 
   if (!M.empty()) {
-    Out << "\n/* Function Bodies */\n";
+    Out << "\n/* Module Methods */\n";
   }
   return false;
 }
