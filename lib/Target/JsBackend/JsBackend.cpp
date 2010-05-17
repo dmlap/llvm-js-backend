@@ -226,7 +226,6 @@ namespace {
     void printConstant(Constant *CPV, bool Static, raw_ostream &Out);
     void printConstant(Constant *CPV, bool Static);
     void printConstantWithCast(Constant *CPV, unsigned Opcode);
-    bool printConstExprCast(const ConstantExpr *CE, bool Static);
     void printConstantArray(ConstantArray *CPA, bool Static);
     void printConstantVector(ConstantVector *CV, bool Static);
 
@@ -290,6 +289,20 @@ namespace {
       if (const CallInst *CI = dyn_cast<CallInst>(&I))
         return isa<InlineAsm>(CI->getCalledValue());
       return false;
+    }
+
+    // Converts an APFloat to a string via a double
+    static inline std::string apfToStr(const APFloat& V) {
+      double Double;
+      if (&V.getSemantics() == &APFloat::IEEEdouble) {
+	Double = V.convertToDouble();
+      }
+      else if (&V.getSemantics() == &APFloat::IEEEsingle) {
+	Double = (double) V.convertToFloat();
+      }
+      char Buffer[200];
+      snprintf(Buffer, 200, "%g", Double);
+      return Buffer;
     }
     
     // Instruction visitation functions
@@ -906,7 +919,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
     case Instruction::AShr:
     {
       Out << '(';
-      bool NeedsClosingParens = printConstExprCast(CE, Static); 
       printConstantWithCast(CE->getOperand(0), CE->getOpcode());
       switch (CE->getOpcode()) {
       case Instruction::Add:
@@ -945,14 +957,11 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
       default: llvm_unreachable("Illegal opcode here!");
       }
       printConstantWithCast(CE->getOperand(1), CE->getOpcode());
-      if (NeedsClosingParens)
-        Out << "))";
       Out << ')';
       return;
     }
     case Instruction::FCmp: {
       Out << '('; 
-      bool NeedsClosingParens = printConstExprCast(CE, Static); 
       if (CE->getPredicate() == FCmpInst::FCMP_FALSE)
         Out << "0";
       else if (CE->getPredicate() == FCmpInst::FCMP_TRUE)
@@ -982,8 +991,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
         printConstantWithCast(CE->getOperand(1), CE->getOpcode());
         Out << ")";
       }
-      if (NeedsClosingParens)
-        Out << "))";
       Out << ')';
       return;
     }
@@ -1084,7 +1091,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
             (FPC->getType() == Type::getFloatTy(FPC->getContext()) ? "F" : "")
             << " /*inf*/ ";
       } else {
-	Out << ftostr(FPC->getValueAPF());
+	Out << apfToStr(FPC->getValueAPF());
       }
     }
     break;
@@ -1199,57 +1206,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static) {
   printConstant(CPV, Static, Out);
 }
 
-// Some constant expressions need to be casted back to the original types
-// because their operands were casted to the expected type. This function takes
-// care of detecting that case and printing the cast for the ConstantExpr.
-bool JsWriter::printConstExprCast(const ConstantExpr* CE, bool Static) {
-  bool NeedsExplicitCast = false;
-  const Type *Ty = CE->getOperand(0)->getType();
-  bool TypeIsSigned = false;
-  switch (CE->getOpcode()) {
-  case Instruction::Add:
-  case Instruction::Sub:
-  case Instruction::Mul:
-    // We need to cast integer arithmetic so that it is always performed
-    // as unsigned, to avoid undefined behavior on overflow.
-  case Instruction::LShr:
-  case Instruction::URem: 
-  case Instruction::UDiv: NeedsExplicitCast = true; break;
-  case Instruction::AShr:
-  case Instruction::SRem: 
-  case Instruction::SDiv: NeedsExplicitCast = true; TypeIsSigned = true; break;
-  case Instruction::SExt:
-    Ty = CE->getType();
-    NeedsExplicitCast = true;
-    TypeIsSigned = true;
-    break;
-  case Instruction::ZExt:
-  case Instruction::Trunc:
-  case Instruction::FPTrunc:
-  case Instruction::FPExt:
-  case Instruction::UIToFP:
-  case Instruction::SIToFP:
-  case Instruction::FPToUI:
-  case Instruction::FPToSI:
-  case Instruction::PtrToInt:
-  case Instruction::IntToPtr:
-  case Instruction::BitCast:
-    Ty = CE->getType();
-    NeedsExplicitCast = true;
-    break;
-  default: break;
-  }
-  if (NeedsExplicitCast) {
-    Out << "((";
-    if (Ty->isIntegerTy() && Ty != Type::getInt1Ty(Ty->getContext()))
-      printSimpleType(Out, Ty, TypeIsSigned);
-    else
-      printType(Out, Ty); // not integer, sign doesn't matter
-    Out << ")(";
-  }
-  return NeedsExplicitCast;
-}
-
 //  Print a constant assuming that it is the operand for a given Opcode. The
 //  opcodes that care about sign need to cast their operands to the expected
 //  type before the operation proceeds. This function does the casting.
@@ -1348,8 +1304,7 @@ void JsWriter::writeInstComputationInline(Instruction &I) {
         Ty!=Type::getInt32Ty(I.getContext()) &&
         Ty!=Type::getInt64Ty(I.getContext()))) {
       report_fatal_error("The Javascript backend does not currently support integer "
-                        "types of widths other than 1, 8, 16, 32, 64.\n"
-                        "This is being tracked as PR 4158.");
+                        "types of widths other than 1, 8, 16, 32, 64.\n");
   }
 
   // If this is a non-trivial bool computation, make sure to truncate down to
@@ -2119,17 +2074,6 @@ void JsWriter::visitBinaryOperator(Instruction &I) {
   // binary instructions, shift instructions, setCond instructions.
   assert(!I.getType()->isPointerTy());
 
-  // We must cast the results of binary operations which might be promoted.
-  bool needsCast = false;
-  if ((I.getType() == Type::getInt8Ty(I.getContext())) ||
-      (I.getType() == Type::getInt16Ty(I.getContext())) 
-      || (I.getType() == Type::getFloatTy(I.getContext()))) {
-    needsCast = true;
-    Out << "((";
-    printType(Out, I.getType(), false);
-    Out << ")(";
-  }
-
   // If this is a negation operation, print it out as such.  For FP, we don't
   // want to print "-0.0 - X".
   if (BinaryOperator::isNeg(&I)) {
@@ -2141,10 +2085,15 @@ void JsWriter::visitBinaryOperator(Instruction &I) {
     writeOperand(BinaryOperator::getFNegArgument(cast<BinaryOperator>(&I)));
     Out << ")";
   } else {
+    bool IsIntDiv = I.getOpcode() == Instruction::UDiv || I.getOpcode() == Instruction::SDiv;
+    bool IsUnsigned = I.getOpcode() == Instruction::UDiv || I.getOpcode() == Instruction::URem;
+    if(IsUnsigned) {
+      Out << "Math.abs(";
+    }
+    if(IsIntDiv) {
+      Out << "Math.floor(";
+    }
 
-    // Certain instructions require the operand to be forced to a specific type
-    // so we use writeOperandWithCast here instead of writeOperand. Similarly
-    // below for operand 1
     writeOperand(I.getOperand(0), I.getOpcode());
 
     switch (I.getOpcode()) {
@@ -2174,10 +2123,13 @@ void JsWriter::visitBinaryOperator(Instruction &I) {
     }
 
     writeOperand(I.getOperand(1), I.getOpcode());
-  }
 
-  if (needsCast) {
-    Out << "))";
+    if(IsIntDiv) {
+      Out << ")";
+    }
+    if(IsUnsigned) {
+      Out << ")";
+    }
   }
 }
 
