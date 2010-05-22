@@ -221,6 +221,9 @@ class Instruction {
   // purposes.
   bit isCodeGenOnly = 0;
 
+  // Is this instruction a pseudo instruction for use by the assembler parser.
+  bit isAsmParserOnly = 0;
+
   InstrItinClass Itinerary = NoItinerary;// Execution steps used for scheduling.
 
   string Constraints = "";  // OperandConstraint, e.g. $src = $dst.
@@ -296,8 +299,8 @@ class AsmOperandClass {
   /// The name to use for this class, which should be usable as an enum value.
   string Name = ?;
 
-  /// The super class of this operand.
-  AsmOperandClass SuperClass = ?;
+  /// The super classes of this operand.
+  list<AsmOperandClass> SuperClasses = [];
 
   /// The name of the method on the target specific operand to call to test
   /// whether the operand is an instance of this class. If not set, this will
@@ -331,10 +334,10 @@ class Operand<ValueType ty> {
   // in. Match classes are used to define the order in which instructions are
   // match, to ensure that which instructions gets matched is deterministic.
   //
-  // The target specific parser must be able to classify an parsed operand 
-  // into a unique class, which does not partially overlap with any other 
-  // classes. It can match a subset of some other class, in which case 
-  // ParserMatchSuperClass should be set to the name of that class.
+  // The target specific parser must be able to classify an parsed operand into
+  // a unique class, which does not partially overlap with any other classes. It
+  // can match a subset of some other class, in which case the AsmOperandClass
+  // should declare the other operand as one of its super classes.
   AsmOperandClass ParserMatchClass = ImmAsmOperand;
 }
 

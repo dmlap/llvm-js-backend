@@ -94,7 +94,7 @@ X86TargetLowering::X86TargetLowering(X86TargetMachine &TM)
   // X86 is weird, it always uses i8 for shift amounts and setcc results.
   setShiftAmountType(MVT::i8);
   setBooleanContents(ZeroOrOneBooleanContent);
-  setSchedulingPreference(SchedulingForRegPressure);
+  setSchedulingPreference(Sched::RegPressure);
   setStackPointerRegisterToSaveRestore(X86StackPtr);
 
   if (Subtarget->isTargetDarwin()) {
@@ -214,9 +214,17 @@ X86TargetLowering::X86TargetLowering(X86TargetMachine &TM)
   }
 
   // TODO: when we have SSE, these could be more efficient, by using movd/movq.
-  if (!X86ScalarSSEf64) {
+  if (!X86ScalarSSEf64) { 
     setOperationAction(ISD::BIT_CONVERT      , MVT::f32  , Expand);
     setOperationAction(ISD::BIT_CONVERT      , MVT::i32  , Expand);
+    if (Subtarget->is64Bit()) {
+      setOperationAction(ISD::BIT_CONVERT    , MVT::f64  , Expand);
+      // Without SSE, i64->f64 goes through memory; i64->MMX is Legal.
+      if (Subtarget->hasMMX() && !DisableMMX)
+        setOperationAction(ISD::BIT_CONVERT    , MVT::i64  , Custom);
+      else 
+        setOperationAction(ISD::BIT_CONVERT    , MVT::i64  , Expand);
+    }
   }
 
   // Scalar integer divide and remainder are lowered to use operations that
@@ -678,6 +686,14 @@ X86TargetLowering::X86TargetLowering(X86TargetMachine &TM)
     setOperationAction(ISD::VSETCC,             MVT::v8i8, Custom);
     setOperationAction(ISD::VSETCC,             MVT::v4i16, Custom);
     setOperationAction(ISD::VSETCC,             MVT::v2i32, Custom);
+
+    if (!X86ScalarSSEf64 && Subtarget->is64Bit()) {
+      setOperationAction(ISD::BIT_CONVERT,        MVT::v8i8,  Custom);
+      setOperationAction(ISD::BIT_CONVERT,        MVT::v4i16, Custom);
+      setOperationAction(ISD::BIT_CONVERT,        MVT::v2i32, Custom);
+      setOperationAction(ISD::BIT_CONVERT,        MVT::v2f32, Custom);
+      setOperationAction(ISD::BIT_CONVERT,        MVT::v1i64, Custom);
+    }
   }
 
   if (!UseSoftFloat && Subtarget->hasSSE1()) {
@@ -1383,6 +1399,8 @@ bool X86TargetLowering::IsCalleePop(bool IsVarArg,
     return !Subtarget->is64Bit();
   case CallingConv::X86_FastCall:
     return !Subtarget->is64Bit();
+  case CallingConv::X86_ThisCall:
+    return !Subtarget->is64Bit();
   case CallingConv::Fast:
     return GuaranteedTailCallOpt;
   case CallingConv::GHC:
@@ -1404,6 +1422,8 @@ CCAssignFn *X86TargetLowering::CCAssignFnForNode(CallingConv::ID CC) const {
 
   if (CC == CallingConv::X86_FastCall)
     return CC_X86_32_FastCall;
+  else if (CC == CallingConv::X86_ThisCall)
+    return CC_X86_32_ThisCall;
   else if (CC == CallingConv::Fast)
     return CC_X86_32_FastCC;
   else if (CC == CallingConv::GHC)
@@ -1595,7 +1615,8 @@ X86TargetLowering::LowerFormalArguments(SDValue Chain,
   // If the function takes variable number of arguments, make a frame index for
   // the start of the first vararg value... for expansion of llvm.va_start.
   if (isVarArg) {
-    if (Is64Bit || CallConv != CallingConv::X86_FastCall) {
+    if (Is64Bit || (CallConv != CallingConv::X86_FastCall &&
+                    CallConv != CallingConv::X86_ThisCall)) {
       FuncInfo->setVarArgsFrameIndex(MFI->CreateFixedObject(1, StackSize,
                                                             true, false));
     }
@@ -1715,7 +1736,8 @@ X86TargetLowering::LowerFormalArguments(SDValue Chain,
   if (!Is64Bit) {
     // RegSaveFrameIndex is X86-64 only.
     FuncInfo->setRegSaveFrameIndex(0xAAAAAAA);
-    if (CallConv == CallingConv::X86_FastCall)
+    if (CallConv == CallingConv::X86_FastCall ||
+        CallConv == CallingConv::X86_ThisCall)
       // fastcc functions can't have varargs.
       FuncInfo->setVarArgsFrameIndex(0xAAAAAAA);
   }
@@ -6959,6 +6981,9 @@ X86TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) const 
 
 SDValue X86TargetLowering::LowerRETURNADDR(SDValue Op,
                                            SelectionDAG &DAG) const {
+  MachineFrameInfo *MFI = DAG.getMachineFunction().getFrameInfo();
+  MFI->setReturnAddressIsTaken(true);
+
   unsigned Depth = cast<ConstantSDNode>(Op.getOperand(0))->getZExtValue();
   DebugLoc dl = Op.getDebugLoc();
 
@@ -6982,6 +7007,7 @@ SDValue X86TargetLowering::LowerRETURNADDR(SDValue Op,
 SDValue X86TargetLowering::LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const {
   MachineFrameInfo *MFI = DAG.getMachineFunction().getFrameInfo();
   MFI->setFrameAddressIsTaken(true);
+
   EVT VT = Op.getValueType();
   DebugLoc dl = Op.getDebugLoc();  // FIXME probably not meaningful
   unsigned Depth = cast<ConstantSDNode>(Op.getOperand(0))->getZExtValue();
@@ -7119,6 +7145,7 @@ SDValue X86TargetLowering::LowerTRAMPOLINE(SDValue Op,
       break;
     }
     case CallingConv::X86_FastCall:
+    case CallingConv::X86_ThisCall:
     case CallingConv::Fast:
       // Pass 'nest' parameter in EAX.
       // Must be kept in sync with X86CallingConv.td
@@ -7451,6 +7478,27 @@ SDValue X86TargetLowering::LowerREADCYCLECOUNTER(SDValue Op,
   return DAG.getMergeValues(Ops, 2, dl);
 }
 
+SDValue X86TargetLowering::LowerBIT_CONVERT(SDValue Op,
+                                            SelectionDAG &DAG) const {
+  EVT SrcVT = Op.getOperand(0).getValueType();
+  EVT DstVT = Op.getValueType();
+  assert((Subtarget->is64Bit() && !Subtarget->hasSSE2() && 
+          Subtarget->hasMMX() && !DisableMMX) &&
+         "Unexpected custom BIT_CONVERT");
+  assert((DstVT == MVT::i64 || 
+          (DstVT.isVector() && DstVT.getSizeInBits()==64)) &&
+         "Unexpected custom BIT_CONVERT");
+  // i64 <=> MMX conversions are Legal.
+  if (SrcVT==MVT::i64 && DstVT.isVector())
+    return Op;
+  if (DstVT==MVT::i64 && SrcVT.isVector())
+    return Op;
+  // MMX <=> MMX conversions are Legal.
+  if (SrcVT.isVector() && DstVT.isVector())
+    return Op;
+  // All other conversions need to be expanded.
+  return SDValue();
+}
 SDValue X86TargetLowering::LowerLOAD_SUB(SDValue Op, SelectionDAG &DAG) const {
   SDNode *Node = Op.getNode();
   DebugLoc dl = Node->getDebugLoc();
@@ -7520,6 +7568,7 @@ SDValue X86TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::SMULO:
   case ISD::UMULO:              return LowerXALUO(Op, DAG);
   case ISD::READCYCLECOUNTER:   return LowerREADCYCLECOUNTER(Op, DAG);
+  case ISD::BIT_CONVERT:        return LowerBIT_CONVERT(Op, DAG);
   }
 }
 

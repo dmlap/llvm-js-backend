@@ -97,11 +97,6 @@ public:
     ZeroOrNegativeOneBooleanContent // All bits equal to bit 0.
   };
 
-  enum SchedPreference {
-    SchedulingForLatency,          // Scheduling for shortest total latency.
-    SchedulingForRegPressure       // Scheduling for lowest register pressure.
-  };
-
   /// NOTE: The constructor takes ownership of TLOF.
   explicit TargetLowering(const TargetMachine &TM,
                           const TargetLoweringObjectFile *TLOF);
@@ -150,8 +145,15 @@ public:
   BooleanContent getBooleanContents() const { return BooleanContents;}
 
   /// getSchedulingPreference - Return target scheduling preference.
-  SchedPreference getSchedulingPreference() const {
+  Sched::Preference getSchedulingPreference() const {
     return SchedPreferenceInfo;
+  }
+
+  /// getSchedulingPreference - Some scheduler, e.g. hybrid, can switch to
+  /// different scheduling heuristics for different nodes. This function returns
+  /// the preference (or none) for the given node.
+  virtual Sched::Preference getSchedulingPreference(SDNode *N) const {
+    return Sched::None;
   }
 
   /// getRegClassFor - Return the register class that should be used for the
@@ -906,7 +908,7 @@ protected:
   void setBooleanContents(BooleanContent Ty) { BooleanContents = Ty; }
 
   /// setSchedulingPreference - Specify the target scheduling preference.
-  void setSchedulingPreference(SchedPreference Pref) {
+  void setSchedulingPreference(Sched::Preference Pref) {
     SchedPreferenceInfo = Pref;
   }
 
@@ -1521,7 +1523,7 @@ private:
 
   /// SchedPreferenceInfo - The target scheduling preference: shortest possible
   /// total cycles or lowest register usage.
-  SchedPreference SchedPreferenceInfo;
+  Sched::Preference SchedPreferenceInfo;
   
   /// JumpBufSize - The size, in bytes, of the target's jmp_buf buffers
   unsigned JumpBufSize;

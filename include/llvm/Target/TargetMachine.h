@@ -70,6 +70,15 @@ namespace CodeGenOpt {
   };
 }
 
+namespace Sched {
+  enum Preference {
+    None,             // No preference
+    Latency,          // Scheduling for shortest total latency.
+    RegPressure,      // Scheduling for lowest register pressure.
+    Hybrid            // Scheduling for both latency and register pressure.
+  };
+}
+
 //===----------------------------------------------------------------------===//
 ///
 /// TargetMachine - Primary interface to the complete machine description for

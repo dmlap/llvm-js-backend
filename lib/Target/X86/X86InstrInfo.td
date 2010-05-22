@@ -195,15 +195,15 @@ def ptr_rc_nosp : PointerLikeRegClass<1>;
 //
 def X86MemAsmOperand : AsmOperandClass {
   let Name = "Mem";
-  let SuperClass = ?;
+  let SuperClasses = [];
 }
 def X86NoSegMemAsmOperand : AsmOperandClass {
   let Name = "NoSegMem";
-  let SuperClass = X86MemAsmOperand;
+  let SuperClasses = [X86MemAsmOperand];
 }
 def X86AbsMemAsmOperand : AsmOperandClass {
   let Name = "AbsMem";
-  let SuperClass = X86NoSegMemAsmOperand;
+  let SuperClasses = [X86NoSegMemAsmOperand];
 }
 class X86MemOperand<string printMethod> : Operand<iPTR> {
   let PrintMethod = printMethod;
@@ -270,19 +270,49 @@ def SSECC : Operand<i8> {
   let PrintMethod = "printSSECC";
 }
 
-def ImmSExt8AsmOperand : AsmOperandClass {
-  let Name = "ImmSExt8";
-  let SuperClass = ImmAsmOperand;
+class ImmSExtAsmOperandClass : AsmOperandClass {
+  let SuperClasses = [ImmAsmOperand];
+  let RenderMethod = "addImmOperands";
+}
+
+// Sign-extended immediate classes. We don't need to define the full lattice
+// here because there is no instruction with an ambiguity between ImmSExti64i32
+// and ImmSExti32i8.
+//
+// The strange ranges come from the fact that the assembler always works with
+// 64-bit immediates, but for a 16-bit target value we want to accept both "-1"
+// (which will be a -1ULL), and "0xFF" (-1 in 16-bits).
+
+// [0, 0x7FFFFFFF]                                            | [0xFFFFFFFF80000000, 0xFFFFFFFFFFFFFFFF]
+def ImmSExti64i32AsmOperand : ImmSExtAsmOperandClass {
+  let Name = "ImmSExti64i32";
+}
+
+// [0, 0x0000007F] | [0x000000000000FF80, 0x000000000000FFFF] | [0xFFFFFFFFFFFFFF80, 0xFFFFFFFFFFFFFFFF]
+def ImmSExti16i8AsmOperand : ImmSExtAsmOperandClass {
+  let Name = "ImmSExti16i8";
+  let SuperClasses = [ImmSExti64i32AsmOperand];
+}
+
+// [0, 0x0000007F] | [0x00000000FFFFFF80, 0x00000000FFFFFFFF] | [0xFFFFFFFFFFFFFF80, 0xFFFFFFFFFFFFFFFF]
+def ImmSExti32i8AsmOperand : ImmSExtAsmOperandClass {
+  let Name = "ImmSExti32i8";
+}
+
+// [0, 0x0000007F]                                            | [0xFFFFFFFFFFFFFF80, 0xFFFFFFFFFFFFFFFF]
+def ImmSExti64i8AsmOperand : ImmSExtAsmOperandClass {
+  let Name = "ImmSExti64i8";
+  let SuperClasses = [ImmSExti16i8AsmOperand, ImmSExti32i8AsmOperand, ImmSExti64i32AsmOperand];
 }
 
 // A couple of more descriptive operand definitions.
 // 16-bits but only 8 bits are significant.
 def i16i8imm  : Operand<i16> {
-  let ParserMatchClass = ImmSExt8AsmOperand;
+  let ParserMatchClass = ImmSExti16i8AsmOperand;
 }
 // 32-bits but only 8 bits are significant.
 def i32i8imm  : Operand<i32> {
-  let ParserMatchClass = ImmSExt8AsmOperand;
+  let ParserMatchClass = ImmSExti32i8AsmOperand;
 }
 
 //===----------------------------------------------------------------------===//
@@ -712,6 +742,13 @@ let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1 in
   let mayLoad = 1 in
   def TAILJMPm : I<0xFF, MRM4m, (outs), (ins i32mem_TC:$dst, variable_ops),
                    "jmp{l}\t{*}$dst  # TAILCALL", []>;
+
+  // FIXME: This is a hack so that MCInst lowering can preserve the TAILCALL
+  // marker on instructions, while still being able to relax.
+  let isCodeGenOnly = 1 in {
+    def TAILJMP_1 : Ii8PCRel<0xEB, RawFrm, (outs), (ins brtarget8:$dst),
+                         "jmp\t$dst  # TAILCALL", []>;
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -768,12 +805,14 @@ def PUSHi32  : Ii32<0x68, RawFrm, (outs), (ins i32imm:$imm),
 }
 
 let Defs = [ESP, EFLAGS], Uses = [ESP], mayLoad = 1, neverHasSideEffects=1 in {
-def POPF     : I<0x9D, RawFrm, (outs), (ins), "popf{w}", []>, OpSize;
-def POPFD    : I<0x9D, RawFrm, (outs), (ins), "popf{l}", []>;
+def POPF16   : I<0x9D, RawFrm, (outs), (ins), "popf{w}", []>, OpSize;
+def POPF32   : I<0x9D, RawFrm, (outs), (ins), "popf{l|d}", []>,
+               Requires<[In32BitMode]>;
 }
 let Defs = [ESP], Uses = [ESP, EFLAGS], mayStore = 1, neverHasSideEffects=1 in {
-def PUSHF    : I<0x9C, RawFrm, (outs), (ins), "pushf{w}", []>, OpSize;
-def PUSHFD   : I<0x9C, RawFrm, (outs), (ins), "pushf{l}", []>;
+def PUSHF16  : I<0x9C, RawFrm, (outs), (ins), "pushf{w}", []>, OpSize;
+def PUSHF32  : I<0x9C, RawFrm, (outs), (ins), "pushf{l|d}", []>,
+               Requires<[In32BitMode]>;
 }
 
 let isTwoAddress = 1 in                               // GR32 = bswap GR32

@@ -781,25 +781,57 @@ int MachineInstr::findRegisterUseOperandIdx(unsigned Reg, bool isKill,
   }
   return -1;
 }
-  
+
+/// readsWritesVirtualRegister - Return a pair of bools (reads, writes)
+/// indicating if this instruction reads or writes Reg. This also considers
+/// partial defines.
+std::pair<bool,bool>
+MachineInstr::readsWritesVirtualRegister(unsigned Reg,
+                                         SmallVectorImpl<unsigned> *Ops) const {
+  bool PartDef = false; // Partial redefine.
+  bool FullDef = false; // Full define.
+  bool Use = false;
+
+  for (unsigned i = 0, e = getNumOperands(); i != e; ++i) {
+    const MachineOperand &MO = getOperand(i);
+    if (!MO.isReg() || MO.getReg() != Reg)
+      continue;
+    if (Ops)
+      Ops->push_back(i);
+    if (MO.isUse())
+      Use |= !MO.isUndef();
+    else if (MO.getSubReg())
+      PartDef = true;
+    else
+      FullDef = true;
+  }
+  // A partial redefine uses Reg unless there is also a full define.
+  return std::make_pair(Use || (PartDef && !FullDef), PartDef || FullDef);
+}
+
 /// findRegisterDefOperandIdx() - Returns the operand index that is a def of
 /// the specified register or -1 if it is not found. If isDead is true, defs
 /// that are not dead are skipped. If TargetRegisterInfo is non-null, then it
 /// also checks if there is a def of a super-register.
-int MachineInstr::findRegisterDefOperandIdx(unsigned Reg, bool isDead,
-                                          const TargetRegisterInfo *TRI) const {
+int
+MachineInstr::findRegisterDefOperandIdx(unsigned Reg, bool isDead, bool Overlap,
+                                        const TargetRegisterInfo *TRI) const {
+  bool isPhys = TargetRegisterInfo::isPhysicalRegister(Reg);
   for (unsigned i = 0, e = getNumOperands(); i != e; ++i) {
     const MachineOperand &MO = getOperand(i);
     if (!MO.isReg() || !MO.isDef())
       continue;
     unsigned MOReg = MO.getReg();
-    if (MOReg == Reg ||
-        (TRI &&
-         TargetRegisterInfo::isPhysicalRegister(MOReg) &&
-         TargetRegisterInfo::isPhysicalRegister(Reg) &&
-         TRI->isSubRegister(MOReg, Reg)))
-      if (!isDead || MO.isDead())
-        return i;
+    bool Found = (MOReg == Reg);
+    if (!Found && TRI && isPhys &&
+        TargetRegisterInfo::isPhysicalRegister(MOReg)) {
+      if (Overlap)
+        Found = TRI->regsOverlap(MOReg, Reg);
+      else
+        Found = TRI->isSubRegister(MOReg, Reg);
+    }
+    if (Found && (!isDead || MO.isDead()))
+      return i;
   }
   return -1;
 }
@@ -1365,11 +1397,21 @@ bool MachineInstr::addRegisterDead(unsigned IncomingReg,
 
 void MachineInstr::addRegisterDefined(unsigned IncomingReg,
                                       const TargetRegisterInfo *RegInfo) {
-  MachineOperand *MO = findRegisterDefOperand(IncomingReg, false, RegInfo);
-  if (!MO || MO->getSubReg())
-    addOperand(MachineOperand::CreateReg(IncomingReg,
-                                         true  /*IsDef*/,
-                                         true  /*IsImp*/));
+  if (TargetRegisterInfo::isPhysicalRegister(IncomingReg)) {
+    MachineOperand *MO = findRegisterDefOperand(IncomingReg, false, RegInfo);
+    if (MO)
+      return;
+  } else {
+    for (unsigned i = 0, e = getNumOperands(); i != e; ++i) {
+      const MachineOperand &MO = getOperand(i);
+      if (MO.isReg() && MO.getReg() == IncomingReg && MO.isDef() &&
+          MO.getSubReg() == 0)
+        return;
+    }
+  }
+  addOperand(MachineOperand::CreateReg(IncomingReg,
+                                       true  /*IsDef*/,
+                                       true  /*IsImp*/));
 }
 
 unsigned

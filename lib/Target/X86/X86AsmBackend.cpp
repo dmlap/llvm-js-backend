@@ -76,6 +76,7 @@ static unsigned getRelaxedOpcode(unsigned Op) {
   case X86::JG_1:  return X86::JG_4;
   case X86::JLE_1: return X86::JLE_4;
   case X86::JL_1:  return X86::JL_4;
+  case X86::TAILJMP_1:
   case X86::JMP_1: return X86::JMP_4;
   case X86::JNE_1: return X86::JNE_4;
   case X86::JNO_1: return X86::JNO_4;
@@ -211,6 +212,18 @@ public:
   }
 };
 
+class ELFX86_32AsmBackend : public ELFX86AsmBackend {
+public:
+  ELFX86_32AsmBackend(const Target &T)
+    : ELFX86AsmBackend(T) {}
+};
+
+class ELFX86_64AsmBackend : public ELFX86AsmBackend {
+public:
+  ELFX86_64AsmBackend(const Target &T)
+    : ELFX86AsmBackend(T) {}
+};
+
 class DarwinX86AsmBackend : public X86AsmBackend {
 public:
   DarwinX86AsmBackend(const Target &T)
@@ -222,7 +235,8 @@ public:
   bool isVirtualSection(const MCSection &Section) const {
     const MCSectionMachO &SMO = static_cast<const MCSectionMachO&>(Section);
     return (SMO.getType() == MCSectionMachO::S_ZEROFILL ||
-            SMO.getType() == MCSectionMachO::S_GB_ZEROFILL);
+            SMO.getType() == MCSectionMachO::S_GB_ZEROFILL ||
+            SMO.getType() == MCSectionMachO::S_THREAD_LOCAL_ZEROFILL);
   }
 };
 
@@ -289,7 +303,7 @@ TargetAsmBackend *llvm::createX86_32AsmBackend(const Target &T,
   case Triple::Darwin:
     return new DarwinX86_32AsmBackend(T);
   default:
-    return new ELFX86AsmBackend(T);
+    return new ELFX86_32AsmBackend(T);
   }
 }
 
@@ -299,6 +313,6 @@ TargetAsmBackend *llvm::createX86_64AsmBackend(const Target &T,
   case Triple::Darwin:
     return new DarwinX86_64AsmBackend(T);
   default:
-    return new ELFX86AsmBackend(T);
+    return new ELFX86_64AsmBackend(T);
   }
 }

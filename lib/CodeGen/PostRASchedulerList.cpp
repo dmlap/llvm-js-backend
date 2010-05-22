@@ -80,12 +80,6 @@ DebugMod("postra-sched-debugmod",
                       cl::desc("Debug control MBBs that are scheduled"),
                       cl::init(0), cl::Hidden);
 
-static cl::opt<bool>
-EnablePostRADbgValue("post-RA-dbg-value",
-                     cl::desc("Enable processing of dbg_value in post-RA"),
-                     cl::init(false), cl::Hidden);
-
-
 AntiDepBreaker::~AntiDepBreaker() { }
 
 namespace {
@@ -203,13 +197,13 @@ static bool isSchedulingBoundary(const MachineInstr *MI,
   if (MI->getDesc().isTerminator() || MI->isLabel())
     return true;
 
-  // Don't attempt to schedule around any instruction that modifies
+  // Don't attempt to schedule around any instruction that defines
   // a stack-oriented pointer, as it's unlikely to be profitable. This
   // saves compile time, because it doesn't require every single
   // stack slot reference to depend on the instruction that does the
   // modification.
   const TargetLowering &TLI = *MF.getTarget().getTargetLowering();
-  if (MI->modifiesRegister(TLI.getStackPointerRegisterToSaveRestore()))
+  if (MI->definesRegister(TLI.getStackPointerRegisterToSaveRestore()))
     return true;
 
   return false;
@@ -271,20 +265,6 @@ bool PostRAScheduler::runOnMachineFunction(MachineFunction &Fn) {
 
     // Initialize register live-range state for scheduling in this block.
     Scheduler.StartBlock(MBB);
-
-    // FIXME: Temporary workaround for <rdar://problem/7759363>: The post-RA
-    // scheduler has some sort of problem with DebugValue instructions that
-    // causes an assertion in LeaksContext.h to fail occasionally.  Just
-    // remove all those instructions for now.
-    if (!EnablePostRADbgValue) {
-      DEBUG(dbgs() << "*** Maintaining DbgValues in PostRAScheduler\n");
-      for (MachineBasicBlock::iterator I = MBB->begin(), E = MBB->end();
-           I != E; ) {
-        MachineInstr *MI = &*I++;
-        if (MI->isDebugValue())
-          MI->eraseFromParent();
-      }
-    }
 
     // Schedule each sequence of instructions not interrupted by a label
     // or anything else that effectively needs to shut down scheduling.

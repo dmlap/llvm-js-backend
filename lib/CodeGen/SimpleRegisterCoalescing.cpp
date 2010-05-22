@@ -626,7 +626,8 @@ SimpleRegisterCoalescing::TrimLiveIntervalToLastUse(SlotIndex CopyIdx,
     if (tii_->isMoveInstr(*LastUseMI, SrcReg, DstReg, SrcSubIdx, DstSubIdx) &&
         DstReg == li.reg && DstSubIdx == 0) {
       // Last use is itself an identity code.
-      int DeadIdx = LastUseMI->findRegisterDefOperandIdx(li.reg, false, tri_);
+      int DeadIdx = LastUseMI->findRegisterDefOperandIdx(li.reg,
+                                                         false, false, tri_);
       LastUseMI->getOperand(DeadIdx).setIsDead();
     }
     return true;
@@ -837,8 +838,13 @@ SimpleRegisterCoalescing::UpdateRegDefsUses(unsigned SrcReg, unsigned DstReg,
                     UseMI->isRegTiedToDefOperand(&O-&UseMI->getOperand(0))))
           UseMI->addRegisterKilled(DstReg, tri_, true);
       }
-      DEBUG(dbgs() << "\t\tupdated: " << li_->getInstructionIndex(UseMI)
-                   << "\t" << *UseMI);
+
+      DEBUG({
+          dbgs() << "\t\tupdated: ";
+          if (!UseMI->isDebugValue())
+            dbgs() << li_->getInstructionIndex(UseMI) << "\t";
+          dbgs() << *UseMI;
+        });
       continue;
     }
 
@@ -853,8 +859,12 @@ SimpleRegisterCoalescing::UpdateRegDefsUses(unsigned SrcReg, unsigned DstReg,
       O.setSubReg(SubIdx);
     O.setReg(DstReg);
 
-    DEBUG(dbgs() << "\t\tupdated: " << li_->getInstructionIndex(UseMI)
-                 << "\t" << *UseMI);
+    DEBUG({
+        dbgs() << "\t\tupdated: ";
+        if (!UseMI->isDebugValue())
+          dbgs() << li_->getInstructionIndex(UseMI) << "\t";
+        dbgs() << *UseMI;
+      });
 
     // After updating the operand, check if the machine instruction has
     // become a copy. If so, update its val# information.
@@ -940,7 +950,7 @@ static void PropagateDeadness(LiveInterval &li, MachineInstr *CopyMI,
   MachineInstr *DefMI =
     li_->getInstructionFromIndex(LRStart.getDefIndex());
   if (DefMI && DefMI != CopyMI) {
-    int DeadIdx = DefMI->findRegisterDefOperandIdx(li.reg, false);
+    int DeadIdx = DefMI->findRegisterDefOperandIdx(li.reg);
     if (DeadIdx != -1)
       DefMI->getOperand(DeadIdx).setIsDead();
     else

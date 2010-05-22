@@ -1,5 +1,11 @@
 // RUN: llvm-mc -triple i386-unknown-unknown --show-encoding %s | FileCheck %s
 
+	pause
+// CHECK: pause
+// CHECK: encoding: [0xf3,0x90]
+	sfence
+// CHECK: sfence
+// CHECK: encoding: [0x0f,0xae,0xf8]
 	lfence
 // CHECK: lfence
 // CHECK: encoding: [0x0f,0xae,0xe8]
@@ -69,3 +75,17 @@ int $4
 int $255
 // CHECK: int $255
 // CHECK:  encoding: [0xcd,0xff]
+
+// CHECK: pushfl	# encoding: [0x9c]
+        pushf
+// CHECK: pushfl	# encoding: [0x9c]
+        pushfl
+// CHECK: popfl	        # encoding: [0x9d]
+        popf
+// CHECK: popfl	        # encoding: [0x9d]
+        popfl
+
+// rdar://8014869
+retl
+// CHECK: ret
+// CHECK:  encoding: [0xc3]

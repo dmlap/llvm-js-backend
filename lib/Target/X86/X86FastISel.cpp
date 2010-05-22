@@ -180,6 +180,8 @@ CCAssignFn *X86FastISel::CCAssignFnForCall(CallingConv::ID CC,
 
   if (CC == CallingConv::X86_FastCall)
     return CC_X86_32_FastCall;
+  else if (CC == CallingConv::X86_ThisCall)
+    return CC_X86_32_ThisCall;
   else if (CC == CallingConv::Fast)
     return CC_X86_32_FastCC;
   else if (CC == CallingConv::GHC)
@@ -914,7 +916,7 @@ bool X86FastISel::X86SelectBranch(const Instruction *I) {
                RI = MBB->rbegin(), RE = MBB->rend(); RI != RE; ++RI) {
           const MachineInstr &MI = *RI;
 
-          if (MI.modifiesRegister(Reg)) {
+          if (MI.definesRegister(Reg)) {
             unsigned Src, Dst, SrcSR, DstSR;
 
             if (getInstrInfo()->isMoveInstr(MI, Src, Dst, SrcSR, DstSR)) {

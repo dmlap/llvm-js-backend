@@ -115,7 +115,7 @@ def h64imm : Operand<i64> {
 // NEON load / store instructions
 //===----------------------------------------------------------------------===//
 
-let mayLoad = 1 in {
+let mayLoad = 1, neverHasSideEffects = 1 in {
 // Use vldmia to load a Q register as a D register pair.
 // This is equivalent to VLDMD except that it has a Q register operand
 // instead of a pair of D registers.
@@ -130,9 +130,9 @@ def VLDMQ
 def VLD1q
   : NLdSt<0,0b10,0b1010,0b1100, (outs QPR:$dst), (ins addrmode6:$addr),
           IIC_VLD1, "vld1", "64", "${dst:dregpair}, $addr", "", []>;
-} // mayLoad = 1
+} // mayLoad = 1, neverHasSideEffects = 1
 
-let mayStore = 1 in {
+let mayStore = 1, neverHasSideEffects = 1 in {
 // Use vstmia to store a Q register as a D register pair.
 // This is equivalent to VSTMD except that it has a Q register operand
 // instead of a pair of D registers.
@@ -147,9 +147,9 @@ def VSTMQ
 def VST1q
   : NLdSt<0,0b00,0b1010,0b1100, (outs), (ins addrmode6:$addr, QPR:$src),
           IIC_VST, "vst1", "64", "${src:dregpair}, $addr", "", []>;
-} // mayStore = 1
+} // mayStore = 1, neverHasSideEffects = 1
 
-let mayLoad = 1, hasExtraDefRegAllocReq = 1 in {
+let mayLoad = 1, neverHasSideEffects = 1, hasExtraDefRegAllocReq = 1 in {
 
 //   VLD1     : Vector Load (multiple single elements)
 class VLD1D<bits<4> op7_4, string Dt>
@@ -473,9 +473,9 @@ def VLD4LNq32_UPD : VLD4LNWB<0b1011, {?,1,?,?}, "32">;
 //   VLD3DUP  : Vector Load (single 3-element structure to all lanes)
 //   VLD4DUP  : Vector Load (single 4-element structure to all lanes)
 //   FIXME: Not yet implemented.
-} // mayLoad = 1, hasExtraDefRegAllocReq = 1
+} // mayLoad = 1, neverHasSideEffects = 1, hasExtraDefRegAllocReq = 1
 
-let mayStore = 1, hasExtraSrcRegAllocReq = 1 in {
+let mayStore = 1, neverHasSideEffects = 1, hasExtraSrcRegAllocReq = 1 in {
 
 //   VST1     : Vector Store (multiple single elements)
 class VST1D<bits<4> op7_4, string Dt>
@@ -788,7 +788,7 @@ def VST4LNd32_UPD : VST4LNWB<0b1011, {?,0,?,?}, "32">;
 def VST4LNq16_UPD : VST4LNWB<0b0111, {?,?,1,?}, "16">;
 def VST4LNq32_UPD : VST4LNWB<0b1011, {?,1,?,?}, "32">;
 
-} // mayStore = 1, hasExtraSrcRegAllocReq = 1
+} // mayStore = 1, neverHasSideEffects = 1, hasExtraSrcRegAllocReq = 1
 
 
 //===----------------------------------------------------------------------===//
@@ -2819,10 +2819,10 @@ def  VMOVQ    : N3VX<0, 0, 0b10, 0b0001, 1, 1, (outs QPR:$dst), (ins QPR:$src),
 // Pseudo vector move instructions for QQ and QQQQ registers. This should
 // be expanded after register allocation is completed.
 def  VMOVQQ   : PseudoInst<(outs QQPR:$dst), (ins QQPR:$src),
-                NoItinerary, "@ vmov\t$dst, $src", []>;
+                NoItinerary, "${:comment} vmov\t$dst, $src", []>;
 
 def  VMOVQQQQ : PseudoInst<(outs QQQQPR:$dst), (ins QQQQPR:$src),
-                NoItinerary, "@ vmov\t$dst, $src", []>;
+                NoItinerary, "${:comment} vmov\t$dst, $src", []>;
 } // neverHasSideEffects
 
 //   VMOV     : Vector Move (Immediate)
@@ -2862,6 +2862,7 @@ def vmovImm64 : PatLeaf<(build_vector), [{
 // Note: Some of the cmode bits in the following VMOV instructions need to
 // be encoded based on the immed values.
 
+let isReMaterializable = 1 in {
 def VMOVv8i8  : N1ModImm<1, 0b000, 0b1110, 0, 0, 0, 1, (outs DPR:$dst),
                          (ins h8imm:$SIMM), IIC_VMOVImm,
                          "vmov", "i8", "$dst, $SIMM", "",
@@ -2897,6 +2898,7 @@ def VMOVv2i64 : N1ModImm<1, 0b000, 0b1110, 0, 1, 1, 1, (outs QPR:$dst),
                          (ins h64imm:$SIMM), IIC_VMOVImm,
                          "vmov", "i64", "$dst, $SIMM", "",
                          [(set QPR:$dst, (v2i64 vmovImm64:$SIMM))]>;
+} // isReMaterializable
 
 //   VMOV     : Vector Get Lane (move scalar to ARM core register)
 

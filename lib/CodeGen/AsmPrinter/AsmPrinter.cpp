@@ -310,6 +310,38 @@ void AsmPrinter::EmitGlobalVariable(const GlobalVariable *GV) {
     OutStreamer.EmitZerofill(TheSection, GVSym, Size, 1 << AlignLog);
     return;
   }
+  
+  // Handle the tbss directive on darwin which is a thread local bss directive
+  // like zerofill.
+  if (GVKind.isThreadBSS() && MAI->hasMachoTBSSDirective()) {
+    // Emit the .tbss symbol
+    MCSymbol *MangSym = 
+      OutContext.GetOrCreateSymbol(GVSym->getName() + Twine("$tlv$init"));
+    OutStreamer.EmitTBSSSymbol(TheSection, MangSym, Size, 1 << AlignLog);
+    OutStreamer.AddBlankLine();
+    
+    // Emit the variable struct for the runtime.
+    const MCSection *TLVSect 
+      = getObjFileLowering().getTLSExtraDataSection();
+      
+    OutStreamer.SwitchSection(TLVSect);
+    // Emit the linkage here.
+    EmitLinkage(GV->getLinkage(), GVSym);
+    OutStreamer.EmitLabel(GVSym);
+    
+    // Three pointers in size:
+    //   - __tlv_bootstrap - used to make sure support exists
+    //   - spare pointer, used when mapped by the runtime
+    //   - pointer to mangled symbol above with initializer
+    unsigned PtrSize = TD->getPointerSizeInBits()/8;
+    OutStreamer.EmitSymbolValue(GetExternalSymbolSymbol("__tlv_bootstrap"),
+                          PtrSize, 0);
+    OutStreamer.EmitIntValue(0, PtrSize, 0);
+    OutStreamer.EmitSymbolValue(MangSym, PtrSize, 0);
+    
+    OutStreamer.AddBlankLine();
+    return;
+  }
 
   OutStreamer.SwitchSection(TheSection);
 

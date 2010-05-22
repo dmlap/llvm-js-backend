@@ -126,8 +126,8 @@ public:
   }
   virtual void EmitZerofill(const MCSection *Section, MCSymbol *Symbol = 0,
                             unsigned Size = 0, unsigned ByteAlignment = 0);
-  virtual void EmitTBSSSymbol(MCSymbol *Symbol, uint64_t Size,
-                              unsigned ByteAlignment = 0);
+  virtual void EmitTBSSSymbol(const MCSection *Section, MCSymbol *Symbol,
+                              uint64_t Size, unsigned ByteAlignment = 0);
   virtual void EmitBytes(StringRef Data, unsigned AddrSpace);
   virtual void EmitValue(const MCExpr *Value, unsigned Size,unsigned AddrSpace);
   virtual void EmitGPRel32Value(const MCExpr *Value) {
@@ -142,10 +142,10 @@ public:
                                  unsigned char Value = 0);
   
   virtual void EmitFileDirective(StringRef Filename) {
-    errs() << "FIXME: MCMachoStreamer:EmitFileDirective not implemented\n";
+    report_fatal_error("unsupported directive: '.file'");
   }
   virtual void EmitDwarfFileDirective(unsigned FileNo, StringRef Filename) {
-    errs() << "FIXME: MCMachoStreamer:EmitDwarfFileDirective not implemented\n";
+    report_fatal_error("unsupported directive: '.file'");
   }
   
   virtual void EmitInstruction(const MCInst &Inst);
@@ -192,8 +192,14 @@ void MCMachOStreamer::EmitLabel(MCSymbol *Symbol) {
   SD.setFragment(F);
   SD.setOffset(F->getContents().size());
 
-  // This causes the reference type and weak reference flags to be cleared.
-  SD.setFlags(SD.getFlags() & ~(SF_WeakReference | SF_ReferenceTypeMask));
+  // This causes the reference type flag to be cleared. Darwin 'as' was "trying"
+  // to clear the weak reference and weak definition bits too, but the
+  // implementation was buggy. For now we just try to match 'as', for
+  // diffability.
+  //
+  // FIXME: Cleanup this code, these bits should be emitted based on semantic
+  // properties, not on the order of definition, etc.
+  SD.setFlags(SD.getFlags() & ~SF_ReferenceTypeMask);
   
   Symbol->setSection(*CurSection);
 }
@@ -210,6 +216,7 @@ void MCMachOStreamer::EmitAssemblerFlag(MCAssemblerFlag Flag) {
 
 void MCMachOStreamer::EmitAssignment(MCSymbol *Symbol, const MCExpr *Value) {
   // FIXME: Lift context changes into super class.
+  Assembler.getOrCreateSymbolData(*Symbol);
   Symbol->setVariableValue(AddValueSymbols(Value));
 }
 
@@ -257,6 +264,13 @@ void MCMachOStreamer::EmitSymbolAttribute(MCSymbol *Symbol,
 
   case MCSA_Global:
     SD.setExternal(true);
+    // This effectively clears the undefined lazy bit, in Darwin 'as', although
+    // it isn't very consistent because it implements this as part of symbol
+    // lookup.
+    //
+    // FIXME: Cleanup this code, these bits should be emitted based on semantic
+    // properties, not on the order of definition, etc.
+    SD.setFlags(SD.getFlags() & ~SF_ReferenceTypeUndefinedLazy);
     break;
 
   case MCSA_LazyReference:
@@ -339,9 +353,12 @@ void MCMachOStreamer::EmitZerofill(const MCSection *Section, MCSymbol *Symbol,
     SectData.setAlignment(ByteAlignment);
 }
 
-void MCMachOStreamer::EmitTBSSSymbol(MCSymbol *Symbol, uint64_t Size,
-                                     unsigned ByteAlignment) {
-  assert(false && "Implement me!");
+// This should always be called with the thread local bss section.  Like the
+// .zerofill directive this doesn't actually switch sections on us.
+void MCMachOStreamer::EmitTBSSSymbol(const MCSection *Section, MCSymbol *Symbol,
+                                     uint64_t Size, unsigned ByteAlignment) {
+  EmitZerofill(Section, Symbol, Size, ByteAlignment);
+  return;
 }
 
 void MCMachOStreamer::EmitBytes(StringRef Data, unsigned AddrSpace) {
@@ -401,7 +418,7 @@ void MCMachOStreamer::EmitValueToOffset(const MCExpr *Offset,
 
 void MCMachOStreamer::EmitInstruction(const MCInst &Inst) {
   // Scan for values.
-  for (unsigned i = 0; i != Inst.getNumOperands(); ++i)
+  for (unsigned i = Inst.getNumOperands(); i--; )
     if (Inst.getOperand(i).isExpr())
       AddValueSymbols(Inst.getOperand(i).getExpr());
 

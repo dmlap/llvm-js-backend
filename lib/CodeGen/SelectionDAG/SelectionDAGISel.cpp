@@ -132,11 +132,13 @@ namespace llvm {
 
     if (OptLevel == CodeGenOpt::None)
       return createFastDAGScheduler(IS, OptLevel);
-    if (TLI.getSchedulingPreference() == TargetLowering::SchedulingForLatency)
+    if (TLI.getSchedulingPreference() == Sched::Latency)
       return createTDListDAGScheduler(IS, OptLevel);
-    assert(TLI.getSchedulingPreference() ==
-           TargetLowering::SchedulingForRegPressure && "Unknown sched type!");
-    return createBURRListDAGScheduler(IS, OptLevel);
+    if (TLI.getSchedulingPreference() == Sched::RegPressure)
+      return createBURRListDAGScheduler(IS, OptLevel);
+    assert(TLI.getSchedulingPreference() == Sched::Hybrid &&
+           "Unknown sched type!");
+    return createHybridListDAGScheduler(IS, OptLevel);
   }
 }
 
@@ -231,6 +233,24 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
       // FIXME: VR def may not be in entry block.
       Def->getParent()->insert(llvm::next(InsertPos), MI);
     }
+  }
+
+  // Determine if there are any calls in this machine function.
+  MachineFrameInfo *MFI = MF->getFrameInfo();
+  if (!MFI->hasCalls()) {
+    for (MachineFunction::const_iterator
+           I = MF->begin(), E = MF->end(); I != E; ++I) {
+      const MachineBasicBlock *MBB = I;
+      for (MachineBasicBlock::const_iterator
+             II = MBB->begin(), IE = MBB->end(); II != IE; ++II) {
+        const TargetInstrDesc &TID = TM.getInstrInfo()->get(II->getOpcode());
+        if (II->isInlineAsm() || (TID.isCall() && !TID.isReturn())) {
+          MFI->setHasCalls(true);
+          goto done;
+        }
+      }
+    }
+  done:;
   }
 
   // Release function-specific state. SDB and CurDAG are already cleared
@@ -606,19 +626,6 @@ MachineBasicBlock *SelectionDAGISel::CodeGenAndEmitDAG(MachineBasicBlock *BB) {
     delete Scheduler;
   }
 
-  // Determine if there are any calls in this machine function.
-  MachineFrameInfo *MFI = MF->getFrameInfo();
-  if (!MFI->hasCalls()) {
-    for (MachineBasicBlock::iterator
-           I = BB->begin(), E = BB->end(); I != E; ++I) {
-      const TargetInstrDesc &TID = TM.getInstrInfo()->get(I->getOpcode());
-      if (I->isInlineAsm() || (TID.isCall() && !TID.isReturn())) {
-        MFI->setHasCalls(true);
-        break;
-      }
-    }
-  }
-
   // Free the SelectionDAG state, now that we're finished with it.
   CurDAG->clear();
 
@@ -676,6 +683,7 @@ void SelectionDAGISel::DoInstructionSelection() {
     
     CurDAG->setRoot(Dummy.getValue());
   }    
+
   DEBUG(errs() << "===== Instruction selection ends:\n");
 
   PostprocessISelDAG();

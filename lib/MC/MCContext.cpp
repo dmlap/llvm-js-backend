@@ -13,6 +13,7 @@
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSymbol.h"
+#include "llvm/MC/MCLabel.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
 using namespace llvm;
@@ -69,6 +70,34 @@ MCSymbol *MCContext::GetOrCreateSymbol(const Twine &Name) {
 MCSymbol *MCContext::CreateTempSymbol() {
   return GetOrCreateSymbol(Twine(MAI.getPrivateGlobalPrefix()) +
                            "tmp" + Twine(NextUniqueID++));
+}
+
+unsigned MCContext::NextInstance(int64_t LocalLabelVal) {
+  MCLabel *&Label = Instances[LocalLabelVal];
+  if (!Label)
+    Label = new (*this) MCLabel(0);
+  return Label->incInstance();
+}
+
+unsigned MCContext::GetInstance(int64_t LocalLabelVal) {
+  MCLabel *&Label = Instances[LocalLabelVal];
+  if (!Label)
+    Label = new (*this) MCLabel(0);
+  return Label->getInstance();
+}
+
+MCSymbol *MCContext::CreateDirectionalLocalSymbol(int64_t LocalLabelVal) {
+  return GetOrCreateSymbol(Twine(MAI.getPrivateGlobalPrefix()) +
+                           Twine(LocalLabelVal) +
+                           "\2" +
+			   Twine(NextInstance(LocalLabelVal)));
+}
+MCSymbol *MCContext::GetDirectionalLocalSymbol(int64_t LocalLabelVal,
+                                               int bORf) {
+  return GetOrCreateSymbol(Twine(MAI.getPrivateGlobalPrefix()) +
+                           Twine(LocalLabelVal) +
+                           "\2" +
+			   Twine(GetInstance(LocalLabelVal) + bORf));
 }
 
 MCSymbol *MCContext::LookupSymbol(StringRef Name) const {

@@ -18,7 +18,9 @@
 //
 
 // 64-bits but only 32 bits are significant.
-def i64i32imm  : Operand<i64>;
+def i64i32imm  : Operand<i64> {
+  let ParserMatchClass = ImmSExti64i32AsmOperand;
+}
 
 // 64-bits but only 32 bits are significant, and those bits are treated as being
 // pc relative.
@@ -30,7 +32,7 @@ def i64i32imm_pcrel : Operand<i64> {
 
 // 64-bits but only 8 bits are significant.
 def i64i8imm   : Operand<i64> {
-  let ParserMatchClass = ImmSExt8AsmOperand;
+  let ParserMatchClass = ImmSExti64i8AsmOperand;
 }
 
 // Special i64mem for addresses of load folding tail calls. These are not
@@ -270,14 +272,16 @@ def PUSH64i8   : Ii8<0x6a, RawFrm, (outs), (ins i8imm:$imm),
                      "push{q}\t$imm", []>;
 def PUSH64i16  : Ii16<0x68, RawFrm, (outs), (ins i16imm:$imm), 
                       "push{q}\t$imm", []>;
-def PUSH64i32  : Ii32<0x68, RawFrm, (outs), (ins i32imm:$imm), 
+def PUSH64i32  : Ii32<0x68, RawFrm, (outs), (ins i64i32imm:$imm),
                       "push{q}\t$imm", []>;
 }
 
-let Defs = [RSP, EFLAGS], Uses = [RSP], mayLoad = 1 in
-def POPFQ    : I<0x9D, RawFrm, (outs), (ins), "popf{q}", []>, REX_W;
-let Defs = [RSP], Uses = [RSP, EFLAGS], mayStore = 1 in
-def PUSHFQ64   : I<0x9C, RawFrm, (outs), (ins), "pushf{q}", []>;
+let Defs = [RSP, EFLAGS], Uses = [RSP], mayLoad = 1, neverHasSideEffects=1 in
+def POPF64   : I<0x9D, RawFrm, (outs), (ins), "popfq", []>,
+               Requires<[In64BitMode]>;
+let Defs = [RSP], Uses = [RSP, EFLAGS], mayStore = 1, neverHasSideEffects=1 in
+def PUSHF64    : I<0x9C, RawFrm, (outs), (ins), "pushfq", []>,
+                 Requires<[In64BitMode]>;
 
 def LEA64_32r : I<0x8D, MRMSrcMem,
                   (outs GR32:$dst), (ins lea64_32mem:$src),
@@ -348,6 +352,13 @@ def MOV64ri : RIi64<0xB8, AddRegFrm, (outs GR64:$dst), (ins i64imm:$src),
 def MOV64ri32 : RIi32<0xC7, MRM0r, (outs GR64:$dst), (ins i64i32imm:$src),
                       "mov{q}\t{$src, $dst|$dst, $src}",
                       [(set GR64:$dst, i64immSExt32:$src)]>;
+}
+
+// The assembler accepts movq of a 64-bit immediate as an alternate spelling of
+// movabsq.
+let isAsmParserOnly = 1 in {
+def MOV64ri_alt : RIi64<0xB8, AddRegFrm, (outs GR64:$dst), (ins i64imm:$src),
+                    "mov{q}\t{$src, $dst|$dst, $src}", []>;
 }
 
 def MOV64rr_REV : RI<0x8B, MRMSrcReg, (outs GR64:$dst), (ins GR64:$src),
@@ -505,7 +516,7 @@ let neverHasSideEffects = 1 in {
 
 let Defs = [EFLAGS] in {
 
-def ADD64i32 : RIi32<0x05, RawFrm, (outs), (ins i32imm:$src),
+def ADD64i32 : RIi32<0x05, RawFrm, (outs), (ins i64i32imm:$src),
                      "add{q}\t{$src, %rax|%rax, $src}", []>;
 
 let isTwoAddress = 1 in {
@@ -564,7 +575,7 @@ def ADD64mi32 : RIi32<0x81, MRM0m, (outs), (ins i64mem:$dst, i64i32imm :$src2),
 
 let Uses = [EFLAGS] in {
 
-def ADC64i32 : RIi32<0x15, RawFrm, (outs), (ins i32imm:$src),
+def ADC64i32 : RIi32<0x15, RawFrm, (outs), (ins i64i32imm:$src),
                      "adc{q}\t{$src, %rax|%rax, $src}", []>;
 
 let isTwoAddress = 1 in {
@@ -638,7 +649,7 @@ def SUB64ri32 : RIi32<0x81, MRM5r, (outs GR64:$dst),
                             (X86sub_flag GR64:$src1, i64immSExt32:$src2))]>;
 } // isTwoAddress
 
-def SUB64i32 : RIi32<0x2D, RawFrm, (outs), (ins i32imm:$src),
+def SUB64i32 : RIi32<0x2D, RawFrm, (outs), (ins i64i32imm:$src),
                      "sub{q}\t{$src, %rax|%rax, $src}", []>;
 
 // Memory-Register Subtraction
@@ -685,7 +696,7 @@ def SBB64ri32 : RIi32<0x81, MRM3r, (outs GR64:$dst),
                       [(set GR64:$dst, (sube GR64:$src1, i64immSExt32:$src2))]>;
 } // isTwoAddress
 
-def SBB64i32 : RIi32<0x1D, RawFrm, (outs), (ins i32imm:$src),
+def SBB64i32 : RIi32<0x1D, RawFrm, (outs), (ins i64i32imm:$src),
                      "sbb{q}\t{$src, %rax|%rax, $src}", []>;
 
 def SBB64mr  : RI<0x19, MRMDestMem, (outs), (ins i64mem:$dst, GR64:$src2), 
@@ -1085,7 +1096,7 @@ def NOT64m : RI<0xF7, MRM2m, (outs), (ins i64mem:$dst), "not{q}\t$dst",
                 [(store (not (loadi64 addr:$dst)), addr:$dst)]>;
 
 let Defs = [EFLAGS] in {
-def AND64i32 : RIi32<0x25, RawFrm, (outs), (ins i32imm:$src),
+def AND64i32 : RIi32<0x25, RawFrm, (outs), (ins i64i32imm:$src),
                      "and{q}\t{$src, %rax|%rax, $src}", []>;
 
 let isTwoAddress = 1 in {
@@ -1171,7 +1182,7 @@ def OR64mi32 : RIi32<0x81, MRM1m, (outs), (ins i64mem:$dst, i64i32imm:$src),
               [(store (or (loadi64 addr:$dst), i64immSExt32:$src), addr:$dst),
                (implicit EFLAGS)]>;
 
-def OR64i32 : RIi32<0x0D, RawFrm, (outs), (ins i32imm:$src),
+def OR64i32 : RIi32<0x0D, RawFrm, (outs), (ins i64i32imm:$src),
                     "or{q}\t{$src, %rax|%rax, $src}", []>;
 
 let isTwoAddress = 1 in {
@@ -1214,7 +1225,7 @@ def XOR64mi32 : RIi32<0x81, MRM6m, (outs), (ins i64mem:$dst, i64i32imm:$src),
              [(store (xor (loadi64 addr:$dst), i64immSExt32:$src), addr:$dst),
               (implicit EFLAGS)]>;
               
-def XOR64i32 : RIi32<0x35, RawFrm, (outs), (ins i32imm:$src),
+def XOR64i32 : RIi32<0x35, RawFrm, (outs), (ins i64i32imm:$src),
                      "xor{q}\t{$src, %rax|%rax, $src}", []>;
 
 } // Defs = [EFLAGS]
@@ -1225,7 +1236,7 @@ def XOR64i32 : RIi32<0x35, RawFrm, (outs), (ins i32imm:$src),
 
 // Integer comparison
 let Defs = [EFLAGS] in {
-def TEST64i32 : RIi32<0xa9, RawFrm, (outs), (ins i32imm:$src),
+def TEST64i32 : RIi32<0xa9, RawFrm, (outs), (ins i64i32imm:$src),
                       "test{q}\t{$src, %rax|%rax, $src}", []>;
 let isCommutable = 1 in
 def TEST64rr : RI<0x85, MRMSrcReg, (outs), (ins GR64:$src1, GR64:$src2),
@@ -1247,7 +1258,7 @@ def TEST64mi32 : RIi32<0xF7, MRM0m, (outs),
                                            i64immSExt32:$src2), 0))]>;
 
 
-def CMP64i32 : RIi32<0x3D, RawFrm, (outs), (ins i32imm:$src),
+def CMP64i32 : RIi32<0x3D, RawFrm, (outs), (ins i64i32imm:$src),
                      "cmp{q}\t{$src, %rax|%rax, $src}", []>;
 def CMP64rr : RI<0x39, MRMDestReg, (outs), (ins GR64:$src1, GR64:$src2),
                  "cmp{q}\t{$src2, $src1|$src1, $src2}",

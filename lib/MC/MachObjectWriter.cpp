@@ -170,8 +170,8 @@ class MachObjectWriterImpl {
 
     // Support lexicographic sorting.
     bool operator<(const MachSymbolData &RHS) const {
-      const std::string &Name = SymbolData->getSymbol().getName();
-      return Name < RHS.SymbolData->getSymbol().getName();
+      return SymbolData->getSymbol().getName() <
+             RHS.SymbolData->getSymbol().getName();
     }
   };
 
@@ -185,6 +185,7 @@ class MachObjectWriterImpl {
 
   llvm::DenseMap<const MCSectionData*,
                  std::vector<MachRelocationEntry> > Relocations;
+  llvm::DenseMap<const MCSectionData*, unsigned> IndirectSymBase;
 
   /// @}
   /// @name Symbol Table Data
@@ -304,9 +305,7 @@ public:
     uint64_t Start = OS.tell();
     (void) Start;
 
-    // FIXME: cast<> support!
-    const MCSectionMachO &Section =
-      static_cast<const MCSectionMachO&>(SD.getSection());
+    const MCSectionMachO &Section = cast<MCSectionMachO>(SD.getSection());
     WriteBytes(Section.getSectionName(), 16);
     WriteBytes(Section.getSegmentName(), 16);
     if (Is64Bit) {
@@ -327,7 +326,7 @@ public:
     Write32(NumRelocations ? RelocationsStart : 0);
     Write32(NumRelocations);
     Write32(Flags);
-    Write32(0); // reserved1
+    Write32(IndirectSymBase.lookup(&SD)); // reserved1
     Write32(Section.getStubSize()); // reserved2
     if (Is64Bit)
       Write32(0); // reserved3
@@ -817,28 +816,36 @@ public:
     // FIXME: Revisit this when the dust settles.
 
     // Bind non lazy symbol pointers first.
+    unsigned IndirectIndex = 0;
     for (MCAssembler::indirect_symbol_iterator it = Asm.indirect_symbol_begin(),
-           ie = Asm.indirect_symbol_end(); it != ie; ++it) {
-      // FIXME: cast<> support!
+           ie = Asm.indirect_symbol_end(); it != ie; ++it, ++IndirectIndex) {
       const MCSectionMachO &Section =
-        static_cast<const MCSectionMachO&>(it->SectionData->getSection());
+        cast<MCSectionMachO>(it->SectionData->getSection());
 
       if (Section.getType() != MCSectionMachO::S_NON_LAZY_SYMBOL_POINTERS)
         continue;
 
+      // Initialize the section indirect symbol base, if necessary.
+      if (!IndirectSymBase.count(it->SectionData))
+        IndirectSymBase[it->SectionData] = IndirectIndex;
+      
       Asm.getOrCreateSymbolData(*it->Symbol);
     }
 
     // Then lazy symbol pointers and symbol stubs.
+    IndirectIndex = 0;
     for (MCAssembler::indirect_symbol_iterator it = Asm.indirect_symbol_begin(),
-           ie = Asm.indirect_symbol_end(); it != ie; ++it) {
-      // FIXME: cast<> support!
+           ie = Asm.indirect_symbol_end(); it != ie; ++it, ++IndirectIndex) {
       const MCSectionMachO &Section =
-        static_cast<const MCSectionMachO&>(it->SectionData->getSection());
+        cast<MCSectionMachO>(it->SectionData->getSection());
 
       if (Section.getType() != MCSectionMachO::S_LAZY_SYMBOL_POINTERS &&
           Section.getType() != MCSectionMachO::S_SYMBOL_STUBS)
         continue;
+
+      // Initialize the section indirect symbol base, if necessary.
+      if (!IndirectSymBase.count(it->SectionData))
+        IndirectSymBase[it->SectionData] = IndirectIndex;
 
       // Set the symbol type to undefined lazy, but only on construction.
       //

@@ -461,6 +461,26 @@ void TargetLoweringObjectFileMachO::Initialize(MCContext &Ctx,
     = getContext().getMachOSection("__DATA", "__data", 0,
                                    SectionKind::getDataRel());
 
+  TLSDataSection // .tdata
+    = getContext().getMachOSection("__DATA", "__thread_data",
+                                   MCSectionMachO::S_THREAD_LOCAL_REGULAR,
+                                   SectionKind::getDataRel());
+  TLSBSSSection // .tbss
+    = getContext().getMachOSection("__DATA", "__thread_bss",
+                                   MCSectionMachO::S_THREAD_LOCAL_ZEROFILL,
+                                   SectionKind::getThreadBSS());
+                                   
+  // TODO: Verify datarel below.
+  TLSTLVSection // .tlv
+    = getContext().getMachOSection("__DATA", "__thread_vars",
+                                   MCSectionMachO::S_THREAD_LOCAL_VARIABLES,
+                                   SectionKind::getDataRel());
+                                   
+  TLSThreadInitSection
+    = getContext().getMachOSection("__DATA", "__thread_init",
+                          MCSectionMachO::S_THREAD_LOCAL_INIT_FUNCTION_POINTERS,
+                          SectionKind::getDataRel());
+                                   
   CStringSection // .cstring
     = getContext().getMachOSection("__TEXT", "__cstring", 
                                    MCSectionMachO::S_CSTRING_LITERALS,
@@ -607,6 +627,8 @@ void TargetLoweringObjectFileMachO::Initialize(MCContext &Ctx,
     getContext().getMachOSection("__DWARF", "__debug_inlined",
                                  MCSectionMachO::S_ATTR_DEBUG,
                                  SectionKind::getMetadata());
+                                 
+  TLSExtraDataSection = TLSTLVSection;
 }
 
 const MCSection *TargetLoweringObjectFileMachO::
@@ -647,8 +669,12 @@ getExplicitSectionGlobal(const GlobalValue *GV, SectionKind Kind,
 const MCSection *TargetLoweringObjectFileMachO::
 SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
                        Mangler *Mang, const TargetMachine &TM) const {
-  assert(!Kind.isThreadLocal() && "Darwin doesn't support TLS");
+  
+  // Handle one kind of thread local...
+  if (Kind.isThreadBSS()) return TLSBSSSection;
 
+  assert(!Kind.isThreadLocal() && "Darwin doesn't support TLS");
+  
   if (Kind.isText())
     return GV->isWeakForLinker() ? TextCoalSection : TextSection;
 
