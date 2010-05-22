@@ -937,7 +937,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
       case Instruction::Or:  Out << " | "; break;
       case Instruction::Xor: Out << " ^ "; break;
       case Instruction::Shl: Out << " << "; break;
-      case Instruction::LShr:
+      case Instruction::LShr: Out << " >>> "; break;
       case Instruction::AShr: Out << " >> "; break;
       case Instruction::ICmp:
         switch (CE->getPredicate()) {
@@ -1828,7 +1828,7 @@ void JsWriter::printFunction(Function &F) {
   
   // print local variable information for the function
   for (inst_iterator I = inst_begin(&F), E = inst_end(&F); I != E; ++I) {
-    if (isDirectAlloca(&*I) || (I->getType() != Type::getVoidTy(F.getContext()) && 
+    if (isDirectAlloca(&*I) || (I->getType() != Type::getVoidTy(F.getContext()) &&
 						       !isInlinableInst(*I))) {
       if(!PrintedVar) {
 	Out << "  var " << GetValueName(&*I);
@@ -2113,7 +2113,7 @@ void JsWriter::visitBinaryOperator(Instruction &I) {
     case Instruction::Or:   Out << " | "; break;
     case Instruction::Xor:  Out << " ^ "; break;
     case Instruction::Shl : Out << " << "; break;
-    case Instruction::LShr:
+    case Instruction::LShr: Out << " >>> "; break;
     case Instruction::AShr: Out << " >> "; break;
     default: 
 #ifndef NDEBUG
@@ -3004,19 +3004,12 @@ void JsWriter::visitInsertValueInst(InsertValueInst &IVI) {
 void JsWriter::visitExtractValueInst(ExtractValueInst &EVI) {
   Out << "(";
   if (isa<UndefValue>(EVI.getOperand(0))) {
-    Out << "(";
-    printType(Out, EVI.getType());
-    Out << ") 0/*UNDEF*/";
+    Out << "null";
   } else {
-    Out << GetValueName(EVI.getOperand(0));
+    writeOperand(EVI.getOperand(0));
     for (const unsigned *b = EVI.idx_begin(), *i = b, *e = EVI.idx_end();
          i != e; ++i) {
-      const Type *IndexedTy =
-        ExtractValueInst::getIndexedType(EVI.getOperand(0)->getType(), b, i+1);
-      if (IndexedTy->isArrayTy())
-        Out << ".array[" << *i << "]";
-      else
-        Out << ".field" << *i;
+      Out << "[" << *i << "]";
     }
   }
   Out << ")";
