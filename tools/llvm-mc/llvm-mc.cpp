@@ -58,6 +58,9 @@ OutputAsmVariant("output-asm-variant",
 static cl::opt<bool>
 RelaxAll("mc-relax-all", cl::desc("Relax all fixups"));
 
+static cl::opt<bool>
+EnableLogging("enable-api-logging", cl::desc("Enable MC API logging"));
+
 enum OutputFileType {
   OFT_Null,
   OFT_AssemblyFile,
@@ -305,6 +308,10 @@ static int AssembleInput(const char *ProgName) {
                                               *Out, CE.get(), RelaxAll));
   }
 
+  if (EnableLogging) {
+    Str.reset(createLoggingStreamer(Str.take(), errs()));
+  }
+
   AsmParser Parser(SrcMgr, Ctx, *Str.get(), *MAI);
   OwningPtr<TargetAsmParser> TAP(TheTarget->createAsmParser(Parser));
   if (!TAP) {
@@ -316,8 +323,7 @@ static int AssembleInput(const char *ProgName) {
   Parser.setTargetParser(*TAP.get());
 
   int Res = Parser.Run(NoInitialTextSection);
-  if (Out != &fouts())
-    delete Out;
+  delete Out;
 
   // Delete output on errors.
   if (Res && OutputFilename != "-")

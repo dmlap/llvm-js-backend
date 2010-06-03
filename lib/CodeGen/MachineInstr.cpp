@@ -111,6 +111,26 @@ void MachineOperand::setReg(unsigned Reg) {
   Contents.Reg.RegNo = Reg;
 }
 
+void MachineOperand::substVirtReg(unsigned Reg, unsigned SubIdx,
+                                  const TargetRegisterInfo &TRI) {
+  assert(TargetRegisterInfo::isVirtualRegister(Reg));
+  if (SubIdx && getSubReg())
+    SubIdx = TRI.composeSubRegIndices(SubIdx, getSubReg());
+  setReg(Reg);
+  if (SubIdx)
+    setSubReg(SubIdx);
+}
+
+void MachineOperand::substPhysReg(unsigned Reg, const TargetRegisterInfo &TRI) {
+  assert(TargetRegisterInfo::isPhysicalRegister(Reg));
+  if (getSubReg()) {
+    Reg = TRI.getSubReg(Reg, getSubReg());
+    assert(Reg && "Invalid SubReg for physical register");
+    setSubReg(0);
+  }
+  setReg(Reg);
+}
+
 /// ChangeToImmediate - Replace this operand with a new immediate operand of
 /// the specified value.  If an operand is known to be an immediate already,
 /// the setImm method should be used.
@@ -219,8 +239,12 @@ void MachineOperand::print(raw_ostream &OS, const TargetMachine *TM) const {
         OS << "%physreg" << getReg();
     }
 
-    if (getSubReg() != 0)
-      OS << ':' << getSubReg();
+    if (getSubReg() != 0) {
+      if (TM)
+        OS << ':' << TM->getRegisterInfo()->getSubRegIndexName(getSubReg());
+      else
+        OS << ':' << getSubReg();
+    }
 
     if (isDef() || isKill() || isDead() || isImplicit() || isUndef() ||
         isEarlyClobber()) {
@@ -1009,6 +1033,29 @@ void MachineInstr::copyPredicates(const MachineInstr *MI) {
     if (TID.OpInfo[i].isPredicate()) {
       // Predicated operands must be last operands.
       addOperand(MI->getOperand(i));
+    }
+  }
+}
+
+void MachineInstr::substituteRegister(unsigned FromReg,
+                                      unsigned ToReg,
+                                      unsigned SubIdx,
+                                      const TargetRegisterInfo &RegInfo) {
+  if (TargetRegisterInfo::isPhysicalRegister(ToReg)) {
+    if (SubIdx)
+      ToReg = RegInfo.getSubReg(ToReg, SubIdx);
+    for (unsigned i = 0, e = getNumOperands(); i != e; ++i) {
+      MachineOperand &MO = getOperand(i);
+      if (!MO.isReg() || MO.getReg() != FromReg)
+        continue;
+      MO.substPhysReg(ToReg, RegInfo);
+    }
+  } else {
+    for (unsigned i = 0, e = getNumOperands(); i != e; ++i) {
+      MachineOperand &MO = getOperand(i);
+      if (!MO.isReg() || MO.getReg() != FromReg)
+        continue;
+      MO.substVirtReg(ToReg, SubIdx, RegInfo);
     }
   }
 }

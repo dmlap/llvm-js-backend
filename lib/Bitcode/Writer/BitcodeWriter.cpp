@@ -577,10 +577,9 @@ static void WriteFunctionLocalMetadata(const Function &F,
                                        BitstreamWriter &Stream) {
   bool StartedMetadataBlock = false;
   SmallVector<uint64_t, 64> Record;
-  const ValueEnumerator::ValueList &Vals = VE.getMDValues();
-  
+  const SmallVector<const MDNode *, 8> &Vals = VE.getFunctionLocalMDValues();
   for (unsigned i = 0, e = Vals.size(); i != e; ++i)
-    if (const MDNode *N = dyn_cast<MDNode>(Vals[i].first))
+    if (const MDNode *N = Vals[i])
       if (N->isFunctionLocal() && N->getFunction() == &F) {
         if (!StartedMetadataBlock) {
           Stream.EnterSubblock(bitc::METADATA_BLOCK_ID, 3);
@@ -588,7 +587,7 @@ static void WriteFunctionLocalMetadata(const Function &F,
         }
         WriteMDNode(N, VE, Stream, Record);
       }
-
+      
   if (StartedMetadataBlock)
     Stream.ExitBlock();
 }
@@ -1114,6 +1113,7 @@ static void WriteInstruction(const Instruction &I, unsigned InstID,
   case Instruction::Alloca:
     Code = bitc::FUNC_CODE_INST_ALLOCA;
     Vals.push_back(VE.getTypeID(I.getType()));
+    Vals.push_back(VE.getTypeID(I.getOperand(0)->getType()));
     Vals.push_back(VE.getValueID(I.getOperand(0))); // size.
     Vals.push_back(Log2_32(cast<AllocaInst>(I).getAlignment())+1);
     break;
@@ -1662,15 +1662,8 @@ void llvm::WriteBitcodeToFile(const Module *M, raw_ostream &Out) {
 
   WriteBitcodeToStream( M, Stream );
 
-  // If writing to stdout, set binary mode.
-  if (&llvm::outs() == &Out)
-    sys::Program::ChangeStdoutToBinary();
-
   // Write the generated bitstream to "Out".
   Out.write((char*)&Buffer.front(), Buffer.size());
-
-  // Make sure it hits disk now.
-  Out.flush();
 }
 
 /// WriteBitcodeToStream - Write the specified module to the specified output

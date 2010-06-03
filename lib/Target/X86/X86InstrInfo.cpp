@@ -744,17 +744,17 @@ X86InstrInfo::isCoalescableExtInstr(const MachineInstr &MI,
     case X86::MOVZX32rr8:
     case X86::MOVSX64rr8:
     case X86::MOVZX64rr8:
-      SubIdx = 1;
+      SubIdx = X86::sub_8bit;
       break;
     case X86::MOVSX32rr16:
     case X86::MOVZX32rr16:
     case X86::MOVSX64rr16:
     case X86::MOVZX64rr16:
-      SubIdx = 3;
+      SubIdx = X86::sub_16bit;
       break;
     case X86::MOVSX64rr32:
     case X86::MOVZX64rr32:
-      SubIdx = 4;
+      SubIdx = X86::sub_32bit;
       break;
     }
     return true;
@@ -1064,13 +1064,8 @@ void X86InstrInfo::reMaterialize(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator I,
                                  unsigned DestReg, unsigned SubIdx,
                                  const MachineInstr *Orig,
-                                 const TargetRegisterInfo *TRI) const {
+                                 const TargetRegisterInfo &TRI) const {
   DebugLoc DL = Orig->getDebugLoc();
-
-  if (SubIdx && TargetRegisterInfo::isPhysicalRegister(DestReg)) {
-    DestReg = TRI->getSubReg(DestReg, SubIdx);
-    SubIdx = 0;
-  }
 
   // MOV32r0 etc. are implemented with xor which clobbers condition code.
   // Re-materialize them as movri instructions to avoid side effects.
@@ -1098,14 +1093,13 @@ void X86InstrInfo::reMaterialize(MachineBasicBlock &MBB,
 
   if (Clone) {
     MachineInstr *MI = MBB.getParent()->CloneMachineInstr(Orig);
-    MI->getOperand(0).setReg(DestReg);
     MBB.insert(I, MI);
   } else {
-    BuildMI(MBB, I, DL, get(Opc), DestReg).addImm(0);
+    BuildMI(MBB, I, DL, get(Opc)).addOperand(Orig->getOperand(0)).addImm(0);
   }
 
   MachineInstr *NewMI = prior(I);
-  NewMI->getOperand(0).setSubReg(SubIdx);
+  NewMI->substituteRegister(Orig->getOperand(0).getReg(), DestReg, SubIdx, TRI);
 }
 
 /// hasLiveCondCodeDef - True if MI has a condition code def, e.g. EFLAGS, that
@@ -1154,7 +1148,7 @@ X86InstrInfo::convertToThreeAddressWithLEA(unsigned MIOpc,
     BuildMI(*MFI, MBBI, MI->getDebugLoc(), get(X86::INSERT_SUBREG),leaInReg)
     .addReg(leaInReg)
     .addReg(Src, getKillRegState(isKill))
-    .addImm(X86::SUBREG_16BIT);
+    .addImm(X86::sub_16bit);
 
   MachineInstrBuilder MIB = BuildMI(*MFI, MBBI, MI->getDebugLoc(),
                                     get(Opc), leaOutReg);
@@ -1198,7 +1192,7 @@ X86InstrInfo::convertToThreeAddressWithLEA(unsigned MIOpc,
         BuildMI(*MFI, MIB, MI->getDebugLoc(), get(X86::INSERT_SUBREG),leaInReg2)
         .addReg(leaInReg2)
         .addReg(Src2, getKillRegState(isKill2))
-        .addImm(X86::SUBREG_16BIT);
+        .addImm(X86::sub_16bit);
       addRegReg(MIB, leaInReg, true, leaInReg2, true);
     }
     if (LV && isKill2 && InsMI2)
@@ -1212,7 +1206,7 @@ X86InstrInfo::convertToThreeAddressWithLEA(unsigned MIOpc,
     BuildMI(*MFI, MBBI, MI->getDebugLoc(), get(X86::EXTRACT_SUBREG))
     .addReg(Dest, RegState::Define | getDeadRegState(isDead))
     .addReg(leaOutReg, RegState::Kill)
-    .addImm(X86::SUBREG_16BIT);
+    .addImm(X86::sub_16bit);
 
   if (LV) {
     // Update live variables
@@ -2277,18 +2271,17 @@ bool X86InstrInfo::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
   unsigned Opc = is64Bit ? X86::PUSH64r : X86::PUSH32r;
   for (unsigned i = CSI.size(); i != 0; --i) {
     unsigned Reg = CSI[i-1].getReg();
-    const TargetRegisterClass *RegClass = CSI[i-1].getRegClass();
     // Add the callee-saved register as live-in. It's killed at the spill.
     MBB.addLiveIn(Reg);
     if (Reg == FPReg)
       // X86RegisterInfo::emitPrologue will handle spilling of frame register.
       continue;
-    if (RegClass != &X86::VR128RegClass && !isWin64) {
+    if (!X86::VR128RegClass.contains(Reg) && !isWin64) {
       CalleeFrameSize += SlotSize;
       BuildMI(MBB, MI, DL, get(Opc)).addReg(Reg, RegState::Kill);
     } else {
-      storeRegToStackSlot(MBB, MI, Reg, true, CSI[i-1].getFrameIdx(), RegClass,
-                          &RI);
+      storeRegToStackSlot(MBB, MI, Reg, true, CSI[i-1].getFrameIdx(),
+                          &X86::VR128RegClass, &RI);
     }
   }
 
@@ -2315,11 +2308,11 @@ bool X86InstrInfo::restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
     if (Reg == FPReg)
       // X86RegisterInfo::emitEpilogue will handle restoring of frame register.
       continue;
-    const TargetRegisterClass *RegClass = CSI[i].getRegClass();
-    if (RegClass != &X86::VR128RegClass && !isWin64) {
+    if (!X86::VR128RegClass.contains(Reg) && !isWin64) {
       BuildMI(MBB, MI, DL, get(Opc), Reg);
     } else {
-      loadRegFromStackSlot(MBB, MI, Reg, CSI[i].getFrameIdx(), RegClass, &RI);
+      loadRegFromStackSlot(MBB, MI, Reg, CSI[i].getFrameIdx(),
+                           &X86::VR128RegClass, &RI);
     }
   }
   return true;
@@ -2483,9 +2476,9 @@ X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
         unsigned DstReg = NewMI->getOperand(0).getReg();
         if (TargetRegisterInfo::isPhysicalRegister(DstReg))
           NewMI->getOperand(0).setReg(RI.getSubReg(DstReg,
-                                                   4/*x86_subreg_32bit*/));
+                                                   X86::sub_32bit));
         else
-          NewMI->getOperand(0).setSubReg(4/*x86_subreg_32bit*/);
+          NewMI->getOperand(0).setSubReg(X86::sub_32bit);
       }
       return NewMI;
     }
@@ -3783,4 +3776,3 @@ void X86InstrInfo::SetSSEDomain(MachineInstr *MI, unsigned Domain) const {
 void X86InstrInfo::getNoopForMachoTarget(MCInst &NopInst) const {
   NopInst.setOpcode(X86::NOOP);
 }
-

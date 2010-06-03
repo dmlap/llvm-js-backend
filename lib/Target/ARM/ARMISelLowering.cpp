@@ -412,7 +412,6 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
 
   // We want to custom lower some of our intrinsics.
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::Other, Custom);
-  setOperationAction(ISD::EH_SJLJ_LONGJMP, MVT::Other, Custom);
 
   setOperationAction(ISD::SETCC,     MVT::i32, Expand);
   setOperationAction(ISD::SETCC,     MVT::f32, Expand);
@@ -606,11 +605,29 @@ unsigned ARMTargetLowering::getFunctionAlignment(const Function *F) const {
 }
 
 Sched::Preference ARMTargetLowering::getSchedulingPreference(SDNode *N) const {
-  for (unsigned i = 0, e = N->getNumValues(); i != e; ++i) {
+  unsigned NumVals = N->getNumValues();
+  if (!NumVals)
+    return Sched::RegPressure;
+
+  for (unsigned i = 0; i != NumVals; ++i) {
     EVT VT = N->getValueType(i);
     if (VT.isFloatingPoint() || VT.isVector())
       return Sched::Latency;
   }
+
+  if (!N->isMachineOpcode())
+    return Sched::RegPressure;
+
+  // Load are scheduled for latency even if there instruction itinerary
+  // is not available.
+  const TargetInstrInfo *TII = getTargetMachine().getInstrInfo();
+  const TargetInstrDesc &TID = TII->get(N->getMachineOpcode());
+  if (TID.mayLoad())
+    return Sched::Latency;
+
+  const InstrItineraryData &Itins = getTargetMachine().getInstrItineraryData();
+  if (!Itins.isEmpty() && Itins.getStageLatency(TID.getSchedClass()) > 2)
+    return Sched::Latency;
   return Sched::RegPressure;
 }
 
@@ -1549,6 +1566,14 @@ SDValue ARMTargetLowering::LowerGLOBAL_OFFSET_TABLE(SDValue Op,
 }
 
 SDValue
+ARMTargetLowering::LowerEH_SJLJ_SETJMP(SDValue Op, SelectionDAG &DAG) const {
+  DebugLoc dl = Op.getDebugLoc();
+  SDValue Val = DAG.getConstant(0, MVT::i32);
+  return DAG.getNode(ARMISD::EH_SJLJ_SETJMP, dl, MVT::i32, Op.getOperand(0),
+                     Op.getOperand(1), Val);
+}
+
+SDValue
 ARMTargetLowering::LowerEH_SJLJ_LONGJMP(SDValue Op, SelectionDAG &DAG) const {
   DebugLoc dl = Op.getDebugLoc();
   return DAG.getNode(ARMISD::EH_SJLJ_LONGJMP, dl, MVT::Other, Op.getOperand(0),
@@ -1594,12 +1619,6 @@ ARMTargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG,
     }
     return Result;
   }
-  case Intrinsic::eh_sjlj_setjmp:
-    SDValue Val = Subtarget->isThumb() ?
-      DAG.getCopyFromReg(DAG.getEntryNode(), dl, ARM::SP, MVT::i32) :
-      DAG.getConstant(0, MVT::i32);
-    return DAG.getNode(ARMISD::EH_SJLJ_SETJMP, dl, MVT::i32, Op.getOperand(1),
-                       Val);
   }
 }
 
@@ -1879,8 +1898,8 @@ ARMTargetLowering::LowerFormalArguments(SDValue Chain,
         SDValue Val = DAG.getCopyFromReg(Chain, dl, VReg, MVT::i32);
         SDValue Store =
           DAG.getStore(Val.getValue(1), dl, Val, FIN,
-                       PseudoSourceValue::getFixedStack(AFI->getVarArgsFrameIndex()), 0,
-                       false, false, 0);
+               PseudoSourceValue::getFixedStack(AFI->getVarArgsFrameIndex()),
+               0, false, false, 0);
         MemOps.push_back(Store);
         FIN = DAG.getNode(ISD::ADD, dl, getPointerTy(), FIN,
                           DAG.getConstant(4, getPointerTy()));
@@ -2158,10 +2177,7 @@ SDValue ARMTargetLowering::LowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const{
   }
 
   // Return LR, which contains the return address. Mark it an implicit live-in.
-  ARMFunctionInfo *AFI = MF.getInfo<ARMFunctionInfo>();
-  TargetRegisterClass *RC = AFI->isThumb1OnlyFunction()
-    ? ARM::tGPRRegisterClass : ARM::GPRRegisterClass;
-  unsigned Reg = MF.addLiveIn(ARM::LR, RC); 
+  unsigned Reg = MF.addLiveIn(ARM::LR, ARM::GPRRegisterClass); 
   return DAG.getCopyFromReg(DAG.getEntryNode(), dl, Reg, VT);
 }
 
@@ -2398,9 +2414,9 @@ static SDValue LowerShift(SDNode *N, SelectionDAG &DAG,
 
   // Okay, we have a 64-bit SRA or SRL of 1.  Lower this to an RRX expr.
   SDValue Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, dl, MVT::i32, N->getOperand(0),
-                             DAG.getConstant(0, MVT::i32));
+                           DAG.getConstant(0, MVT::i32));
   SDValue Hi = DAG.getNode(ISD::EXTRACT_ELEMENT, dl, MVT::i32, N->getOperand(0),
-                             DAG.getConstant(1, MVT::i32));
+                           DAG.getConstant(1, MVT::i32));
 
   // First, build a SRA_FLAG/SRL_FLAG op, which shifts the top part by one and
   // captures the result into a carry flag.
@@ -2876,12 +2892,12 @@ static SDValue LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG) {
     return SDValue();
 
   // Use VDUP for non-constant splats.
-  if (usesOnlyOneValue)
+  unsigned EltSize = VT.getVectorElementType().getSizeInBits();
+  if (usesOnlyOneValue && EltSize <= 32)
     return DAG.getNode(ARMISD::VDUP, dl, VT, Value);
 
   // Vectors with 32- or 64-bit elements can be built by directly assigning
   // the subregisters.
-  unsigned EltSize = VT.getVectorElementType().getSizeInBits();
   if (EltSize >= 32) {
     // Do the expansion with floating-point types, since that is what the VFP
     // registers are defined to use, and since i64 is not legal.
@@ -3186,6 +3202,7 @@ SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::RETURNADDR:    return LowerRETURNADDR(Op, DAG);
   case ISD::FRAMEADDR:     return LowerFRAMEADDR(Op, DAG);
   case ISD::GLOBAL_OFFSET_TABLE: return LowerGLOBAL_OFFSET_TABLE(Op, DAG);
+  case ISD::EH_SJLJ_SETJMP: return LowerEH_SJLJ_SETJMP(Op, DAG);
   case ISD::EH_SJLJ_LONGJMP: return LowerEH_SJLJ_LONGJMP(Op, DAG);
   case ISD::INTRINSIC_WO_CHAIN: return LowerINTRINSIC_WO_CHAIN(Op, DAG,
                                                                Subtarget);
@@ -3890,7 +3907,8 @@ static SDValue PerformIntrinsicCombine(SDNode *N, SelectionDAG &DAG) {
       // Narrowing shifts require an immediate right shift.
       if (isVShiftRImm(N->getOperand(2), VT, true, true, Cnt))
         break;
-      llvm_unreachable("invalid shift count for narrowing vector shift intrinsic");
+      llvm_unreachable("invalid shift count for narrowing vector shift "
+                       "intrinsic");
 
     default:
       llvm_unreachable("unhandled vector shift");

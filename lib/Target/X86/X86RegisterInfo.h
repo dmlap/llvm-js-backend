@@ -30,16 +30,6 @@ namespace N86 {
   };
 }
 
-namespace X86 {
-  /// SubregIndex - The index of various sized subregister classes. Note that 
-  /// these indices must be kept in sync with the class indices in the 
-  /// X86RegisterInfo.td file.
-  enum SubregIndex {
-    SUBREG_8BIT = 1, SUBREG_8BIT_HI = 2, SUBREG_16BIT = 3, SUBREG_32BIT = 4,
-    SUBREG_SS = 1, SUBREG_SD = 2, SUBREG_XMM = 3
-  };
-}
-
 /// DWARFFlavour - Flavour of dwarf regnumbers
 ///
 namespace DWARFFlavour {
@@ -114,12 +104,6 @@ public:
   /// getCalleeSavedRegs - Return a null-terminated list of all of the
   /// callee-save registers on this target.
   const unsigned *getCalleeSavedRegs(const MachineFunction* MF = 0) const;
-
-  /// getCalleeSavedRegClasses - Return a null-terminated list of the preferred
-  /// register classes to spill each callee-saved register with.  The order and
-  /// length of this list match the getCalleeSavedRegs() list.
-  const TargetRegisterClass* const*
-  getCalleeSavedRegClasses(const MachineFunction *MF = 0) const;
 
   /// getReservedRegs - Returns a bitset indexed by physical register number
   /// indicating if a register is a special register that has particular uses and

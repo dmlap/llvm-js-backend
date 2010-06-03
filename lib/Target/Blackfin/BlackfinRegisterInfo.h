@@ -24,13 +24,6 @@ namespace llvm {
   class TargetInstrInfo;
   class Type;
 
-  // Subregister indices, keep in sync with BlackfinRegisterInfo.td
-  enum BfinSubregIdx {
-    bfin_subreg_lo16 = 1,
-    bfin_subreg_hi16 = 2,
-    bfin_subreg_lo32 = 3
-  };
-
   struct BlackfinRegisterInfo : public BlackfinGenRegisterInfo {
     BlackfinSubtarget &Subtarget;
     const TargetInstrInfo &TII;
@@ -39,9 +32,6 @@ namespace llvm {
 
     /// Code Generation virtual methods...
     const unsigned *getCalleeSavedRegs(const MachineFunction *MF = 0) const;
-
-    const TargetRegisterClass* const*
-    getCalleeSavedRegClasses(const MachineFunction *MF = 0) const;
 
     BitVector getReservedRegs(const MachineFunction &MF) const;
 

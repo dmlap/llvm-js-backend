@@ -1047,7 +1047,7 @@ bool TwoAddressInstructionPass::runOnMachineFunction(MachineFunction &MF) {
               isProfitableToReMat(regB, rc, mi, DefMI, mbbi, Dist)){
             DEBUG(dbgs() << "2addr: REMATTING : " << *DefMI << "\n");
             unsigned regASubIdx = mi->getOperand(DstIdx).getSubReg();
-            TII->reMaterialize(*mbbi, mi, regA, regASubIdx, DefMI, TRI);
+            TII->reMaterialize(*mbbi, mi, regA, regASubIdx, DefMI, *TRI);
             ReMatRegs.set(regB);
             ++NumReMats;
           } else {
@@ -1136,14 +1136,13 @@ bool TwoAddressInstructionPass::runOnMachineFunction(MachineFunction &MF) {
 
 static void UpdateRegSequenceSrcs(unsigned SrcReg,
                                   unsigned DstReg, unsigned SubIdx,
-                                  MachineRegisterInfo *MRI) {
+                                  MachineRegisterInfo *MRI,
+                                  const TargetRegisterInfo &TRI) {
   for (MachineRegisterInfo::reg_iterator RI = MRI->reg_begin(SrcReg),
          RE = MRI->reg_end(); RI != RE; ) {
     MachineOperand &MO = RI.getOperand();
     ++RI;
-    MO.setReg(DstReg);
-    assert(MO.getSubReg() == 0);
-    MO.setSubReg(SubIdx);
+    MO.substVirtReg(DstReg, SubIdx, TRI);
   }
 }
 
@@ -1186,8 +1185,8 @@ TwoAddressInstructionPass::CoalesceExtSubRegs(SmallVector<unsigned,4> &Srcs,
 
     std::sort(SubIndices.begin(), SubIndices.end());
     unsigned NewSubIdx = 0;
-    if (TRI->canCombinedSubRegIndex(MRI->getRegClass(SrcReg), SubIndices,
-                                    NewSubIdx)) {
+    if (TRI->canCombineSubRegIndices(MRI->getRegClass(SrcReg), SubIndices,
+                                     NewSubIdx)) {
       bool Proceed = true;
       if (NewSubIdx)
         for (MachineRegisterInfo::reg_iterator RI = MRI->reg_begin(SrcReg),
@@ -1201,8 +1200,6 @@ TwoAddressInstructionPass::CoalesceExtSubRegs(SmallVector<unsigned,4> &Srcs,
             Proceed = false;
             break;
           }
-          MO.setReg(DstReg);
-          MO.setSubReg(NewSubIdx);
         }
       if (Proceed)
         for (MachineRegisterInfo::reg_iterator RI = MRI->reg_begin(SrcReg),
@@ -1315,7 +1312,7 @@ bool TwoAddressInstructionPass::EliminateRegSequences() {
     for (unsigned i = 1, e = MI->getNumOperands(); i < e; i += 2) {
       unsigned SrcReg = MI->getOperand(i).getReg();
       unsigned SubIdx = MI->getOperand(i+1).getImm();
-      UpdateRegSequenceSrcs(SrcReg, DstReg, SubIdx, MRI);
+      UpdateRegSequenceSrcs(SrcReg, DstReg, SubIdx, MRI, *TRI);
     }
 
     if (IsImpDef) {

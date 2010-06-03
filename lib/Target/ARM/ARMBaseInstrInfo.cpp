@@ -199,9 +199,9 @@ ARMBaseInstrInfo::convertToThreeAddress(MachineFunction::iterator &MFI,
 
 bool
 ARMBaseInstrInfo::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
-                                            MachineBasicBlock::iterator MI,
-                                            const std::vector<CalleeSavedInfo> &CSI,
-                                            const TargetRegisterInfo *TRI) const {
+                                        MachineBasicBlock::iterator MI,
+                                        const std::vector<CalleeSavedInfo> &CSI,
+                                        const TargetRegisterInfo *TRI) const {
   if (CSI.empty())
     return false;
 
@@ -227,8 +227,9 @@ ARMBaseInstrInfo::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
 
     // Insert the spill to the stack frame. The register is killed at the spill
     // 
+    const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
     storeRegToStackSlot(MBB, MI, Reg, isKill,
-                        CSI[i].getFrameIdx(), CSI[i].getRegClass(), TRI);
+                        CSI[i].getFrameIdx(), RC, TRI);
   }
   return true;
 }
@@ -346,8 +347,8 @@ unsigned ARMBaseInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
 
 unsigned
 ARMBaseInstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
-                               MachineBasicBlock *FBB,
-                             const SmallVectorImpl<MachineOperand> &Cond) const {
+                            MachineBasicBlock *FBB,
+                            const SmallVectorImpl<MachineOperand> &Cond) const {
   // FIXME this should probably have a DebugLoc argument
   DebugLoc dl;
 
@@ -524,11 +525,11 @@ unsigned ARMBaseInstrInfo::GetInstSizeInBytes(const MachineInstr *MI) const {
       return 10;
     case ARM::Int_eh_sjlj_setjmp:
     case ARM::Int_eh_sjlj_setjmp_nofp:
-      return 24;
+      return 20;
     case ARM::tInt_eh_sjlj_setjmp:
     case ARM::t2Int_eh_sjlj_setjmp:
     case ARM::t2Int_eh_sjlj_setjmp_nofp:
-      return 14;
+      return 12;
     case ARM::BR_JTr:
     case ARM::BR_JTm:
     case ARM::BR_JTadd:
@@ -834,10 +835,10 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
       // spilled def has a sub-register index.
       MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(ARM::VST2q32))
         .addFrameIndex(FI).addImm(128);
-      MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_0, getKillRegState(isKill), TRI);
-      MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_1, 0, TRI);
-      MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_2, 0, TRI);
-      MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_3, 0, TRI);
+      MIB = AddDReg(MIB, SrcReg, ARM::dsub_0, getKillRegState(isKill), TRI);
+      MIB = AddDReg(MIB, SrcReg, ARM::dsub_1, 0, TRI);
+      MIB = AddDReg(MIB, SrcReg, ARM::dsub_2, 0, TRI);
+      MIB = AddDReg(MIB, SrcReg, ARM::dsub_3, 0, TRI);
       AddDefaultPred(MIB.addMemOperand(MMO));
     } else {
       MachineInstrBuilder MIB =
@@ -845,10 +846,10 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
                        .addFrameIndex(FI)
                        .addImm(ARM_AM::getAM5Opc(ARM_AM::ia, 4)))
         .addMemOperand(MMO);
-      MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_0, getKillRegState(isKill), TRI);
-      MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_1, 0, TRI);
-      MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_2, 0, TRI);
-            AddDReg(MIB, SrcReg, ARM::DSUBREG_3, 0, TRI);
+      MIB = AddDReg(MIB, SrcReg, ARM::dsub_0, getKillRegState(isKill), TRI);
+      MIB = AddDReg(MIB, SrcReg, ARM::dsub_1, 0, TRI);
+      MIB = AddDReg(MIB, SrcReg, ARM::dsub_2, 0, TRI);
+            AddDReg(MIB, SrcReg, ARM::dsub_3, 0, TRI);
     }
   } else {
     assert(RC == ARM::QQQQPRRegisterClass && "Unknown regclass!");
@@ -857,14 +858,14 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
                      .addFrameIndex(FI)
                      .addImm(ARM_AM::getAM5Opc(ARM_AM::ia, 4)))
       .addMemOperand(MMO);
-    MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_0, getKillRegState(isKill), TRI);
-    MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_1, 0, TRI);
-    MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_2, 0, TRI);
-    MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_3, 0, TRI);
-    MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_4, 0, TRI);
-    MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_5, 0, TRI);
-    MIB = AddDReg(MIB, SrcReg, ARM::DSUBREG_6, 0, TRI);
-          AddDReg(MIB, SrcReg, ARM::DSUBREG_7, 0, TRI);
+    MIB = AddDReg(MIB, SrcReg, ARM::dsub_0, getKillRegState(isKill), TRI);
+    MIB = AddDReg(MIB, SrcReg, ARM::dsub_1, 0, TRI);
+    MIB = AddDReg(MIB, SrcReg, ARM::dsub_2, 0, TRI);
+    MIB = AddDReg(MIB, SrcReg, ARM::dsub_3, 0, TRI);
+    MIB = AddDReg(MIB, SrcReg, ARM::dsub_4, 0, TRI);
+    MIB = AddDReg(MIB, SrcReg, ARM::dsub_5, 0, TRI);
+    MIB = AddDReg(MIB, SrcReg, ARM::dsub_6, 0, TRI);
+          AddDReg(MIB, SrcReg, ARM::dsub_7, 0, TRI);
   }
 }
 
@@ -916,10 +917,10 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
   } else if (RC == ARM::QQPRRegisterClass || RC == ARM::QQPR_VFP2RegisterClass){
     if (Align >= 16 && getRegisterInfo().canRealignStack(MF)) {
       MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(ARM::VLD2q32));
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_0, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_1, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_2, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_3, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_0, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_1, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_2, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_3, RegState::Define, TRI);
       AddDefaultPred(MIB.addFrameIndex(FI).addImm(128).addMemOperand(MMO));
     } else {
       MachineInstrBuilder MIB =
@@ -927,10 +928,10 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
                        .addFrameIndex(FI)
                        .addImm(ARM_AM::getAM5Opc(ARM_AM::ia, 4)))
         .addMemOperand(MMO);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_0, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_1, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_2, RegState::Define, TRI);
-            AddDReg(MIB, DestReg, ARM::DSUBREG_3, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_0, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_1, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_2, RegState::Define, TRI);
+            AddDReg(MIB, DestReg, ARM::dsub_3, RegState::Define, TRI);
     }
   } else {
     assert(RC == ARM::QQQQPRRegisterClass && "Unknown regclass!");
@@ -939,14 +940,14 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
                        .addFrameIndex(FI)
                        .addImm(ARM_AM::getAM5Opc(ARM_AM::ia, 4)))
         .addMemOperand(MMO);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_0, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_1, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_2, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_3, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_4, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_5, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::DSUBREG_6, RegState::Define, TRI);
-            AddDReg(MIB, DestReg, ARM::DSUBREG_7, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_0, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_1, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_2, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_3, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_4, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_5, RegState::Define, TRI);
+      MIB = AddDReg(MIB, DestReg, ARM::dsub_6, RegState::Define, TRI);
+            AddDReg(MIB, DestReg, ARM::dsub_7, RegState::Define, TRI);
   }
 }
 
@@ -1211,17 +1212,12 @@ reMaterialize(MachineBasicBlock &MBB,
               MachineBasicBlock::iterator I,
               unsigned DestReg, unsigned SubIdx,
               const MachineInstr *Orig,
-              const TargetRegisterInfo *TRI) const {
-  if (SubIdx && TargetRegisterInfo::isPhysicalRegister(DestReg)) {
-    DestReg = TRI->getSubReg(DestReg, SubIdx);
-    SubIdx = 0;
-  }
-
+              const TargetRegisterInfo &TRI) const {
   unsigned Opcode = Orig->getOpcode();
   switch (Opcode) {
   default: {
     MachineInstr *MI = MBB.getParent()->CloneMachineInstr(Orig);
-    MI->getOperand(0).setReg(DestReg);
+    MI->substituteRegister(Orig->getOperand(0).getReg(), DestReg, SubIdx, TRI);
     MBB.insert(I, MI);
     break;
   }
@@ -1237,9 +1233,6 @@ reMaterialize(MachineBasicBlock &MBB,
     break;
   }
   }
-
-  MachineInstr *NewMI = prior(I);
-  NewMI->getOperand(0).setSubReg(SubIdx);
 }
 
 MachineInstr *

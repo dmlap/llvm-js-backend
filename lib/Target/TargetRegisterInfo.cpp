@@ -22,14 +22,14 @@ using namespace llvm;
 
 TargetRegisterInfo::TargetRegisterInfo(const TargetRegisterDesc *D, unsigned NR,
                              regclass_iterator RCB, regclass_iterator RCE,
+                             const char *const *subregindexnames,
                              int CFSO, int CFDO,
                              const unsigned* subregs, const unsigned subregsize,
-                         const unsigned* superregs, const unsigned superregsize,
                          const unsigned* aliases, const unsigned aliasessize)
   : SubregHash(subregs), SubregHashSize(subregsize),
-    SuperregHash(superregs), SuperregHashSize(superregsize),
     AliasesHash(aliases), AliasesHashSize(aliasessize),
-    Desc(D), NumRegs(NR), RegClassBegin(RCB), RegClassEnd(RCE) {
+    Desc(D), SubRegIndexNames(subregindexnames), NumRegs(NR),
+    RegClassBegin(RCB), RegClassEnd(RCE) {
   assert(NumRegs < FirstVirtualRegister &&
          "Target has too many physical registers!");
 
@@ -53,6 +53,25 @@ TargetRegisterInfo::getPhysicalRegisterRegClass(unsigned reg, EVT VT) const {
     const TargetRegisterClass* RC = *I;
     if ((VT == MVT::Other || RC->hasType(VT)) && RC->contains(reg) &&
         (!BestRC || BestRC->hasSuperClass(RC)))
+      BestRC = RC;
+  }
+
+  assert(BestRC && "Couldn't find the register class");
+  return BestRC;
+}
+
+/// getMinimalPhysRegClass - Returns the Register Class of a physical
+/// register of the given type.
+const TargetRegisterClass *
+TargetRegisterInfo::getMinimalPhysRegClass(unsigned reg) const {
+  assert(isPhysicalRegister(reg) && "reg must be a physical register");
+
+  // Pick the most sub register class of the right type that contains
+  // this physreg.
+  const TargetRegisterClass* BestRC = 0;
+  for (regclass_iterator I = regclass_begin(), E = regclass_end(); I != E; ++I){
+    const TargetRegisterClass* RC = *I;
+    if (RC->contains(reg) && (!BestRC || BestRC->hasSubClass(RC)))
       BestRC = RC;
   }
 

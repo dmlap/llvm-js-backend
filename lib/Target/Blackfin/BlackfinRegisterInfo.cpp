@@ -48,17 +48,6 @@ BlackfinRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
   return  CalleeSavedRegs;
 }
 
-const TargetRegisterClass* const *BlackfinRegisterInfo::
-getCalleeSavedRegClasses(const MachineFunction *MF) const {
-  using namespace BF;
-  static const TargetRegisterClass * const CalleeSavedRegClasses[] = {
-    &PRegClass,
-    &DRegClass, &DRegClass, &DRegClass, &DRegClass,
-    &PRegClass, &PRegClass, &PRegClass,
-    0 };
-  return CalleeSavedRegClasses;
-}
-
 BitVector
 BlackfinRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   using namespace BF;
@@ -177,11 +166,11 @@ void BlackfinRegisterInfo::loadConstant(MachineBasicBlock &MBB,
 
   // We must split into halves
   BuildMI(MBB, I, DL,
-          TII.get(BF::LOAD16i), getSubReg(Reg, bfin_subreg_hi16))
+          TII.get(BF::LOAD16i), getSubReg(Reg, BF::hi16))
     .addImm((value >> 16) & 0xffff)
     .addReg(Reg, RegState::ImplicitDefine);
   BuildMI(MBB, I, DL,
-          TII.get(BF::LOAD16i), getSubReg(Reg, bfin_subreg_lo16))
+          TII.get(BF::LOAD16i), getSubReg(Reg, BF::lo16))
     .addImm(value & 0xffff)
     .addReg(Reg, RegState::ImplicitKill)
     .addReg(Reg, RegState::ImplicitDefine);

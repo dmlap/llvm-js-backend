@@ -314,7 +314,7 @@ namespace llvm {
     virtual void EmitRawText(StringRef String);
     void EmitRawText(const Twine &String);
     
-    /// Finish - Finish emission of machine code and flush any output.
+    /// Finish - Finish emission of machine code.
     virtual void Finish() = 0;
   };
 
@@ -341,11 +341,17 @@ namespace llvm {
                                 MCCodeEmitter *CE = 0,
                                 bool ShowInst = false);
 
-  /// createMachOStream - Create a machine code streamer which will generative
+  /// createMachOStreamer - Create a machine code streamer which will generate
   /// Mach-O format object files.
   MCStreamer *createMachOStreamer(MCContext &Ctx, TargetAsmBackend &TAB,
                                   raw_ostream &OS, MCCodeEmitter *CE,
                                   bool RelaxAll = false);
+
+  /// createLoggingStreamer - Create a machine code streamer which just logs the
+  /// API calls and then dispatches to another streamer.
+  ///
+  /// The new streamer takes ownership of the \arg Child.
+  MCStreamer *createLoggingStreamer(MCStreamer *Child, raw_ostream &OS);
 
 } // end namespace llvm
 

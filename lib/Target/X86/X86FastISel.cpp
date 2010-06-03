@@ -1029,7 +1029,7 @@ bool X86FastISel::X86SelectShift(const Instruction *I) {
   // we're doing here.
   if (CReg != X86::CL)
     BuildMI(MBB, DL, TII.get(TargetOpcode::EXTRACT_SUBREG), X86::CL)
-      .addReg(CReg).addImm(X86::SUBREG_8BIT);
+      .addReg(CReg).addImm(X86::sub_8bit);
 
   unsigned ResultReg = createResultReg(RC);
   BuildMI(MBB, DL, TII.get(OpReg), ResultReg).addReg(Op0Reg);
@@ -1137,7 +1137,7 @@ bool X86FastISel::X86SelectTrunc(const Instruction *I) {
   // Then issue an extract_subreg.
   unsigned ResultReg = FastEmitInst_extractsubreg(MVT::i8,
                                                   CopyReg, /*Kill=*/true,
-                                                  X86::SUBREG_8BIT);
+                                                  X86::sub_8bit);
   if (!ResultReg)
     return false;
 
@@ -1314,6 +1314,10 @@ bool X86FastISel::X86SelectCall(const Instruction *I) {
   if (FTy->isVarArg())
     return false;
 
+  // Fast-isel doesn't know about callee-pop yet.
+  if (Subtarget->IsCalleePop(FTy->isVarArg(), CC))
+    return false;
+
   // Handle *simple* calls for now.
   const Type *RetTy = CS.getType();
   EVT RetVT;
@@ -1387,6 +1391,12 @@ bool X86FastISel::X86SelectCall(const Instruction *I) {
   // Analyze operands of the call, assigning locations to each operand.
   SmallVector<CCValAssign, 16> ArgLocs;
   CCState CCInfo(CC, false, TM, ArgLocs, I->getParent()->getContext());
+  
+  // Allocate shadow area for Win64
+  if (Subtarget->isTargetWin64()) {  
+    CCInfo.AllocateStack(32, 8); 
+  }
+
   CCInfo.AnalyzeCallOperands(ArgVTs, ArgFlags, CCAssignFnForCall(CC));
 
   // Get a count of how many bytes are to be pushed on the stack.
