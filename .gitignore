@@ -4,3 +4,4 @@ include/llvm/System/DataTypes.h
 Makefile.config
 config.log
 config.status
+.file-cache
