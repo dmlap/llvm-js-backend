@@ -718,14 +718,13 @@ void JsWriter::printConstantArray(ConstantArray *CPA, bool Static) {
   } 
   Out << '[';
   if (CPA->getNumOperands()) {
-    Out << ' ';
     printConstant(cast<Constant>(CPA->getOperand(0)), Static);
     for (unsigned i = 1, e = CPA->getNumOperands(); i != e; ++i) {
       Out << ", ";
       printConstant(cast<Constant>(CPA->getOperand(i)), Static);
     }
   }
-  Out << " ]";
+  Out << "]";
 }
 
 void JsWriter::printConstantVector(ConstantVector *CP, bool Static) {
@@ -1002,13 +1001,10 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
       llvm_unreachable(0);
     }
   } else if (isa<UndefValue>(CPV) && CPV->getType()->isSingleValueType()) {
-    Out << "((";
-    printType(Out, CPV->getType()); // sign doesn't matter
-    Out << ")/*UNDEF*/";
     if (!CPV->getType()->isVectorTy()) {
-      Out << "0)";
+      Out << "null";
     } else {
-      Out << "{})";
+      Out << "[]";
     }
     return;
   }
@@ -1099,12 +1095,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
 
   case Type::ArrayTyID:
     // Use C99 compound expression literal initializer syntax.
-    if (!Static) {
-      Out << "(";
-      printType(Out, CPV->getType());
-      Out << ")";
-    }
-    Out << "["; // wrap arrays in an array to simulate pointers
     if (ConstantArray *CA = dyn_cast<ConstantArray>(CPV)) {
       printConstantArray(CA, Static);
     } else {
@@ -1122,7 +1112,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
       }
       Out << " ]";
     }
-    Out << "]"; // wrap arrays in an array to simulate pointers
     break;
 
   case Type::VectorTyID:
@@ -1150,11 +1139,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
 
   case Type::StructTyID:
     // Use C99 compound expression literal initializer syntax.
-    if (!Static) {
-      Out << "(";
-      printType(Out, CPV->getType());
-      Out << ")";
-    }
     if (isa<ConstantAggregateZero>(CPV) || isa<UndefValue>(CPV)) {
       const StructType *ST = cast<StructType>(CPV->getType());
       Out << '[';
@@ -1167,18 +1151,17 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
         }
       }
       Out << " ]";
-    } else {
-      Out << '[';
-      if (CPV->getNumOperands()) {
-        Out << ' ';
-        printConstant(cast<Constant>(CPV->getOperand(0)), Static);
-        for (unsigned i = 1, e = CPV->getNumOperands(); i != e; ++i) {
-          Out << ", ";
-          printConstant(cast<Constant>(CPV->getOperand(i)), Static);
-        }
-      }
-      Out << " ]";
+      break;
     }
+    Out << '[';
+    if (CPV->getNumOperands()) {
+      printConstant(cast<Constant>(CPV->getOperand(0)), Static);
+      for (unsigned i = 1, e = CPV->getNumOperands(); i != e; ++i) {
+	Out << ", ";
+	printConstant(cast<Constant>(CPV->getOperand(i)), Static);
+      }
+    }
+    Out << "]";
     break;
 
   case Type::PointerTyID:
@@ -1306,22 +1289,7 @@ void JsWriter::writeInstComputationInline(Instruction &I) {
       report_fatal_error("The Javascript backend does not currently support integer "
                         "types of widths other than 1, 8, 16, 32, 64.\n");
   }
-
-  // If this is a non-trivial bool computation, make sure to truncate down to
-  // a 1 bit value.  This is important because we want "add i1 x, y" to return
-  // "0" when x and y are true, not "2" for example.
-  bool NeedBoolTrunc = false;
-  if (I.getType() == Type::getInt1Ty(I.getContext()) &&
-      !isa<ICmpInst>(I) && !isa<FCmpInst>(I))
-    NeedBoolTrunc = true;
-  
-  if (NeedBoolTrunc)
-    Out << "((";
-  
   visit(I);
-  
-  if (NeedBoolTrunc)
-    Out << ")&1)";
 }
 
 
@@ -1337,10 +1305,11 @@ void JsWriter::writeOperandInternal(Value *Operand, bool Static) {
 
   Constant* CPV = dyn_cast<Constant>(Operand);
 
-  if (CPV && !isa<GlobalValue>(CPV))
+  if (CPV && !isa<GlobalValue>(CPV)) {
     printConstant(CPV, Static);
-  else
+  } else {
     Out << GetValueName(Operand);
+  }
 }
 
 void JsWriter::writeOperand(Value *Operand, bool Static) {
@@ -2860,8 +2829,6 @@ void JsWriter::writeMemoryAccess(Value *Operand, const Type *OperandType,
   bool IsUnaligned = Alignment &&
     Alignment < TD->getABITypeAlignment(OperandType);
 
-  if (!IsUnaligned)
-    Out << '*';
   if (IsVolatile || IsUnaligned) {
     Out << "((";
     if (IsUnaligned)
