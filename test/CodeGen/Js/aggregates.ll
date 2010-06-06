@@ -5,7 +5,7 @@
 @STR = private constant [2 x i8] c"a\00"
 
 
-define void @bitwise() {
+define void @aggregates() {
 entry:
 ; CHECK: = ("hi"[1]);
   %0 = extractvalue [3 x i8] c"hi\00", 1
