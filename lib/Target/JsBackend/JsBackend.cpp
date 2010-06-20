@@ -2250,26 +2250,35 @@ void JsWriter::visitCastInst(CastInst &I) {
     Out << ')';
     return;
   }
-  
-  Out << '(';
-  printCast(I.getOpcode(), SrcTy, DstTy);
+  const Type *MaskTy;
+  switch(I.getOpcode()) {
+  case Instruction::FPExt:
+    writeOperand(I.getOperand(0));
+    return;
+  case Instruction::ZExt:
+  case Instruction::UIToFP:
+    MaskTy = SrcTy;
+    break;
+  default:
+    MaskTy = DstTy;
+    break;
+  }
 
+  Out << '(';
   // Make a sext from i1 work by subtracting the i1 from 0 (an int).
   if (SrcTy == Type::getInt1Ty(I.getContext()) &&
-      I.getOpcode() == Instruction::SExt)
-    Out << "0-";
+      I.getOpcode() == Instruction::SExt) {
+    Out << "0 - ";
+  }
   
   writeOperand(I.getOperand(0));
-    
-  if (DstTy == Type::getInt1Ty(I.getContext()) && 
-      (I.getOpcode() == Instruction::Trunc ||
-       I.getOpcode() == Instruction::FPToUI ||
-       I.getOpcode() == Instruction::FPToSI ||
-       I.getOpcode() == Instruction::PtrToInt)) {
-    // Make sure we really get a trunc to bool by anding the operand with 1 
-    Out << "&1u";
+  if(MaskTy->getPrimitiveSizeInBits() >= 32) {
+    // javascript performs bitwise ops on the 32-bit representations of a
+    // Number, so just leave things be
+    Out << ')';
+    return;
   }
-  Out << ')';
+  Out << " & " << (1 << MaskTy->getPrimitiveSizeInBits()) - 1 << ')';
 }
 
 void JsWriter::visitSelectInst(SelectInst &I) {
