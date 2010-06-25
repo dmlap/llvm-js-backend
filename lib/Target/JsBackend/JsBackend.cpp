@@ -1408,7 +1408,9 @@ void JsWriter::writeOperandWithCast(Value* Operand, const ICmpInst &Cmp) {
   // doing the comparison both for signedness and so that the C compiler doesn't
   // optimize things like "p < NULL" to false (p may contain an integer value
   // f.e.).
-  bool shouldCast = Cmp.isRelational();
+  bool shouldCast = Cmp.isRelational()
+    && Operand->getType()->getPrimitiveSizeInBits() < 32
+    && !Cmp.isSigned();
 
   // Write out the casted operand if we should, otherwise just write the
   // operand.
@@ -1417,19 +1419,14 @@ void JsWriter::writeOperandWithCast(Value* Operand, const ICmpInst &Cmp) {
     return;
   }
   
-  // Should this be a signed comparison?  If so, convert to signed.
-  bool castIsSigned = Cmp.isSigned();
-
   // If the operand was a pointer, convert to a large integer type.
   const Type* OpTy = Operand->getType();
   if (OpTy->isPointerTy())
     OpTy = TD->getIntPtrType(Operand->getContext());
   
-  Out << "((";
-  printSimpleType(Out, OpTy, castIsSigned);
-  Out << ")";
+  Out << "(";
   writeOperand(Operand);
-  Out << ")";
+  Out << " & " << (1 << Operand->getType()->getPrimitiveSizeInBits()) - 1 << ')';
 }
 
 /// FindStaticTors - Given a static ctor/dtor list, unpack its contents into
@@ -2110,22 +2107,51 @@ void JsWriter::visitICmpInst(ICmpInst &I) {
   // if necessary.
   bool NeedsClosingParens = writeInstructionCast(I);
 
+  bool HasPtrOperand = I.getOperand(0)->getType()->isPointerTy() || I.getOperand(1)->getType()->isPointerTy();
   // Certain icmp predicate require the operand to be forced to a specific type
   // so we use writeOperandWithCast here instead of writeOperand. Similarly
   // below for operand 1
   writeOperandWithCast(I.getOperand(0), I);
 
   switch (I.getPredicate()) {
-  case ICmpInst::ICMP_EQ:  Out << " == "; break;
-  case ICmpInst::ICMP_NE:  Out << " != "; break;
+  case ICmpInst::ICMP_EQ:
+    if(HasPtrOperand) {
+      Out << " === ";
+      break;
+    }
+    Out << " == ";
+    break;
+  case ICmpInst::ICMP_NE:
+    if(HasPtrOperand) {
+      Out << " !== ";
+      break;
+    }
+    Out << " != ";
+    break;
   case ICmpInst::ICMP_ULE:
-  case ICmpInst::ICMP_SLE: Out << " <= "; break;
+  case ICmpInst::ICMP_SLE:
+    if(HasPtrOperand) {
+      Out << " <== ";
+      break;
+    }
+    Out << " <= ";
+    break;
   case ICmpInst::ICMP_UGE:
-  case ICmpInst::ICMP_SGE: Out << " >= "; break;
+  case ICmpInst::ICMP_SGE:
+    if(HasPtrOperand) {
+      Out << " >== ";
+      break;
+    }
+    Out << " >= ";
+    break;
   case ICmpInst::ICMP_ULT:
-  case ICmpInst::ICMP_SLT: Out << " < "; break;
+  case ICmpInst::ICMP_SLT:
+    Out << " < ";
+    break;
   case ICmpInst::ICMP_UGT:
-  case ICmpInst::ICMP_SGT: Out << " > "; break;
+  case ICmpInst::ICMP_SGT:
+    Out << " > ";
+    break;
   default:
 #ifndef NDEBUG
     errs() << "Invalid icmp predicate!" << I; 
@@ -2155,69 +2181,107 @@ void JsWriter::visitFCmpInst(FCmpInst &I) {
   FCmpInst::Predicate Pred = I.getPredicate();
   bool done = false;
   while(!done) {
-    Out << "(";
     switch (Pred) {
     default: llvm_unreachable("Illegal FCmp predicate");
     case FCmpInst::FCMP_ORD:
-      Out << I.getOperand(0) << " == " << I.getOperand(0);
-      Out << " && " << I.getOperand(1)<< " == " << I.getOperand(1);
+      writeOperand(I.getOperand(0));
+      Out << " == ";
+      writeOperand(I.getOperand(0));
+      Out << " && ";
+      writeOperand(I.getOperand(1));
+      Out << " == ";
+      writeOperand(I.getOperand(1));
       done = true;
       break;
     case FCmpInst::FCMP_UNO:
-      Out << I.getOperand(0)<< " != " << I.getOperand(0) << " || ";
-      Out << I.getOperand(1) << " != " << I.getOperand(1);
+      writeOperand(I.getOperand(0));
+      Out << " != ";
+      writeOperand(I.getOperand(0));
+      Out << " || ";
+      writeOperand(I.getOperand(1));
+      Out << " != ";
+      writeOperand(I.getOperand(1));
       done = true;
       break;
     case FCmpInst::FCMP_UEQ:
-      Out << I.getOperand(0) << " == " << I.getOperand(1) << " || ";
+      writeOperand(I.getOperand(0));
+      Out << " == ";
+      writeOperand(I.getOperand(1));
+      Out << " || ";
       Pred = FCmpInst::FCMP_UNO;
       break;
     case FCmpInst::FCMP_UNE:
-      Out << I.getOperand(0) << " != " << I.getOperand(1);
+      writeOperand(I.getOperand(0));
+      Out << " != ";
+      writeOperand(I.getOperand(1));
       done = true;
       break;
     case FCmpInst::FCMP_ULT:
-      Out << I.getOperand(0) <<" <  " << I.getOperand(1) << " || ";
+      writeOperand(I.getOperand(0));
+      Out <<" <  ";
+      writeOperand(I.getOperand(1));
+      Out << " || ";
       Pred = FCmpInst::FCMP_UNO;
       break;
     case FCmpInst::FCMP_ULE:
-      Out << I.getOperand(0) << " >  " << I.getOperand(1) << " || ";
+      writeOperand(I.getOperand(0));
+      Out << " >  ";
+      writeOperand(I.getOperand(1));
+      Out << " || ";
       Pred = FCmpInst::FCMP_UNO;
       break;
     case FCmpInst::FCMP_UGT:
-      Out << I.getOperand(0) << " <= " << I.getOperand(1) << " || ";
+      writeOperand(I.getOperand(0));
+      Out << " <= ";
+      writeOperand(I.getOperand(1));
+      Out << " || ";
       Pred = FCmpInst::FCMP_UNO;
       break;
     case FCmpInst::FCMP_UGE:
-      Out << I.getOperand(0) << " >= " << I.getOperand(1) << " || ";
+      writeOperand(I.getOperand(0));
+      Out << " >= ";
+      writeOperand(I.getOperand(1));
+      Out << " || ";
       Pred = FCmpInst::FCMP_UNO;
       break;
     case FCmpInst::FCMP_OEQ:
-      Out << I.getOperand(0) << " == " << I.getOperand(1);
+      writeOperand(I.getOperand(0));
+      Out << " == ";
+      writeOperand(I.getOperand(1));
       done = true;
       break;
     case FCmpInst::FCMP_ONE:
-      Out << I.getOperand(0) << " != " << I.getOperand(1) << " && ";
+      writeOperand(I.getOperand(0));
+      Out << " != ";
+      writeOperand(I.getOperand(1));
+      Out << " && ";
       Pred = FCmpInst::FCMP_ORD;
       break;
     case FCmpInst::FCMP_OLT:
-      Out << I.getOperand(0) << " <  " << I.getOperand(1);
+      writeOperand(I.getOperand(0));
+      Out << " <  ";
+      writeOperand(I.getOperand(1));
       done = true;
       break;
     case FCmpInst::FCMP_OLE:
-      Out << I.getOperand(0) << " >  " << I.getOperand(1);
+      writeOperand(I.getOperand(0));
+      Out << " >  ";
+      writeOperand(I.getOperand(1));
       done = true;
       break;
     case FCmpInst::FCMP_OGT:
-      Out << I.getOperand(0) << " <= " << I.getOperand(1);
+      writeOperand(I.getOperand(0));
+      Out << " <= ";
+      writeOperand(I.getOperand(1));
       done = true;
       break;
     case FCmpInst::FCMP_OGE:
-      Out << I.getOperand(0) << " >= " << I.getOperand(1);
+      writeOperand(I.getOperand(0));
+      Out << " >= ";
+      writeOperand(I.getOperand(1));
       done = true;
       break;
     }
-    Out << ")";
   }
 }
 
