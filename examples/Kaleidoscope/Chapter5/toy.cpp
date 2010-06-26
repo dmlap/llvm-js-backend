@@ -475,9 +475,9 @@ Value *BinaryExprAST::Codegen() {
   if (L == 0 || R == 0) return 0;
   
   switch (Op) {
-  case '+': return Builder.CreateAdd(L, R, "addtmp");
-  case '-': return Builder.CreateSub(L, R, "subtmp");
-  case '*': return Builder.CreateMul(L, R, "multmp");
+  case '+': return Builder.CreateFAdd(L, R, "addtmp");
+  case '-': return Builder.CreateFSub(L, R, "subtmp");
+  case '*': return Builder.CreateFMul(L, R, "multmp");
   case '<':
     L = Builder.CreateFCmpULT(L, R, "cmptmp");
     // Convert bool 0/1 to double 0.0 or 1.0
@@ -615,7 +615,7 @@ Value *ForExprAST::Codegen() {
     StepVal = ConstantFP::get(getGlobalContext(), APFloat(1.0));
   }
   
-  Value *NextVar = Builder.CreateAdd(Variable, StepVal, "nextvar");
+  Value *NextVar = Builder.CreateFAdd(Variable, StepVal, "nextvar");
 
   // Compute the end condition.
   Value *EndCond = End->Codegen();

@@ -20,7 +20,7 @@ using namespace llvm;
 MachineRegisterInfo::MachineRegisterInfo(const TargetRegisterInfo &TRI) {
   VRegInfo.reserve(256);
   RegAllocHints.reserve(256);
-  RegClass2VRegMap.resize(TRI.getNumRegClasses()+1); // RC ID starts at 1.
+  RegClass2VRegMap = new std::vector<unsigned>[TRI.getNumRegClasses()];
   UsedPhysRegs.resize(TRI.getNumRegs());
   
   // Create the physreg use/def lists.
@@ -37,6 +37,7 @@ MachineRegisterInfo::~MachineRegisterInfo() {
            "PhysRegUseDefLists has entries after all instructions are deleted");
 #endif
   delete [] PhysRegUseDefLists;
+  delete [] RegClass2VRegMap;
 }
 
 /// setRegClass - Set the register class of the specified virtual register.
@@ -52,7 +53,7 @@ MachineRegisterInfo::setRegClass(unsigned Reg, const TargetRegisterClass *RC) {
   // Remove from old register class's vregs list. This may be slow but
   // fortunately this operation is rarely needed.
   std::vector<unsigned> &VRegs = RegClass2VRegMap[OldRC->getID()];
-  std::vector<unsigned>::iterator I=std::find(VRegs.begin(), VRegs.end(), VR);
+  std::vector<unsigned>::iterator I = std::find(VRegs.begin(), VRegs.end(), VR);
   VRegs.erase(I);
 
   // Add to new register class's vregs list.
@@ -181,21 +182,32 @@ MachineRegisterInfo::EmitLiveInCopies(MachineBasicBlock *EntryMBB,
                                       const TargetRegisterInfo &TRI,
                                       const TargetInstrInfo &TII) {
   // Emit the copies into the top of the block.
-  for (MachineRegisterInfo::livein_iterator LI = livein_begin(),
-         E = livein_end(); LI != E; ++LI)
-    if (LI->second) {
-      const TargetRegisterClass *RC = getRegClass(LI->second);
-      bool Emitted = TII.copyRegToReg(*EntryMBB, EntryMBB->begin(),
-                                      LI->second, LI->first, RC, RC,
-                                      DebugLoc());
-      assert(Emitted && "Unable to issue a live-in copy instruction!\n");
-      (void) Emitted;
-    }
+  for (unsigned i = 0, e = LiveIns.size(); i != e; ++i)
+    if (LiveIns[i].second) {
+      if (use_empty(LiveIns[i].second)) {
+        // The livein has no uses. Drop it.
+        //
+        // It would be preferable to have isel avoid creating live-in
+        // records for unused arguments in the first place, but it's
+        // complicated by the debug info code for arguments.
+        LiveIns.erase(LiveIns.begin() + i);
+        --i; --e;
+      } else {
+        // Emit a copy.
+        const TargetRegisterClass *RC = getRegClass(LiveIns[i].second);
+        bool Emitted = TII.copyRegToReg(*EntryMBB, EntryMBB->begin(),
+                                        LiveIns[i].second, LiveIns[i].first,
+                                        RC, RC, DebugLoc());
+        assert(Emitted && "Unable to issue a live-in copy instruction!\n");
+        (void) Emitted;
 
-  // Add function live-ins to entry block live-in set.
-  for (MachineRegisterInfo::livein_iterator I = livein_begin(),
-         E = livein_end(); I != E; ++I)
-    EntryMBB->addLiveIn(I->first);
+        // Add the register to the entry block live-in set.
+        EntryMBB->addLiveIn(LiveIns[i].first);
+      }
+    } else {
+      // Add the register to the entry block live-in set.
+      EntryMBB->addLiveIn(LiveIns[i].first);
+    }
 }
 
 void MachineRegisterInfo::closePhysRegsUsed(const TargetRegisterInfo &TRI) {

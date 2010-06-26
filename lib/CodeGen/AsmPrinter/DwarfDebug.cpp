@@ -322,11 +322,9 @@ DwarfDebug::DwarfDebug(AsmPrinter *A, Module *M)
   DwarfStrSectionSym = TextSectionSym = 0;
   DwarfDebugRangeSectionSym = DwarfDebugLocSectionSym = 0; 
   FunctionBeginSym = FunctionEndSym = 0;
-  if (TimePassesIsEnabled) {
-      NamedRegionTimer T(DbgTimerName, DWARFGroupName);
-      beginModule(M);
-  } else {
-      beginModule(M);
+  {
+    NamedRegionTimer T(DbgTimerName, DWARFGroupName, TimePassesIsEnabled);
+    beginModule(M);
   }
 }
 DwarfDebug::~DwarfDebug() {
@@ -866,6 +864,10 @@ void DwarfDebug::addToContextOwner(DIE *Die, DIDescriptor Context) {
   } else if (Context.isNameSpace()) {
     DIE *ContextDIE = getOrCreateNameSpace(DINameSpace(Context));
     ContextDIE->addChild(Die);
+  } else if (Context.isSubprogram()) {
+    DIE *ContextDIE = createSubprogramDIE(DISubprogram(Context),
+                                          /*MakeDecl=*/false);
+    ContextDIE->addChild(Die);
   } else if (DIE *ContextDIE = getCompileUnit(Context)->getDIE(Context))
     ContextDIE->addChild(Die);
   else 
@@ -1055,6 +1057,10 @@ void DwarfDebug::constructTypeDIE(DIE &Buffer, DICompositeType CTy) {
     if (DIDescriptor(ContainingType).isCompositeType())
       addDIEEntry(&Buffer, dwarf::DW_AT_containing_type, dwarf::DW_FORM_ref4, 
                   getOrCreateTypeDIE(DIType(ContainingType)));
+    else {
+      DIDescriptor Context = CTy.getContext();
+      addToContextOwner(&Buffer, Context);
+    }
     break;
   }
   default:
@@ -1328,6 +1334,9 @@ DIE *DwarfDebug::createSubprogramDIE(const DISubprogram &SP, bool MakeDecl) {
 
   // DW_TAG_inlined_subroutine may refer to this DIE.
   SPCU->insertDIE(SP, SPDie);
+
+  // Add to context owner.
+  addToContextOwner(SPDie, SP.getContext());
 
   return SPDie;
 }
@@ -2150,8 +2159,9 @@ static bool isDbgValueInDefinedReg(const MachineInstr *MI) {
 }
 
 /// collectVariableInfo - Populate DbgScope entries with variables' info.
-void DwarfDebug::collectVariableInfo(const MachineFunction *MF) {
-  SmallPtrSet<const MDNode *, 16> Processed;
+void 
+DwarfDebug::collectVariableInfo(const MachineFunction *MF,
+                                SmallPtrSet<const MDNode *, 16> &Processed) {
   
   /// collection info from MMI table.
   collectVariableInfoFromMMITable(MF, Processed);
@@ -2248,8 +2258,11 @@ void DwarfDebug::collectVariableInfo(const MachineFunction *MF) {
   }
 
   // Collect info for variables that were optimized out.
+  const Function *F = MF->getFunction();
+  const Module *M = F->getParent();
   if (NamedMDNode *NMD = 
-      MF->getFunction()->getParent()->getNamedMetadata("llvm.dbg.lv")) {
+      M->getNamedMetadata(Twine("llvm.dbg.lv.", 
+                                getRealLinkageName(F->getName())))) {
     for (unsigned i = 0, e = NMD->getNumOperands(); i != e; ++i) {
       DIVariable DV(cast_or_null<MDNode>(NMD->getOperand(i)));
       if (!DV || !Processed.insert(DV))
@@ -2342,13 +2355,20 @@ DbgScope *DwarfDebug::getOrCreateDbgScope(const MDNode *Scope, const MDNode *Inl
 
     if (!WScope->getParent()) {
       StringRef SPName = DISubprogram(Scope).getLinkageName();
-      if (SPName == Asm->MF->getFunction()->getName())
+      // We used to check only for a linkage name, but that fails
+      // since we began omitting the linkage name for private
+      // functions.  The new way is to check for the name in metadata,
+      // but that's not supported in old .ll test cases.  Ergo, we
+      // check both.
+      if (SPName == Asm->MF->getFunction()->getName() ||
+          DISubprogram(Scope).getFunction() == Asm->MF->getFunction())
         CurrentFnDbgScope = WScope;
     }
     
     return WScope;
   }
 
+  getOrCreateAbstractScope(Scope);
   DbgScope *WScope = DbgScopeMap.lookup(InlinedAt);
   if (WScope)
     return WScope;
@@ -2362,7 +2382,6 @@ DbgScope *DwarfDebug::getOrCreateDbgScope(const MDNode *Scope, const MDNode *Inl
   Parent->addScope(WScope);
 
   ConcreteScopes[InlinedAt] = WScope;
-  getOrCreateAbstractScope(Scope);
 
   return WScope;
 }
@@ -2372,8 +2391,6 @@ DbgScope *DwarfDebug::getOrCreateDbgScope(const MDNode *Scope, const MDNode *Inl
 static bool hasValidLocation(LLVMContext &Ctx,
                              const MachineInstr *MInsn,
                              const MDNode *&Scope, const MDNode *&InlinedAt) {
-  if (MInsn->isDebugValue())
-    return false;
   DebugLoc DL = MInsn->getDebugLoc();
   if (DL.isUnknown()) return false;
       
@@ -2637,7 +2654,6 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
         assert (MI->getNumOperands() > 1 && "Invalid machine instruction!");
         DIVariable DV(MI->getOperand(MI->getNumOperands() - 1).getMetadata());
         if (!DV.Verify()) continue;
-        if (isDbgValueInUndefinedReg(MI)) continue;
         // If DBG_VALUE is for a local variable then it needs a label.
         if (DV.getTag() != dwarf::DW_TAG_arg_variable)
           InsnNeedsLabel.insert(MI);
@@ -2645,7 +2661,7 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
         else if (!DISubprogram(DV.getContext()).describes(MF->getFunction()))
           InsnNeedsLabel.insert(MI);
         // DBG_VALUE indicating argument location change needs a label.
-        else if (!ProcessedArgs.insert(DV))
+        else if (isDbgValueInUndefinedReg(MI) == false && !ProcessedArgs.insert(DV))
           InsnNeedsLabel.insert(MI);
       } else {
         // If location is unknown then instruction needs a location only if 
@@ -2678,7 +2694,8 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
     // Assumes in correct section after the entry point.
     Asm->OutStreamer.EmitLabel(FunctionEndSym);
     
-    collectVariableInfo(MF);
+    SmallPtrSet<const MDNode *, 16> ProcessedVars;
+    collectVariableInfo(MF, ProcessedVars);
 
     // Get function line info.
     if (!Lines.empty()) {
@@ -2693,8 +2710,29 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
     
     // Construct abstract scopes.
     for (SmallVector<DbgScope *, 4>::iterator AI = AbstractScopesList.begin(),
-           AE = AbstractScopesList.end(); AI != AE; ++AI)
+           AE = AbstractScopesList.end(); AI != AE; ++AI) {
       constructScopeDIE(*AI);
+      DISubprogram SP((*AI)->getScopeNode());
+      if (SP.Verify()) {
+        // Collect info for variables that were optimized out.
+        StringRef FName = SP.getLinkageName();
+        if (FName.empty())
+          FName = SP.getName();
+        const Module *M = MF->getFunction()->getParent();
+        if (NamedMDNode *NMD = 
+            M->getNamedMetadata(Twine("llvm.dbg.lv.", 
+                                      getRealLinkageName(FName)))) {
+          for (unsigned i = 0, e = NMD->getNumOperands(); i != e; ++i) {
+          DIVariable DV(cast_or_null<MDNode>(NMD->getOperand(i)));
+          if (!DV || !ProcessedVars.insert(DV))
+            continue;
+          DbgScope *Scope = DbgScopeMap.lookup(DV.getContext());
+          if (Scope)
+            Scope->addVariable(new DbgVariable(DV));
+          }
+        }
+      }
+    }
     
     DIE *CurFnDIE = constructScopeDIE(CurrentFnDbgScope);
     
@@ -2802,6 +2840,16 @@ MCSymbol *DwarfDebug::recordSourceLine(unsigned Line, unsigned Col, const MDNode
 
     Src = GetOrCreateSourceID(Dir, Fn);
   }
+
+#if 0
+  if (!Lines.empty()) {
+    SrcLineInfo lastSrcLineInfo = Lines.back();
+    // Emitting sequential line records with the same line number (but
+    // different addresses) seems to confuse GDB.  Avoid this.
+    if (lastSrcLineInfo.getLine() == Line)
+      return NULL;
+  }
+#endif
 
   MCSymbol *Label = MMI->getContext().CreateTempSymbol();
   Lines.push_back(SrcLineInfo(Line, Col, Src, Label));

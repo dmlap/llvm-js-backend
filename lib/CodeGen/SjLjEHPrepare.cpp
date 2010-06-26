@@ -71,7 +71,7 @@ namespace {
     void insertCallSiteStore(Instruction *I, int Number, Value *CallSite);
     void markInvokeCallSite(InvokeInst *II, int InvokeNo, Value *CallSite,
                             SwitchInst *CatchSwitch);
-    void splitLiveRangesLiveAcrossInvokes(SmallVector<InvokeInst*,16> &Invokes);
+    void splitLiveRangesAcrossInvokes(SmallVector<InvokeInst*,16> &Invokes);
     bool insertSjLjEHSupport(Function &F);
   };
 } // end anonymous namespace
@@ -182,7 +182,7 @@ static void MarkBlocksLiveIn(BasicBlock *BB, std::set<BasicBlock*> &LiveBBs) {
 /// FIXME: Move this function to a common utility file (Local.cpp?) so
 /// both SjLj and LowerInvoke can use it.
 void SjLjEHPass::
-splitLiveRangesLiveAcrossInvokes(SmallVector<InvokeInst*,16> &Invokes) {
+splitLiveRangesAcrossInvokes(SmallVector<InvokeInst*,16> &Invokes) {
   // First step, split all critical edges from invoke instructions.
   for (unsigned i = 0, e = Invokes.size(); i != e; ++i) {
     InvokeInst *II = Invokes[i];
@@ -289,6 +289,9 @@ splitLiveRangesLiveAcrossInvokes(SmallVector<InvokeInst*,16> &Invokes) {
       }
 
       // If we decided we need a spill, do it.
+      // FIXME: Spilling this way is overkill, as it forces all uses of
+      // the value to be reloaded from the stack slot, even those that aren't
+      // in the unwind blocks. We should be more selective.
       if (NeedsSpill) {
         ++NumSpilled;
         DemoteRegToStack(*Inst, true);
@@ -336,7 +339,7 @@ bool SjLjEHPass::insertSjLjEHSupport(Function &F) {
     for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E; ++I) {
       if (CallInst *CI = dyn_cast<CallInst>(I)) {
         if (CI->getCalledFunction() == SelectorFn) {
-          if (!PersonalityFn) PersonalityFn = CI->getOperand(2);
+          if (!PersonalityFn) PersonalityFn = CI->getArgOperand(1);
           EH_Selectors.push_back(CI);
         } else if (CI->getCalledFunction() == ExceptionFn) {
           EH_Exceptions.push_back(CI);
@@ -364,7 +367,7 @@ bool SjLjEHPass::insertSjLjEHSupport(Function &F) {
     // we spill into a stack location, guaranteeing that there is nothing live
     // across the unwind edge.  This process also splits all critical edges
     // coming out of invoke's.
-    splitLiveRangesLiveAcrossInvokes(Invokes);
+    splitLiveRangesAcrossInvokes(Invokes);
 
     BasicBlock *EntryBB = F.begin();
     // Create an alloca for the incoming jump buffer ptr and the new jump buffer

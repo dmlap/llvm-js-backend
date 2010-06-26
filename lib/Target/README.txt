@@ -1439,33 +1439,6 @@ This pattern repeats several times, basically doing:
 
 //===---------------------------------------------------------------------===//
 
-186.crafty contains this interesting pattern:
-
-%77 = call i8* @strstr(i8* getelementptr ([6 x i8]* @"\01LC5", i32 0, i32 0),
-                       i8* %30)
-%phitmp648 = icmp eq i8* %77, getelementptr ([6 x i8]* @"\01LC5", i32 0, i32 0)
-br i1 %phitmp648, label %bb70, label %bb76
-
-bb70:           ; preds = %OptionMatch.exit91, %bb69
-        %78 = call i32 @strlen(i8* %30) nounwind readonly align 1               ; <i32> [#uses=1]
-
-This is basically:
-  cststr = "abcdef";
-  if (strstr(cststr, P) == cststr) {
-     x = strlen(P);
-     ...
-
-The strstr call would be significantly cheaper written as:
-
-cststr = "abcdef";
-if (memcmp(P, str, strlen(P)))
-  x = strlen(P);
-
-This is memcmp+strlen instead of strstr.  This also makes the strlen fully
-redundant.
-
-//===---------------------------------------------------------------------===//
-
 186.crafty also contains this code:
 
 %1906 = call i32 @strlen(i8* getelementptr ([32 x i8]* @pgn_event, i32 0,i32 0))
@@ -1861,5 +1834,49 @@ and cheaper on most targets.
 
 LLVM prefers comparisons with zero over non-zero in general, but in this
 case it choses instead to keep the max operation obvious.
+
+//===---------------------------------------------------------------------===//
+
+Take the following testcase on x86-64 (similar testcases exist for all targets
+with addc/adde):
+
+define void @a(i64* nocapture %s, i64* nocapture %t, i64 %a, i64 %b,
+i64 %c) nounwind {
+entry:
+ %0 = zext i64 %a to i128                        ; <i128> [#uses=1]
+ %1 = zext i64 %b to i128                        ; <i128> [#uses=1]
+ %2 = add i128 %1, %0                            ; <i128> [#uses=2]
+ %3 = zext i64 %c to i128                        ; <i128> [#uses=1]
+ %4 = shl i128 %3, 64                            ; <i128> [#uses=1]
+ %5 = add i128 %4, %2                            ; <i128> [#uses=1]
+ %6 = lshr i128 %5, 64                           ; <i128> [#uses=1]
+ %7 = trunc i128 %6 to i64                       ; <i64> [#uses=1]
+ store i64 %7, i64* %s, align 8
+ %8 = trunc i128 %2 to i64                       ; <i64> [#uses=1]
+ store i64 %8, i64* %t, align 8
+ ret void
+}
+
+Generated code:
+       addq    %rcx, %rdx
+       movl    $0, %eax
+       adcq    $0, %rax
+       addq    %r8, %rax
+       movq    %rax, (%rdi)
+       movq    %rdx, (%rsi)
+       ret
+
+Expected code:
+       addq    %rcx, %rdx
+       adcq    $0, %r8
+       movq    %r8, (%rdi)
+       movq    %rdx, (%rsi)
+       ret
+
+The generated SelectionDAG has an ADD of an ADDE, where both operands of the
+ADDE are zero. Replacing one of the operands of the ADDE with the other operand
+of the ADD, and replacing the ADD with the ADDE, should give the desired result.
+
+(That said, we are doing a lot better than gcc on this testcase. :) )
 
 //===---------------------------------------------------------------------===//

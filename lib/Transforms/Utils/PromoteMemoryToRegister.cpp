@@ -603,9 +603,8 @@ ComputeLiveInBlocks(AllocaInst *AI, AllocaInfo &Info,
   // To determine liveness, we must iterate through the predecessors of blocks
   // where the def is live.  Blocks are added to the worklist if we need to
   // check their predecessors.  Start with all the using blocks.
-  SmallVector<BasicBlock*, 64> LiveInBlockWorklist;
-  LiveInBlockWorklist.insert(LiveInBlockWorklist.end(), 
-                             Info.UsingBlocks.begin(), Info.UsingBlocks.end());
+  SmallVector<BasicBlock*, 64> LiveInBlockWorklist(Info.UsingBlocks.begin(),
+                                                   Info.UsingBlocks.end());
   
   // If any of the using blocks is also a definition block, check to see if the
   // definition occurs before or after the use.  If it happens before the use,
@@ -897,10 +896,8 @@ void PromoteMem2Reg::ConvertDebugDeclareToDebugValue(DbgDeclareInst *DDI,
   // Propagate any debug metadata from the store onto the dbg.value.
   if (MDNode *SIMD = SI->getMetadata("dbg"))
     DbgVal->setMetadata("dbg", SIMD);
-  // Otherwise propagate debug metadata from dbg.declare for inlined fn args.
-  else if (!DISubprogram(DIVar.getContext()).
-           describes(DDI->getParent()->getParent()))
-    if (MDNode *MD = DDI->getMetadata("dbg"))
+  // Otherwise propagate debug metadata from dbg.declare.
+  else if (MDNode *MD = DDI->getMetadata("dbg"))
       DbgVal->setMetadata("dbg", MD);         
 }
 

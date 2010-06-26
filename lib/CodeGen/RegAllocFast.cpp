@@ -110,6 +110,11 @@ namespace {
     // Allocatable - vector of allocatable physical registers.
     BitVector Allocatable;
 
+    // SkippedInstrs - Descriptors of instructions whose clobber list was ignored
+    // because all registers were spilled. It is still necessary to mark all the
+    // clobbered registers as used by the function.
+    SmallPtrSet<const TargetInstrDesc*, 4> SkippedInstrs;
+
     // isBulkSpilling - This flag is set when LiveRegMap will be cleared
     // completely after spilling all live registers. LiveRegMap entries should
     // not be erased.
@@ -703,7 +708,8 @@ void RAFast::AllocateBasicBlock() {
       if (MO.isUse()) {
         usePhysReg(MO);
       } else if (MO.isEarlyClobber()) {
-        definePhysReg(MI, Reg, MO.isDead() ? regFree : regReserved);
+        definePhysReg(MI, Reg, (MO.isImplicit() || MO.isDead()) ?
+                               regFree : regReserved);
         PhysECs.push_back(Reg);
       }
     }
@@ -726,8 +732,11 @@ void RAFast::AllocateBasicBlock() {
         // Note: defineVirtReg may invalidate MO.
         LiveRegMap::iterator LRI = defineVirtReg(MI, i, Reg, 0);
         unsigned PhysReg = LRI->second.PhysReg;
-        setPhysReg(MI, i, PhysReg);
+        if (setPhysReg(MI, i, PhysReg))
+          VirtDead.push_back(Reg);
         PhysECs.push_back(PhysReg);
+        // Don't attempt coalescing when earlyclobbers are present.
+        CopyDst = 0;
       }
     }
 
@@ -752,13 +761,18 @@ void RAFast::AllocateBasicBlock() {
       DefOpEnd = VirtOpEnd;
       DEBUG(dbgs() << "  Spilling remaining registers before call.\n");
       spillAll(MI);
+
+      // The imp-defs are skipped below, but we still need to mark those
+      // registers as used by the function.
+      SkippedInstrs.insert(&TID);
     }
 
     // Third scan.
     // Allocate defs and collect dead defs.
     for (unsigned i = 0; i != DefOpEnd; ++i) {
       MachineOperand &MO = MI->getOperand(i);
-      if (!MO.isReg() || !MO.isDef() || !MO.getReg()) continue;
+      if (!MO.isReg() || !MO.isDef() || !MO.getReg() || MO.isEarlyClobber())
+        continue;
       unsigned Reg = MO.getReg();
 
       if (TargetRegisterInfo::isPhysicalRegister(Reg)) {
@@ -837,6 +851,14 @@ bool RAFast::runOnMachineFunction(MachineFunction &Fn) {
   // Make sure the set of used physregs is closed under subreg operations.
   MRI->closePhysRegsUsed(*TRI);
 
+  // Add the clobber lists for all the instructions we skipped earlier.
+  for (SmallPtrSet<const TargetInstrDesc*, 4>::const_iterator
+       I = SkippedInstrs.begin(), E = SkippedInstrs.end(); I != E; ++I)
+    if (const unsigned *Defs = (*I)->getImplicitDefs())
+      while (*Defs)
+        MRI->setPhysRegUsed(*Defs++);
+
+  SkippedInstrs.clear();
   StackSlotForVirtReg.clear();
   return true;
 }

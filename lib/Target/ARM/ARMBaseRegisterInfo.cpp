@@ -674,6 +674,15 @@ ARMBaseRegisterInfo::estimateRSStackSizeLimit(MachineFunction &MF) const {
          I != E; ++I) {
       for (unsigned i = 0, e = I->getNumOperands(); i != e; ++i) {
         if (!I->getOperand(i).isFI()) continue;
+
+        // When using ADDri to get the address of a stack object, 255 is the
+        // largest offset guaranteed to fit in the immediate offset.
+        if (I->getOpcode() == ARM::ADDri) {
+          Limit = std::min(Limit, (1U << 8) - 1);
+          break;
+        }
+
+        // Otherwise check the addressing mode.
         switch (I->getDesc().TSFlags & ARMII::AddrModeMask) {
         case ARMII::AddrMode3:
         case ARMII::AddrModeT2_i8:
@@ -1658,17 +1667,20 @@ emitEpilogue(MachineFunction &MF, MachineBasicBlock &MBB) const {
         addGlobalAddress(JumpTarget.getGlobal(), JumpTarget.getOffset(),
                          JumpTarget.getTargetFlags());
     } else if (RetOpcode == ARM::TCRETURNdiND) {
-      BuildMI(MBB, MBBI, dl, TII.get(ARM::TAILJMPdND)).
+      BuildMI(MBB, MBBI, dl,
+            TII.get(STI.isThumb() ? ARM::TAILJMPdNDt : ARM::TAILJMPdND)).
         addGlobalAddress(JumpTarget.getGlobal(), JumpTarget.getOffset(),
                          JumpTarget.getTargetFlags());
     } else if (RetOpcode == ARM::TCRETURNri) {
-      BuildMI(MBB, MBBI, dl, TII.get(ARM::TAILJMPr), JumpTarget.getReg());
+      BuildMI(MBB, MBBI, dl, TII.get(ARM::TAILJMPr)).
+        addReg(JumpTarget.getReg(), RegState::Kill);
     } else if (RetOpcode == ARM::TCRETURNriND) {
-      BuildMI(MBB, MBBI, dl, TII.get(ARM::TAILJMPrND), JumpTarget.getReg());
+      BuildMI(MBB, MBBI, dl, TII.get(ARM::TAILJMPrND)).
+        addReg(JumpTarget.getReg(), RegState::Kill);
     } 
 
     MachineInstr *NewMI = prior(MBBI);
-    for (unsigned i = 2, e = MBBI->getNumOperands(); i != e; ++i)
+    for (unsigned i = 1, e = MBBI->getNumOperands(); i != e; ++i)
       NewMI->addOperand(MBBI->getOperand(i));
 
     // Delete the pseudo instruction TCRETURN.

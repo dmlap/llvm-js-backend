@@ -372,102 +372,6 @@ public:
 };
 }
 
-/// TrivialTruncElim - Eliminate some trivial nops that can result from
-/// ShrinkDemandedOps: (trunc (ext n)) -> n.
-static bool TrivialTruncElim(SDValue Op,
-                             TargetLowering::TargetLoweringOpt &TLO) {
-  SDValue N0 = Op.getOperand(0);
-  EVT VT = Op.getValueType();
-  if ((N0.getOpcode() == ISD::ZERO_EXTEND ||
-       N0.getOpcode() == ISD::SIGN_EXTEND ||
-       N0.getOpcode() == ISD::ANY_EXTEND) &&
-      N0.getOperand(0).getValueType() == VT) {
-    return TLO.CombineTo(Op, N0.getOperand(0));
-  }
-  return false;
-}
-
-/// ShrinkDemandedOps - A late transformation pass that shrink expressions
-/// using TargetLowering::TargetLoweringOpt::ShrinkDemandedOp. It converts
-/// x+y to (VT)((SmallVT)x+(SmallVT)y) if the casts are free.
-void SelectionDAGISel::ShrinkDemandedOps() {
-  SmallVector<SDNode*, 128> Worklist;
-  SmallPtrSet<SDNode*, 128> InWorklist;
-
-  // Add all the dag nodes to the worklist.
-  Worklist.reserve(CurDAG->allnodes_size());
-  for (SelectionDAG::allnodes_iterator I = CurDAG->allnodes_begin(),
-       E = CurDAG->allnodes_end(); I != E; ++I) {
-    Worklist.push_back(I);
-    InWorklist.insert(I);
-  }
-
-  TargetLowering::TargetLoweringOpt TLO(*CurDAG, true, true, true);
-  while (!Worklist.empty()) {
-    SDNode *N = Worklist.pop_back_val();
-    InWorklist.erase(N);
-
-    if (N->use_empty() && N != CurDAG->getRoot().getNode()) {
-      // Deleting this node may make its operands dead, add them to the worklist
-      // if they aren't already there.
-      for (unsigned i = 0, e = N->getNumOperands(); i != e; ++i)
-        if (InWorklist.insert(N->getOperand(i).getNode()))
-          Worklist.push_back(N->getOperand(i).getNode());
-      
-      CurDAG->DeleteNode(N);
-      continue;
-    }
-
-    // Run ShrinkDemandedOp on scalar binary operations.
-    if (N->getNumValues() != 1 ||
-        !N->getValueType(0).isSimple() || !N->getValueType(0).isInteger())
-      continue;
-    
-    unsigned BitWidth = N->getValueType(0).getScalarType().getSizeInBits();
-    APInt Demanded = APInt::getAllOnesValue(BitWidth);
-    APInt KnownZero, KnownOne;
-    if (!TLI.SimplifyDemandedBits(SDValue(N, 0), Demanded,
-                                  KnownZero, KnownOne, TLO) &&
-        (N->getOpcode() != ISD::TRUNCATE ||
-         !TrivialTruncElim(SDValue(N, 0), TLO)))
-      continue;
-    
-    // Revisit the node.
-    assert(!InWorklist.count(N) && "Already in worklist");
-    Worklist.push_back(N);
-    InWorklist.insert(N);
-
-    // Replace the old value with the new one.
-    DEBUG(errs() << "\nShrinkDemandedOps replacing "; 
-          TLO.Old.getNode()->dump(CurDAG);
-          errs() << "\nWith: ";
-          TLO.New.getNode()->dump(CurDAG);
-          errs() << '\n');
-
-    if (InWorklist.insert(TLO.New.getNode()))
-      Worklist.push_back(TLO.New.getNode());
-
-    SDOPsWorkListRemover DeadNodes(Worklist, InWorklist);
-    CurDAG->ReplaceAllUsesOfValueWith(TLO.Old, TLO.New, &DeadNodes);
-
-    if (!TLO.Old.getNode()->use_empty()) continue;
-        
-    for (unsigned i = 0, e = TLO.Old.getNode()->getNumOperands();
-         i != e; ++i) {
-      SDNode *OpNode = TLO.Old.getNode()->getOperand(i).getNode(); 
-      if (OpNode->hasOneUse()) {
-        // Add OpNode to the end of the list to revisit.
-        DeadNodes.RemoveFromWorklist(OpNode);
-        Worklist.push_back(OpNode);
-        InWorklist.insert(OpNode);
-      }
-    }
-
-    DeadNodes.RemoveFromWorklist(TLO.Old.getNode());
-    CurDAG->DeleteNode(TLO.Old.getNode());
-  }
-}
-
 void SelectionDAGISel::ComputeLiveOutVRegInfo() {
   SmallPtrSet<SDNode*, 128> VisitedNodes;
   SmallVector<SDNode*, 128> Worklist;
@@ -533,21 +437,17 @@ MachineBasicBlock *SelectionDAGISel::CodeGenAndEmitDAG(MachineBasicBlock *BB) {
     BlockName = MF->getFunction()->getNameStr() + ":" +
                 BB->getBasicBlock()->getNameStr();
 
-  DEBUG(dbgs() << "Initial selection DAG:\n");
-  DEBUG(CurDAG->dump());
+  DEBUG(dbgs() << "Initial selection DAG:\n"; CurDAG->dump());
 
   if (ViewDAGCombine1) CurDAG->viewGraph("dag-combine1 input for " + BlockName);
 
   // Run the DAG combiner in pre-legalize mode.
-  if (TimePassesIsEnabled) {
-    NamedRegionTimer T("DAG Combining 1", GroupName);
-    CurDAG->Combine(Unrestricted, *AA, OptLevel);
-  } else {
+  {
+    NamedRegionTimer T("DAG Combining 1", GroupName, TimePassesIsEnabled);
     CurDAG->Combine(Unrestricted, *AA, OptLevel);
   }
 
-  DEBUG(dbgs() << "Optimized lowered selection DAG:\n");
-  DEBUG(CurDAG->dump());
+  DEBUG(dbgs() << "Optimized lowered selection DAG:\n"; CurDAG->dump());
 
   // Second step, hack on the DAG until it only uses operations and types that
   // the target supports.
@@ -555,44 +455,36 @@ MachineBasicBlock *SelectionDAGISel::CodeGenAndEmitDAG(MachineBasicBlock *BB) {
                                                BlockName);
 
   bool Changed;
-  if (TimePassesIsEnabled) {
-    NamedRegionTimer T("Type Legalization", GroupName);
-    Changed = CurDAG->LegalizeTypes();
-  } else {
+  {
+    NamedRegionTimer T("Type Legalization", GroupName, TimePassesIsEnabled);
     Changed = CurDAG->LegalizeTypes();
   }
 
-  DEBUG(dbgs() << "Type-legalized selection DAG:\n");
-  DEBUG(CurDAG->dump());
+  DEBUG(dbgs() << "Type-legalized selection DAG:\n"; CurDAG->dump());
 
   if (Changed) {
     if (ViewDAGCombineLT)
       CurDAG->viewGraph("dag-combine-lt input for " + BlockName);
 
     // Run the DAG combiner in post-type-legalize mode.
-    if (TimePassesIsEnabled) {
-      NamedRegionTimer T("DAG Combining after legalize types", GroupName);
-      CurDAG->Combine(NoIllegalTypes, *AA, OptLevel);
-    } else {
+    {
+      NamedRegionTimer T("DAG Combining after legalize types", GroupName,
+                         TimePassesIsEnabled);
       CurDAG->Combine(NoIllegalTypes, *AA, OptLevel);
     }
 
-    DEBUG(dbgs() << "Optimized type-legalized selection DAG:\n");
-    DEBUG(CurDAG->dump());
+    DEBUG(dbgs() << "Optimized type-legalized selection DAG:\n";
+          CurDAG->dump());
   }
 
-  if (TimePassesIsEnabled) {
-    NamedRegionTimer T("Vector Legalization", GroupName);
-    Changed = CurDAG->LegalizeVectors();
-  } else {
+  {
+    NamedRegionTimer T("Vector Legalization", GroupName, TimePassesIsEnabled);
     Changed = CurDAG->LegalizeVectors();
   }
 
   if (Changed) {
-    if (TimePassesIsEnabled) {
-      NamedRegionTimer T("Type Legalization 2", GroupName);
-      CurDAG->LegalizeTypes();
-    } else {
+    {
+      NamedRegionTimer T("Type Legalization 2", GroupName, TimePassesIsEnabled);
       CurDAG->LegalizeTypes();
     }
 
@@ -600,69 +492,56 @@ MachineBasicBlock *SelectionDAGISel::CodeGenAndEmitDAG(MachineBasicBlock *BB) {
       CurDAG->viewGraph("dag-combine-lv input for " + BlockName);
 
     // Run the DAG combiner in post-type-legalize mode.
-    if (TimePassesIsEnabled) {
-      NamedRegionTimer T("DAG Combining after legalize vectors", GroupName);
-      CurDAG->Combine(NoIllegalOperations, *AA, OptLevel);
-    } else {
+    {
+      NamedRegionTimer T("DAG Combining after legalize vectors", GroupName,
+                         TimePassesIsEnabled);
       CurDAG->Combine(NoIllegalOperations, *AA, OptLevel);
     }
 
-    DEBUG(dbgs() << "Optimized vector-legalized selection DAG:\n");
-    DEBUG(CurDAG->dump());
+    DEBUG(dbgs() << "Optimized vector-legalized selection DAG:\n";
+          CurDAG->dump());
   }
 
   if (ViewLegalizeDAGs) CurDAG->viewGraph("legalize input for " + BlockName);
 
-  if (TimePassesIsEnabled) {
-    NamedRegionTimer T("DAG Legalization", GroupName);
-    CurDAG->Legalize(OptLevel);
-  } else {
+  {
+    NamedRegionTimer T("DAG Legalization", GroupName, TimePassesIsEnabled);
     CurDAG->Legalize(OptLevel);
   }
 
-  DEBUG(dbgs() << "Legalized selection DAG:\n");
-  DEBUG(CurDAG->dump());
+  DEBUG(dbgs() << "Legalized selection DAG:\n"; CurDAG->dump());
 
   if (ViewDAGCombine2) CurDAG->viewGraph("dag-combine2 input for " + BlockName);
 
   // Run the DAG combiner in post-legalize mode.
-  if (TimePassesIsEnabled) {
-    NamedRegionTimer T("DAG Combining 2", GroupName);
-    CurDAG->Combine(NoIllegalOperations, *AA, OptLevel);
-  } else {
+  {
+    NamedRegionTimer T("DAG Combining 2", GroupName, TimePassesIsEnabled);
     CurDAG->Combine(NoIllegalOperations, *AA, OptLevel);
   }
 
-  DEBUG(dbgs() << "Optimized legalized selection DAG:\n");
-  DEBUG(CurDAG->dump());
+  DEBUG(dbgs() << "Optimized legalized selection DAG:\n"; CurDAG->dump());
 
-  if (OptLevel != CodeGenOpt::None) {
-    ShrinkDemandedOps();
+  if (OptLevel != CodeGenOpt::None)
     ComputeLiveOutVRegInfo();
-  }
 
   if (ViewISelDAGs) CurDAG->viewGraph("isel input for " + BlockName);
 
   // Third, instruction select all of the operations to machine code, adding the
   // code to the MachineBasicBlock.
-  if (TimePassesIsEnabled) {
-    NamedRegionTimer T("Instruction Selection", GroupName);
-    DoInstructionSelection();
-  } else {
+  {
+    NamedRegionTimer T("Instruction Selection", GroupName, TimePassesIsEnabled);
     DoInstructionSelection();
   }
 
-  DEBUG(dbgs() << "Selected selection DAG:\n");
-  DEBUG(CurDAG->dump());
+  DEBUG(dbgs() << "Selected selection DAG:\n"; CurDAG->dump());
 
   if (ViewSchedDAGs) CurDAG->viewGraph("scheduler input for " + BlockName);
 
   // Schedule machine code.
   ScheduleDAGSDNodes *Scheduler = CreateScheduler();
-  if (TimePassesIsEnabled) {
-    NamedRegionTimer T("Instruction Scheduling", GroupName);
-    Scheduler->Run(CurDAG, BB, BB->end());
-  } else {
+  {
+    NamedRegionTimer T("Instruction Scheduling", GroupName,
+                       TimePassesIsEnabled);
     Scheduler->Run(CurDAG, BB, BB->end());
   }
 
@@ -670,18 +549,15 @@ MachineBasicBlock *SelectionDAGISel::CodeGenAndEmitDAG(MachineBasicBlock *BB) {
 
   // Emit machine code to BB.  This can change 'BB' to the last block being
   // inserted into.
-  if (TimePassesIsEnabled) {
-    NamedRegionTimer T("Instruction Creation", GroupName);
-    BB = Scheduler->EmitSchedule();
-  } else {
+  {
+    NamedRegionTimer T("Instruction Creation", GroupName, TimePassesIsEnabled);
     BB = Scheduler->EmitSchedule();
   }
 
   // Free the scheduler state.
-  if (TimePassesIsEnabled) {
-    NamedRegionTimer T("Instruction Scheduling Cleanup", GroupName);
-    delete Scheduler;
-  } else {
+  {
+    NamedRegionTimer T("Instruction Scheduling Cleanup", GroupName,
+                       TimePassesIsEnabled);
     delete Scheduler;
   }
 
@@ -902,8 +778,8 @@ void
 SelectionDAGISel::FinishBasicBlock(MachineBasicBlock *BB) {
 
   DEBUG(dbgs() << "Total amount of phi nodes to update: "
-               << FuncInfo->PHINodesToUpdate.size() << "\n");
-  DEBUG(for (unsigned i = 0, e = FuncInfo->PHINodesToUpdate.size(); i != e; ++i)
+               << FuncInfo->PHINodesToUpdate.size() << "\n";
+        for (unsigned i = 0, e = FuncInfo->PHINodesToUpdate.size(); i != e; ++i)
           dbgs() << "Node " << i << " : ("
                  << FuncInfo->PHINodesToUpdate[i].first
                  << ", " << FuncInfo->PHINodesToUpdate[i].second << ")\n");

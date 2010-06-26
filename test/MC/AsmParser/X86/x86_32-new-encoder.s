@@ -393,3 +393,25 @@ retl
 // CHECK: wait
 // CHECK:  encoding: [0x9b]
 	fwait
+
+// rdar://7873482
+// CHECK: [0x65,0x8b,0x05,0x7c,0x00,0x00,0x00]
+// FIXME: This is a correct bug poor encoding: Use 65 a1 7c 00 00 00 
+        movl	%gs:124, %eax
+
+// CHECK: pusha
+// CHECK:  encoding: [0x60]
+        	pusha
+
+// CHECK: popa
+// CHECK:  encoding: [0x61]
+        	popa
+
+// CHECK: pushal
+// CHECK:  encoding: [0x60]
+        	pushal
+
+// CHECK: popal
+// CHECK:  encoding: [0x61]
+        	popal
+

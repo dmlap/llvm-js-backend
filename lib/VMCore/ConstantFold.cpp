@@ -658,7 +658,7 @@ Constant *llvm::ConstantFoldCastInstruction(unsigned opc, Constant *V,
               }
             }
           // Handle an offsetof-like expression.
-          if (Ty->isStructTy() || Ty->isArrayTy() || Ty->isVectorTy()){
+          if (Ty->isStructTy() || Ty->isArrayTy()) {
             if (Constant *C = getFoldedOffsetOf(Ty, CE->getOperand(2),
                                                 DestTy, false))
               return C;
@@ -2194,7 +2194,7 @@ Constant *llvm::ConstantFoldGetElementPtr(Constant *C,
         }
 
         NewIndices.push_back(Combined);
-        NewIndices.insert(NewIndices.end(), Idxs+1, Idxs+NumIdx);
+        NewIndices.append(Idxs+1, Idxs+NumIdx);
         return (inBounds && cast<GEPOperator>(CE)->isInBounds()) ?
           ConstantExpr::getInBoundsGetElementPtr(CE->getOperand(0),
                                                  &NewIndices[0],

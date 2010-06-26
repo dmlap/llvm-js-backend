@@ -139,6 +139,10 @@ namespace {
 
     void emitMiscInstruction(const MachineInstr &MI);
 
+    void emitNEON1RegModImmInstruction(const MachineInstr &MI);
+    void emitNEON2RegInstruction(const MachineInstr &MI);
+    void emitNEON3RegInstruction(const MachineInstr &MI);
+
     /// getMachineOpValue - Return binary encoding of operand. If the machine
     /// operand requires relocation, record the relocation and return zero.
     unsigned getMachineOpValue(const MachineInstr &MI,const MachineOperand &MO);
@@ -348,7 +352,7 @@ void ARMCodeEmitter::emitInstruction(const MachineInstr &MI) {
 
   MCE.processDebugLoc(MI.getDebugLoc(), true);
 
-  NumEmitted++;  // Keep track of the # of mi's emitted
+  ++NumEmitted;  // Keep track of the # of mi's emitted
   switch (MI.getDesc().TSFlags & ARMII::FormMask) {
   default: {
     llvm_unreachable("Unhandled instruction encoding format!");
@@ -407,6 +411,16 @@ void ARMCodeEmitter::emitInstruction(const MachineInstr &MI) {
     break;
   case ARMII::VFPMiscFrm:
     emitMiscInstruction(MI);
+    break;
+  // NEON instructions.
+  case ARMII::N1RegModImmFrm:
+    emitNEON1RegModImmInstruction(MI);
+    break;
+  case ARMII::N2RegFrm:
+    emitNEON2RegInstruction(MI);
+    break;
+  case ARMII::N3RegFrm:
+    emitNEON3RegInstruction(MI);
     break;
   }
   MCE.processDebugLoc(MI.getDebugLoc(), false);
@@ -1537,6 +1551,81 @@ void ARMCodeEmitter::emitMiscInstruction(const MachineInstr &MI) {
   }
   }
 
+  emitWordLE(Binary);
+}
+
+static unsigned encodeNEONRd(const MachineInstr &MI, unsigned OpIdx) {
+  unsigned RegD = MI.getOperand(OpIdx).getReg();
+  unsigned Binary = 0;
+  RegD = ARMRegisterInfo::getRegisterNumbering(RegD);
+  Binary |= (RegD & 0xf) << ARMII::RegRdShift;
+  Binary |= ((RegD >> 4) & 1) << ARMII::D_BitShift;
+  return Binary;
+}
+
+static unsigned encodeNEONRn(const MachineInstr &MI, unsigned OpIdx) {
+  unsigned RegN = MI.getOperand(OpIdx).getReg();
+  unsigned Binary = 0;
+  RegN = ARMRegisterInfo::getRegisterNumbering(RegN);
+  Binary |= (RegN & 0xf) << ARMII::RegRnShift;
+  Binary |= ((RegN >> 4) & 1) << ARMII::N_BitShift;
+  return Binary;
+}
+
+static unsigned encodeNEONRm(const MachineInstr &MI, unsigned OpIdx) {
+  unsigned RegM = MI.getOperand(OpIdx).getReg();
+  unsigned Binary = 0;
+  RegM = ARMRegisterInfo::getRegisterNumbering(RegM);
+  Binary |= (RegM & 0xf);
+  Binary |= ((RegM >> 4) & 1) << ARMII::M_BitShift;
+  return Binary;
+}
+
+void ARMCodeEmitter::emitNEON1RegModImmInstruction(const MachineInstr &MI) {
+  unsigned Binary = getBinaryCodeForInstr(MI);
+  // Destination register is encoded in Dd.
+  Binary |= encodeNEONRd(MI, 0);
+  // Immediate fields: Op, Cmode, I, Imm3, Imm4
+  unsigned Imm = MI.getOperand(1).getImm();
+  unsigned Op = (Imm >> 12) & 1;
+  Binary |= (Op << 5);
+  unsigned Cmode = (Imm >> 8) & 0xf;
+  Binary |= (Cmode << 8);
+  unsigned I = (Imm >> 7) & 1;
+  Binary |= (I << 24);
+  unsigned Imm3 = (Imm >> 4) & 0x7;
+  Binary |= (Imm3 << 16);
+  unsigned Imm4 = Imm & 0xf;
+  Binary |= Imm4;
+  emitWordLE(Binary);
+}
+
+void ARMCodeEmitter::emitNEON2RegInstruction(const MachineInstr &MI) {
+  const TargetInstrDesc &TID = MI.getDesc();
+  unsigned Binary = getBinaryCodeForInstr(MI);
+  // Destination register is encoded in Dd; source register in Dm.
+  unsigned OpIdx = 0;
+  Binary |= encodeNEONRd(MI, OpIdx++);
+  if (TID.getOperandConstraint(OpIdx, TOI::TIED_TO) != -1)
+    ++OpIdx;
+  Binary |= encodeNEONRm(MI, OpIdx);
+  // FIXME: This does not handle VDUPfdf or VDUPfqf.
+  emitWordLE(Binary);
+}
+
+void ARMCodeEmitter::emitNEON3RegInstruction(const MachineInstr &MI) {
+  const TargetInstrDesc &TID = MI.getDesc();
+  unsigned Binary = getBinaryCodeForInstr(MI);
+  // Destination register is encoded in Dd; source registers in Dn and Dm.
+  unsigned OpIdx = 0;
+  Binary |= encodeNEONRd(MI, OpIdx++);
+  if (TID.getOperandConstraint(OpIdx, TOI::TIED_TO) != -1)
+    ++OpIdx;
+  Binary |= encodeNEONRn(MI, OpIdx++);
+  if (TID.getOperandConstraint(OpIdx, TOI::TIED_TO) != -1)
+    ++OpIdx;
+  Binary |= encodeNEONRm(MI, OpIdx);
+  // FIXME: This does not handle VMOVDneon or VMOVQ.
   emitWordLE(Binary);
 }
 

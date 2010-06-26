@@ -41,6 +41,8 @@ namespace {
   ld_plugin_add_symbols add_symbols = NULL;
   ld_plugin_get_symbols get_symbols = NULL;
   ld_plugin_add_input_file add_input_file = NULL;
+  ld_plugin_add_input_library add_input_library = NULL;
+  ld_plugin_set_extra_library_path set_extra_library_path = NULL;
   ld_plugin_message message = discard_message;
 
   int api_version = 0;
@@ -63,7 +65,9 @@ namespace options {
   static bool generate_api_file = false;
   static generate_bc generate_bc_file = BC_NO;
   static std::string bc_path;
-  static const char *as_path = NULL;
+  static std::string as_path;
+  static std::vector<std::string> pass_through;
+  static std::string extra_library_path;
   // Additional options to pass into the code generator.
   // Note: This array will contain all plugin options which are not claimed
   // as plugin exclusive to pass to the code generator.
@@ -71,36 +75,42 @@ namespace options {
   // use only and will not be passed.
   static std::vector<std::string> extra;
 
-  static void process_plugin_option(const char* opt)
+  static void process_plugin_option(const char* opt_)
   {
-    if (opt == NULL)
+    if (opt_ == NULL)
       return;
+    llvm::StringRef opt = opt_;
 
-    if (strcmp("generate-api-file", opt) == 0) {
+    if (opt == "generate-api-file") {
       generate_api_file = true;
-    } else if (strncmp("as=", opt, 3) == 0) {
-      if (as_path) {
+    } else if (opt.startswith("as=")) {
+      if (!as_path.empty()) {
         (*message)(LDPL_WARNING, "Path to as specified twice. "
-                   "Discarding %s", opt);
+                   "Discarding %s", opt_);
       } else {
-        as_path = strdup(opt + 3);
+        as_path = opt.substr(strlen("as="));
       }
-    } else if (strcmp("emit-llvm", opt) == 0) {
+    } else if (opt.startswith("extra-library-path=")) {
+      extra_library_path = opt.substr(strlen("extra_library_path="));
+    } else if (opt.startswith("pass-through=")) {
+      llvm::StringRef item = opt.substr(strlen("pass-through="));
+      pass_through.push_back(item.str());
+    } else if (opt == "emit-llvm") {
       generate_bc_file = BC_ONLY;
-    } else if (strcmp("also-emit-llvm", opt) == 0) {
+    } else if (opt == "also-emit-llvm") {
       generate_bc_file = BC_ALSO;
-    } else if (llvm::StringRef(opt).startswith("also-emit-llvm=")) {
-      const char *path = opt + strlen("also-emit-llvm=");
+    } else if (opt.startswith("also-emit-llvm=")) {
+      llvm::StringRef path = opt.substr(strlen("also-emit-llvm="));
       generate_bc_file = BC_ALSO;
       if (!bc_path.empty()) {
         (*message)(LDPL_WARNING, "Path to the output IL file specified twice. "
-                   "Discarding %s", opt);
+                   "Discarding %s", opt_);
       } else {
         bc_path = path;
       }
     } else {
       // Save this option to pass to the code generator.
-      extra.push_back(std::string(opt));
+      extra.push_back(opt);
     }
   }
 }
@@ -188,6 +198,12 @@ ld_plugin_status onload(ld_plugin_tv *tv) {
         break;
       case LDPT_ADD_INPUT_FILE:
         add_input_file = tv->tv_u.tv_add_input_file;
+        break;
+      case LDPT_ADD_INPUT_LIBRARY:
+        add_input_library = tv->tv_u.tv_add_input_file;
+        break;
+      case LDPT_SET_EXTRA_LIBRARY_PATH:
+        set_extra_library_path = tv->tv_u.tv_set_extra_library_path;
         break;
       case LDPT_MESSAGE:
         message = tv->tv_u.tv_message;
@@ -367,20 +383,20 @@ static ld_plugin_status all_symbols_read_hook(void) {
           api_file << I->syms[i].name << "\n";
       }
     }
+  }
 
-    if (options::generate_api_file)
-      api_file.close();
+  if (options::generate_api_file)
+    api_file.close();
 
-    if (!anySymbolsPreserved) {
-      // This entire file is unnecessary!
-      lto_codegen_dispose(cg);
-      return LDPS_OK;
-    }
+  if (!anySymbolsPreserved) {
+    // All of the IL is unnecessary!
+    lto_codegen_dispose(cg);
+    return LDPS_OK;
   }
 
   lto_codegen_set_pic_model(cg, output_type);
   lto_codegen_set_debug_model(cg, LTO_DEBUG_MODEL_DWARF);
-  if (options::as_path) {
+  if (!options::as_path.empty()) {
     sys::Path p = sys::Program::FindProgramByName(options::as_path);
     lto_codegen_set_assembler_path(cg, p.c_str());
   }
@@ -418,24 +434,46 @@ static ld_plugin_status all_symbols_read_hook(void) {
     (*message)(LDPL_ERROR, "%s", ErrMsg.c_str());
     return LDPS_ERR;
   }
-  raw_fd_ostream *objFile =
-    new raw_fd_ostream(uniqueObjPath.c_str(), ErrMsg,
-                       raw_fd_ostream::F_Binary);
+  raw_fd_ostream objFile(uniqueObjPath.c_str(), ErrMsg,
+                         raw_fd_ostream::F_Binary);
   if (!ErrMsg.empty()) {
-    delete objFile;
     (*message)(LDPL_ERROR, "%s", ErrMsg.c_str());
     return LDPS_ERR;
   }
 
-  objFile->write(buffer, bufsize);
-  objFile->close();
+  objFile.write(buffer, bufsize);
+  objFile.close();
 
   lto_codegen_dispose(cg);
 
-  if ((*add_input_file)(const_cast<char*>(uniqueObjPath.c_str())) != LDPS_OK) {
+  if ((*add_input_file)(uniqueObjPath.c_str()) != LDPS_OK) {
     (*message)(LDPL_ERROR, "Unable to add .o file to the link.");
     (*message)(LDPL_ERROR, "File left behind in: %s", uniqueObjPath.c_str());
     return LDPS_ERR;
+  }
+
+  if (!options::extra_library_path.empty() &&
+      set_extra_library_path(options::extra_library_path.c_str()) != LDPS_OK) {
+    (*message)(LDPL_ERROR, "Unable to set the extra library path.");
+    return LDPS_ERR;
+  }
+
+  for (std::vector<std::string>::iterator i = options::pass_through.begin(),
+                                          e = options::pass_through.end();
+       i != e; ++i) {
+    std::string &item = *i;
+    const char *item_p = item.c_str();
+    if (llvm::StringRef(item).startswith("-l")) {
+      if (add_input_library(item_p + 2) != LDPS_OK) {
+        (*message)(LDPL_ERROR, "Unable to add library to the link.");
+        return LDPS_ERR;
+      }
+    } else {
+      if (add_input_file(item_p) != LDPS_OK) {
+        (*message)(LDPL_ERROR, "Unable to add .o file to the link.");
+        return LDPS_ERR;
+      }
+    }
   }
 
   Cleanup.push_back(uniqueObjPath);

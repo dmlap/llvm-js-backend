@@ -162,7 +162,7 @@ unsigned FastISel::materializeRegForValue(const Value *V, MVT VT) {
     }
   } else if (const Operator *Op = dyn_cast<Operator>(V)) {
     if (!SelectOperator(Op, Op->getOpcode())) return 0;
-    Reg = LocalValueMap[Op];
+    Reg = lookUpRegForValue(Op);
   } else if (isa<UndefValue>(V)) {
     Reg = createResultReg(TLI.getRegClassFor(VT));
     BuildMI(MBB, DL, TII.get(TargetOpcode::IMPLICIT_DEF), Reg);
@@ -185,8 +185,9 @@ unsigned FastISel::lookUpRegForValue(const Value *V) {
   // cache values defined by Instructions across blocks, and other values
   // only locally. This is because Instructions already have the SSA
   // def-dominates-use requirement enforced.
-  if (ValueMap.count(V))
-    return ValueMap[V];
+  DenseMap<const Value *, unsigned>::iterator I = ValueMap.find(V);
+  if (I != ValueMap.end())
+    return I->second;
   return LocalValueMap[V];
 }
 
@@ -345,7 +346,7 @@ bool FastISel::SelectGetElementPtr(const User *I) {
 
       // If this is a constant subscript, handle it quickly.
       if (const ConstantInt *CI = dyn_cast<ConstantInt>(Idx)) {
-        if (CI->getZExtValue() == 0) continue;
+        if (CI->isZero()) continue;
         uint64_t Offs = 
           TD.getTypeAllocSize(Ty)*cast<ConstantInt>(CI)->getSExtValue();
         N = FastEmit_ri_(VT, ISD::ADD, N, NIsKill, Offs, VT);
@@ -655,12 +656,12 @@ FastISel::SelectInstruction(const Instruction *I) {
 /// unless it is the immediate (fall-through) successor, and update
 /// the CFG.
 void
-FastISel::FastEmitBranch(MachineBasicBlock *MSucc) {
+FastISel::FastEmitBranch(MachineBasicBlock *MSucc, DebugLoc DL) {
   if (MBB->isLayoutSuccessor(MSucc)) {
     // The unconditional fall-through case, which needs no instructions.
   } else {
     // The unconditional branch case.
-    TII.InsertBranch(*MBB, MSucc, NULL, SmallVector<MachineOperand, 0>());
+    TII.InsertBranch(*MBB, MSucc, NULL, SmallVector<MachineOperand, 0>(), DL);
   }
   MBB->addSuccessor(MSucc);
 }
@@ -763,7 +764,7 @@ FastISel::SelectOperator(const User *I, unsigned Opcode) {
     if (BI->isUnconditional()) {
       const BasicBlock *LLVMSucc = BI->getSuccessor(0);
       MachineBasicBlock *MSucc = MBBMap[LLVMSucc];
-      FastEmitBranch(MSucc);
+      FastEmitBranch(MSucc, BI->getDebugLoc());
       return true;
     }
 
@@ -849,6 +850,7 @@ FastISel::FastISel(MachineFunction &mf,
     TD(*TM.getTargetData()),
     TII(*TM.getInstrInfo()),
     TLI(*TM.getTargetLowering()),
+    TRI(*TM.getRegisterInfo()),
     IsBottomUp(false) {
 }
 

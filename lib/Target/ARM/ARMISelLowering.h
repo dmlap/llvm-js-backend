@@ -135,6 +135,13 @@ namespace llvm {
       VUZP,         // unzip (deinterleave)
       VTRN,         // transpose
 
+      // Operands of the standard BUILD_VECTOR node are not legalized, which
+      // is fine if BUILD_VECTORs are always lowered to shuffles or other
+      // operations, but for ARM some BUILD_VECTORs are legal as-is and their
+      // operands need to be legalized.  Define an ARM-specific version of
+      // BUILD_VECTOR for this purpose.
+      BUILD_VECTOR,
+
       // Floating-point max and min:
       FMAX,
       FMIN
@@ -143,11 +150,12 @@ namespace llvm {
 
   /// Define some predicates that are used for node matching.
   namespace ARM {
-    /// getVMOVImm - If this is a build_vector of constants which can be
-    /// formed by using a VMOV instruction of the specified element size,
-    /// return the constant being splatted.  The ByteSize field indicates the
-    /// number of bytes of each element [1248].
-    SDValue getVMOVImm(SDNode *N, unsigned ByteSize, SelectionDAG &DAG);
+    /// getNEONModImm - If this is a valid vector constant for a NEON
+    /// instruction with a "modified immediate" operand (e.g., VMOV) of the
+    /// specified element size, return the encoded value for that immediate.
+    /// The ByteSize field indicates the number of bytes of each element [1248].
+    SDValue getNEONModImm(SDNode *N, unsigned ByteSize, bool isVMOV,
+                          SelectionDAG &DAG);
 
     /// getVFPf32Imm / getVFPf64Imm - If the given fp immediate can be
     /// materialized with a VMOV.f32 / VMOV.f64 (i.e. fconsts / fconstd)
@@ -234,7 +242,6 @@ namespace llvm {
     /// being processed is 'm'.
     virtual void LowerAsmOperandForConstraint(SDValue Op,
                                               char ConstraintLetter,
-                                              bool hasMemory,
                                               std::vector<SDValue> &Ops,
                                               SelectionDAG &DAG) const;
 

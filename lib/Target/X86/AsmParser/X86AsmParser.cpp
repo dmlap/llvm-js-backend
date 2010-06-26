@@ -412,6 +412,28 @@ bool X86ATTAsmParser::ParseRegister(unsigned &RegNo,
     return false;
   }
   
+  // If this is "db[0-7]", match it as an alias
+  // for dr[0-7].
+  if (RegNo == 0 && Tok.getString().size() == 3 &&
+      Tok.getString().startswith("db")) {
+    switch (Tok.getString()[2]) {
+    case '0': RegNo = X86::DR0; break;
+    case '1': RegNo = X86::DR1; break;
+    case '2': RegNo = X86::DR2; break;
+    case '3': RegNo = X86::DR3; break;
+    case '4': RegNo = X86::DR4; break;
+    case '5': RegNo = X86::DR5; break;
+    case '6': RegNo = X86::DR6; break;
+    case '7': RegNo = X86::DR7; break;
+    }
+    
+    if (RegNo != 0) {
+      EndLoc = Tok.getLoc();
+      Parser.Lex(); // Eat it.
+      return false;
+    }
+  }
+  
   if (RegNo == 0)
     return Error(Tok.getLoc(), "invalid register name");
 
@@ -597,6 +619,16 @@ ParseInstruction(const StringRef &Name, SMLoc NameLoc,
       return Error(NameLoc, "pushfq cannot be encoded in 32-bit mode");
   }
 
+  // The "Jump if rCX Zero" form jcxz is not allowed in 64-bit mode and
+  // the form jrcxz is not allowed in 32-bit mode.
+  if (Is64Bit) {
+    if (Name == "jcxz")
+      return Error(NameLoc, "jcxz cannot be encoded in 64-bit mode");
+  } else {
+    if (Name == "jrcxz")
+      return Error(NameLoc, "jrcxz cannot be encoded in 32-bit mode");
+  }
+
   // FIXME: Hack to recognize "sal..." and "rep..." for now. We need a way to
   // represent alternative syntaxes in the .td file, without requiring
   // instruction duplication.
@@ -618,7 +650,11 @@ ParseInstruction(const StringRef &Name, SMLoc NameLoc,
     .Case("jz", "je")
     .Case("jnz", "jne")
     .Case("jc", "jb")
+    // FIXME: in 32-bit mode jcxz requires an AdSize prefix. In 64-bit mode
+    // jecxz requires an AdSize prefix but jecxz does not have a prefix in
+    // 32-bit mode.
     .Case("jecxz", "jcxz")
+    .Case("jrcxz", "jcxz")
     .Case("jna", "jbe")
     .Case("jnae", "jb")
     .Case("jnb", "jae")
@@ -650,11 +686,13 @@ ParseInstruction(const StringRef &Name, SMLoc NameLoc,
 
   // FIXME: Hack to recognize cmp<comparison code>{ss,sd,ps,pd}.
   const MCExpr *ExtraImmOp = 0;
-  if (PatchedName.startswith("cmp") &&
+  if ((PatchedName.startswith("cmp") || PatchedName.startswith("vcmp")) &&
       (PatchedName.endswith("ss") || PatchedName.endswith("sd") ||
        PatchedName.endswith("ps") || PatchedName.endswith("pd"))) {
+    bool IsVCMP = PatchedName.startswith("vcmp");
+    unsigned SSECCIdx = IsVCMP ? 4 : 3;
     unsigned SSEComparisonCode = StringSwitch<unsigned>(
-      PatchedName.slice(3, PatchedName.size() - 2))
+      PatchedName.slice(SSECCIdx, PatchedName.size() - 2))
       .Case("eq", 0)
       .Case("lt", 1)
       .Case("le", 2)
@@ -668,14 +706,14 @@ ParseInstruction(const StringRef &Name, SMLoc NameLoc,
       ExtraImmOp = MCConstantExpr::Create(SSEComparisonCode,
                                           getParser().getContext());
       if (PatchedName.endswith("ss")) {
-        PatchedName = "cmpss";
+        PatchedName = IsVCMP ? "vcmpss" : "cmpss";
       } else if (PatchedName.endswith("sd")) {
-        PatchedName = "cmpsd";
+        PatchedName = IsVCMP ? "vcmpsd" : "cmpsd";
       } else if (PatchedName.endswith("ps")) {
-        PatchedName = "cmpps";
+        PatchedName = IsVCMP ? "vcmpps" : "cmpps";
       } else {
         assert(PatchedName.endswith("pd") && "Unexpected mnemonic!");
-        PatchedName = "cmppd";
+        PatchedName = IsVCMP ? "vcmppd" : "cmppd";
       }
     }
   }

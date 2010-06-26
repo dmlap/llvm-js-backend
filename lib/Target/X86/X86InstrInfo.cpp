@@ -1839,9 +1839,8 @@ unsigned X86InstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
 unsigned
 X86InstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
                            MachineBasicBlock *FBB,
-                           const SmallVectorImpl<MachineOperand> &Cond) const {
-  // FIXME this should probably have a DebugLoc operand
-  DebugLoc dl;
+                           const SmallVectorImpl<MachineOperand> &Cond,
+                           DebugLoc DL) const {
   // Shouldn't be a fall through.
   assert(TBB && "InsertBranch must not be told to insert a fallthrough");
   assert((Cond.size() == 1 || Cond.size() == 0) &&
@@ -1850,7 +1849,7 @@ X86InstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
   if (Cond.empty()) {
     // Unconditional branch?
     assert(!FBB && "Unconditional branch with multiple successors!");
-    BuildMI(&MBB, dl, get(X86::JMP_4)).addMBB(TBB);
+    BuildMI(&MBB, DL, get(X86::JMP_4)).addMBB(TBB);
     return 1;
   }
 
@@ -1860,27 +1859,27 @@ X86InstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
   switch (CC) {
   case X86::COND_NP_OR_E:
     // Synthesize NP_OR_E with two branches.
-    BuildMI(&MBB, dl, get(X86::JNP_4)).addMBB(TBB);
+    BuildMI(&MBB, DL, get(X86::JNP_4)).addMBB(TBB);
     ++Count;
-    BuildMI(&MBB, dl, get(X86::JE_4)).addMBB(TBB);
+    BuildMI(&MBB, DL, get(X86::JE_4)).addMBB(TBB);
     ++Count;
     break;
   case X86::COND_NE_OR_P:
     // Synthesize NE_OR_P with two branches.
-    BuildMI(&MBB, dl, get(X86::JNE_4)).addMBB(TBB);
+    BuildMI(&MBB, DL, get(X86::JNE_4)).addMBB(TBB);
     ++Count;
-    BuildMI(&MBB, dl, get(X86::JP_4)).addMBB(TBB);
+    BuildMI(&MBB, DL, get(X86::JP_4)).addMBB(TBB);
     ++Count;
     break;
   default: {
     unsigned Opc = GetCondBranchFromCond(CC);
-    BuildMI(&MBB, dl, get(Opc)).addMBB(TBB);
+    BuildMI(&MBB, DL, get(Opc)).addMBB(TBB);
     ++Count;
   }
   }
   if (FBB) {
     // Two-way Conditional branch. Insert the second branch.
-    BuildMI(&MBB, dl, get(X86::JMP_4)).addMBB(FBB);
+    BuildMI(&MBB, DL, get(X86::JMP_4)).addMBB(FBB);
     ++Count;
   }
   return Count;
@@ -2057,71 +2056,87 @@ bool X86InstrInfo::copyRegToReg(MachineBasicBlock &MBB,
   return false;
 }
 
+static unsigned getLoadStoreRegOpcode(unsigned Reg,
+                                      const TargetRegisterClass *RC,
+                                      bool isStackAligned,
+                                      const TargetMachine &TM,
+                                      bool load) {
+  if (RC == &X86::GR64RegClass || RC == &X86::GR64_NOSPRegClass) {
+    return load ? X86::MOV64rm : X86::MOV64mr;
+  } else if (RC == &X86::GR32RegClass || RC == &X86::GR32_NOSPRegClass) {
+    return load ? X86::MOV32rm : X86::MOV32mr;
+  } else if (RC == &X86::GR16RegClass) {
+    return load ? X86::MOV16rm : X86::MOV16mr;
+  } else if (RC == &X86::GR8RegClass) {
+    // Copying to or from a physical H register on x86-64 requires a NOREX
+    // move.  Otherwise use a normal move.
+    if (isHReg(Reg) &&
+        TM.getSubtarget<X86Subtarget>().is64Bit())
+      return load ? X86::MOV8rm_NOREX : X86::MOV8mr_NOREX;
+    else
+      return load ? X86::MOV8rm : X86::MOV8mr;
+  } else if (RC == &X86::GR64_ABCDRegClass) {
+    return load ? X86::MOV64rm : X86::MOV64mr;
+  } else if (RC == &X86::GR32_ABCDRegClass) {
+    return load ? X86::MOV32rm : X86::MOV32mr;
+  } else if (RC == &X86::GR16_ABCDRegClass) {
+    return load ? X86::MOV16rm : X86::MOV16mr;
+  } else if (RC == &X86::GR8_ABCD_LRegClass) {
+    return load ? X86::MOV8rm :X86::MOV8mr;
+  } else if (RC == &X86::GR8_ABCD_HRegClass) {
+    if (TM.getSubtarget<X86Subtarget>().is64Bit())
+      return load ? X86::MOV8rm_NOREX : X86::MOV8mr_NOREX;
+    else
+      return load ? X86::MOV8rm : X86::MOV8mr;
+  } else if (RC == &X86::GR64_NOREXRegClass ||
+             RC == &X86::GR64_NOREX_NOSPRegClass) {
+    return load ? X86::MOV64rm : X86::MOV64mr;
+  } else if (RC == &X86::GR32_NOREXRegClass) {
+    return load ? X86::MOV32rm : X86::MOV32mr;
+  } else if (RC == &X86::GR16_NOREXRegClass) {
+    return load ? X86::MOV16rm : X86::MOV16mr;
+  } else if (RC == &X86::GR8_NOREXRegClass) {
+    return load ? X86::MOV8rm : X86::MOV8mr;
+  } else if (RC == &X86::GR64_TCRegClass) {
+    return load ? X86::MOV64rm_TC : X86::MOV64mr_TC;
+  } else if (RC == &X86::GR32_TCRegClass) {
+    return load ? X86::MOV32rm_TC : X86::MOV32mr_TC;
+  } else if (RC == &X86::RFP80RegClass) {
+    return load ? X86::LD_Fp80m : X86::ST_FpP80m;
+  } else if (RC == &X86::RFP64RegClass) {
+    return load ? X86::LD_Fp64m : X86::ST_Fp64m;
+  } else if (RC == &X86::RFP32RegClass) {
+    return load ? X86::LD_Fp32m : X86::ST_Fp32m;
+  } else if (RC == &X86::FR32RegClass) {
+    return load ? X86::MOVSSrm : X86::MOVSSmr;
+  } else if (RC == &X86::FR64RegClass) {
+    return load ? X86::MOVSDrm : X86::MOVSDmr;
+  } else if (RC == &X86::VR128RegClass) {
+    // If stack is realigned we can use aligned stores.
+    if (isStackAligned)
+      return load ? X86::MOVAPSrm : X86::MOVAPSmr;
+    else
+      return load ? X86::MOVUPSrm : X86::MOVUPSmr;
+  } else if (RC == &X86::VR64RegClass) {
+    return load ? X86::MMX_MOVQ64rm : X86::MMX_MOVQ64mr;
+  } else {
+    llvm_unreachable("Unknown regclass");
+  }
+}
+
 static unsigned getStoreRegOpcode(unsigned SrcReg,
                                   const TargetRegisterClass *RC,
                                   bool isStackAligned,
                                   TargetMachine &TM) {
-  unsigned Opc = 0;
-  if (RC == &X86::GR64RegClass || RC == &X86::GR64_NOSPRegClass) {
-    Opc = X86::MOV64mr;
-  } else if (RC == &X86::GR32RegClass || RC == &X86::GR32_NOSPRegClass) {
-    Opc = X86::MOV32mr;
-  } else if (RC == &X86::GR16RegClass) {
-    Opc = X86::MOV16mr;
-  } else if (RC == &X86::GR8RegClass) {
-    // Copying to or from a physical H register on x86-64 requires a NOREX
-    // move.  Otherwise use a normal move.
-    if (isHReg(SrcReg) &&
-        TM.getSubtarget<X86Subtarget>().is64Bit())
-      Opc = X86::MOV8mr_NOREX;
-    else
-      Opc = X86::MOV8mr;
-  } else if (RC == &X86::GR64_ABCDRegClass) {
-    Opc = X86::MOV64mr;
-  } else if (RC == &X86::GR32_ABCDRegClass) {
-    Opc = X86::MOV32mr;
-  } else if (RC == &X86::GR16_ABCDRegClass) {
-    Opc = X86::MOV16mr;
-  } else if (RC == &X86::GR8_ABCD_LRegClass) {
-    Opc = X86::MOV8mr;
-  } else if (RC == &X86::GR8_ABCD_HRegClass) {
-    if (TM.getSubtarget<X86Subtarget>().is64Bit())
-      Opc = X86::MOV8mr_NOREX;
-    else
-      Opc = X86::MOV8mr;
-  } else if (RC == &X86::GR64_NOREXRegClass ||
-             RC == &X86::GR64_NOREX_NOSPRegClass) {
-    Opc = X86::MOV64mr;
-  } else if (RC == &X86::GR32_NOREXRegClass) {
-    Opc = X86::MOV32mr;
-  } else if (RC == &X86::GR16_NOREXRegClass) {
-    Opc = X86::MOV16mr;
-  } else if (RC == &X86::GR8_NOREXRegClass) {
-    Opc = X86::MOV8mr;
-  } else if (RC == &X86::GR64_TCRegClass) {
-    Opc = X86::MOV64mr_TC;
-  } else if (RC == &X86::GR32_TCRegClass) {
-    Opc = X86::MOV32mr_TC;
-  } else if (RC == &X86::RFP80RegClass) {
-    Opc = X86::ST_FpP80m;   // pops
-  } else if (RC == &X86::RFP64RegClass) {
-    Opc = X86::ST_Fp64m;
-  } else if (RC == &X86::RFP32RegClass) {
-    Opc = X86::ST_Fp32m;
-  } else if (RC == &X86::FR32RegClass) {
-    Opc = X86::MOVSSmr;
-  } else if (RC == &X86::FR64RegClass) {
-    Opc = X86::MOVSDmr;
-  } else if (RC == &X86::VR128RegClass) {
-    // If stack is realigned we can use aligned stores.
-    Opc = isStackAligned ? X86::MOVAPSmr : X86::MOVUPSmr;
-  } else if (RC == &X86::VR64RegClass) {
-    Opc = X86::MMX_MOVQ64mr;
-  } else {
-    llvm_unreachable("Unknown regclass");
-  }
+  return getLoadStoreRegOpcode(SrcReg, RC, isStackAligned, TM, false);
+}
 
-  return Opc;
+
+static unsigned getLoadRegOpcode(unsigned DestReg,
+                                 const TargetRegisterClass *RC,
+                                 bool isStackAligned,
+                                 const TargetMachine &TM) {
+  return getLoadStoreRegOpcode(DestReg, RC, isStackAligned, TM, true);
 }
 
 void X86InstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
@@ -2155,72 +2170,6 @@ void X86InstrInfo::storeRegToAddr(MachineFunction &MF, unsigned SrcReg,
   NewMIs.push_back(MIB);
 }
 
-static unsigned getLoadRegOpcode(unsigned DestReg,
-                                 const TargetRegisterClass *RC,
-                                 bool isStackAligned,
-                                 const TargetMachine &TM) {
-  unsigned Opc = 0;
-  if (RC == &X86::GR64RegClass || RC == &X86::GR64_NOSPRegClass) {
-    Opc = X86::MOV64rm;
-  } else if (RC == &X86::GR32RegClass || RC == &X86::GR32_NOSPRegClass) {
-    Opc = X86::MOV32rm;
-  } else if (RC == &X86::GR16RegClass) {
-    Opc = X86::MOV16rm;
-  } else if (RC == &X86::GR8RegClass) {
-    // Copying to or from a physical H register on x86-64 requires a NOREX
-    // move.  Otherwise use a normal move.
-    if (isHReg(DestReg) &&
-        TM.getSubtarget<X86Subtarget>().is64Bit())
-      Opc = X86::MOV8rm_NOREX;
-    else
-      Opc = X86::MOV8rm;
-  } else if (RC == &X86::GR64_ABCDRegClass) {
-    Opc = X86::MOV64rm;
-  } else if (RC == &X86::GR32_ABCDRegClass) {
-    Opc = X86::MOV32rm;
-  } else if (RC == &X86::GR16_ABCDRegClass) {
-    Opc = X86::MOV16rm;
-  } else if (RC == &X86::GR8_ABCD_LRegClass) {
-    Opc = X86::MOV8rm;
-  } else if (RC == &X86::GR8_ABCD_HRegClass) {
-    if (TM.getSubtarget<X86Subtarget>().is64Bit())
-      Opc = X86::MOV8rm_NOREX;
-    else
-      Opc = X86::MOV8rm;
-  } else if (RC == &X86::GR64_NOREXRegClass ||
-             RC == &X86::GR64_NOREX_NOSPRegClass) {
-    Opc = X86::MOV64rm;
-  } else if (RC == &X86::GR32_NOREXRegClass) {
-    Opc = X86::MOV32rm;
-  } else if (RC == &X86::GR16_NOREXRegClass) {
-    Opc = X86::MOV16rm;
-  } else if (RC == &X86::GR8_NOREXRegClass) {
-    Opc = X86::MOV8rm;
-  } else if (RC == &X86::GR64_TCRegClass) {
-    Opc = X86::MOV64rm_TC;
-  } else if (RC == &X86::GR32_TCRegClass) {
-    Opc = X86::MOV32rm_TC;
-  } else if (RC == &X86::RFP80RegClass) {
-    Opc = X86::LD_Fp80m;
-  } else if (RC == &X86::RFP64RegClass) {
-    Opc = X86::LD_Fp64m;
-  } else if (RC == &X86::RFP32RegClass) {
-    Opc = X86::LD_Fp32m;
-  } else if (RC == &X86::FR32RegClass) {
-    Opc = X86::MOVSSrm;
-  } else if (RC == &X86::FR64RegClass) {
-    Opc = X86::MOVSDrm;
-  } else if (RC == &X86::VR128RegClass) {
-    // If stack is realigned we can use aligned loads.
-    Opc = isStackAligned ? X86::MOVAPSrm : X86::MOVUPSrm;
-  } else if (RC == &X86::VR64RegClass) {
-    Opc = X86::MMX_MOVQ64rm;
-  } else {
-    llvm_unreachable("Unknown regclass");
-  }
-
-  return Opc;
-}
 
 void X86InstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                         MachineBasicBlock::iterator MI,
@@ -3058,16 +3007,16 @@ bool X86InstrInfo::shouldScheduleLoadsNear(SDNode *Load1, SDNode *Load2,
 
   EVT VT = Load1->getValueType(0);
   switch (VT.getSimpleVT().SimpleTy) {
-  default: {
+  default:
     // XMM registers. In 64-bit mode we can be a bit more aggressive since we
     // have 16 of them to play with.
     if (TM.getSubtargetImpl()->is64Bit()) {
       if (NumLoads >= 3)
         return false;
-    } else if (NumLoads)
+    } else if (NumLoads) {
       return false;
+    }
     break;
-  }
   case MVT::i8:
   case MVT::i16:
   case MVT::i32:
@@ -3076,6 +3025,7 @@ bool X86InstrInfo::shouldScheduleLoadsNear(SDNode *Load1, SDNode *Load2,
   case MVT::f64:
     if (NumLoads)
       return false;
+    break;
   }
 
   return true;

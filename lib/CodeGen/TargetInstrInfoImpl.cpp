@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Target/TargetInstrInfo.h"
+#include "llvm/Target/TargetLowering.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/ADT/SmallVector.h"
@@ -21,10 +22,32 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/PostRAHazardRecognizer.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace llvm;
+
+/// ReplaceTailWithBranchTo - Delete the instruction OldInst and everything
+/// after it, replacing it with an unconditional branch to NewDest.
+void
+TargetInstrInfoImpl::ReplaceTailWithBranchTo(MachineBasicBlock::iterator Tail,
+                                             MachineBasicBlock *NewDest) const {
+  MachineBasicBlock *MBB = Tail->getParent();
+
+  // Remove all the old successors of MBB from the CFG.
+  while (!MBB->succ_empty())
+    MBB->removeSuccessor(MBB->succ_begin());
+
+  // Remove all the dead instructions from the end of MBB.
+  MBB->erase(Tail, MBB->end());
+
+  // If MBB isn't immediately before MBB, insert a branch to it.
+  if (++MachineFunction::iterator(MBB) != MachineFunction::iterator(NewDest))
+    InsertBranch(*MBB, NewDest, 0, SmallVector<MachineOperand, 0>(),
+                 Tail->getDebugLoc());
+  MBB->addSuccessor(NewDest);
+}
 
 // commuteInstruction - The default implementation of this method just exchanges
 // the two operands returned by findCommutedOpIndices.
@@ -232,11 +255,9 @@ TargetInstrInfo::foldMemoryOperand(MachineFunction &MF,
   return NewMI;
 }
 
-bool
-TargetInstrInfo::isReallyTriviallyReMaterializableGeneric(const MachineInstr *
-                                                            MI,
-                                                          AliasAnalysis *
-                                                            AA) const {
+bool TargetInstrInfo::
+isReallyTriviallyReMaterializableGeneric(const MachineInstr *MI,
+                                         AliasAnalysis *AA) const {
   const MachineFunction &MF = *MI->getParent()->getParent();
   const MachineRegisterInfo &MRI = MF.getRegInfo();
   const TargetMachine &TM = MF.getTarget();
@@ -315,4 +336,32 @@ TargetInstrInfo::isReallyTriviallyReMaterializableGeneric(const MachineInstr *
 
   // Everything checked out.
   return true;
+}
+
+/// isSchedulingBoundary - Test if the given instruction should be
+/// considered a scheduling boundary. This primarily includes labels
+/// and terminators.
+bool TargetInstrInfoImpl::isSchedulingBoundary(const MachineInstr *MI,
+                                               const MachineBasicBlock *MBB,
+                                               const MachineFunction &MF) const{
+  // Terminators and labels can't be scheduled around.
+  if (MI->getDesc().isTerminator() || MI->isLabel())
+    return true;
+
+  // Don't attempt to schedule around any instruction that defines
+  // a stack-oriented pointer, as it's unlikely to be profitable. This
+  // saves compile time, because it doesn't require every single
+  // stack slot reference to depend on the instruction that does the
+  // modification.
+  const TargetLowering &TLI = *MF.getTarget().getTargetLowering();
+  if (MI->definesRegister(TLI.getStackPointerRegisterToSaveRestore()))
+    return true;
+
+  return false;
+}
+
+// Default implementation of CreateTargetPostRAHazardRecognizer.
+ScheduleHazardRecognizer *TargetInstrInfoImpl::
+CreateTargetPostRAHazardRecognizer(const InstrItineraryData &II) const {
+  return (ScheduleHazardRecognizer *)new PostRAHazardRecognizer(II);
 }

@@ -20,12 +20,14 @@
 namespace llvm {
 
 class CalleeSavedInfo;
+class InstrItineraryData;
 class LiveVariables;
 class MCAsmInfo;
 class MachineMemOperand;
 class MDNode;
 class MCInst;
 class SDNode;
+class ScheduleHazardRecognizer;
 class SelectionDAG;
 class TargetRegisterClass;
 class TargetRegisterInfo;
@@ -203,6 +205,14 @@ public:
                              const MachineInstr *Orig,
                              const TargetRegisterInfo &TRI) const = 0;
 
+  /// scheduleTwoAddrSource - Schedule the copy / re-mat of the source of the
+  /// two-addrss instruction inserted by two-address pass.
+  virtual void scheduleTwoAddrSource(MachineInstr *SrcMI,
+                                     MachineInstr *UseMI,
+                                     const TargetRegisterInfo &TRI) const {
+    // Do nothing.
+  }
+
   /// duplicate - Create a duplicate of the Orig instruction in MF. This is like
   /// MachineFunction::CloneMachineInstr(), but the target may update operands
   /// that are required to be unique.
@@ -227,23 +237,19 @@ public:
     return 0;
   }
 
-  /// commuteInstruction - If a target has any instructions that are commutable,
-  /// but require converting to a different instruction or making non-trivial
-  /// changes to commute them, this method can overloaded to do this.  The
-  /// default implementation of this method simply swaps the first two operands
-  /// of MI and returns it.
-  ///
-  /// If a target wants to make more aggressive changes, they can construct and
-  /// return a new machine instruction.  If an instruction cannot commute, it
-  /// can also return null.
-  ///
-  /// If NewMI is true, then a new machine instruction must be created.
-  ///
+  /// commuteInstruction - If a target has any instructions that are
+  /// commutable but require converting to different instructions or making
+  /// non-trivial changes to commute them, this method can overloaded to do
+  /// that.  The default implementation simply swaps the commutable operands.
+  /// If NewMI is false, MI is modified in place and returned; otherwise, a
+  /// new machine instruction is created and returned.  Do not call this
+  /// method for a non-commutable instruction, but there may be some cases
+  /// where this method fails and returns null.
   virtual MachineInstr *commuteInstruction(MachineInstr *MI,
                                            bool NewMI = false) const = 0;
 
   /// findCommutedOpIndices - If specified MI is commutable, return the two
-  /// operand indices that would swap value. Return true if the instruction
+  /// operand indices that would swap value. Return false if the instruction
   /// is not in a form which this routine understands.
   virtual bool findCommutedOpIndices(MachineInstr *MI, unsigned &SrcOpIdx1,
                                      unsigned &SrcOpIdx2) const = 0;
@@ -305,10 +311,50 @@ public:
   /// branch to analyze.  At least this much must be implemented, else tail
   /// merging needs to be disabled.
   virtual unsigned InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
-                            MachineBasicBlock *FBB,
-                            const SmallVectorImpl<MachineOperand> &Cond) const {
+                                MachineBasicBlock *FBB,
+                                const SmallVectorImpl<MachineOperand> &Cond,
+                                DebugLoc DL) const {
     assert(0 && "Target didn't implement TargetInstrInfo::InsertBranch!"); 
     return 0;
+  }
+
+  /// ReplaceTailWithBranchTo - Delete the instruction OldInst and everything
+  /// after it, replacing it with an unconditional branch to NewDest. This is
+  /// used by the tail merging pass.
+  virtual void ReplaceTailWithBranchTo(MachineBasicBlock::iterator Tail,
+                                       MachineBasicBlock *NewDest) const = 0;
+
+  /// isLegalToSplitMBBAt - Return true if it's legal to split the given basic
+  /// block at the specified instruction (i.e. instruction would be the start
+  /// of a new basic block).
+  virtual bool isLegalToSplitMBBAt(MachineBasicBlock &MBB,
+                                   MachineBasicBlock::iterator MBBI) const {
+    return true;
+  }
+
+  /// isProfitableToIfCvt - Return true if it's profitable to first "NumInstrs"
+  /// of the specified basic block.
+  virtual
+  bool isProfitableToIfCvt(MachineBasicBlock &MBB, unsigned NumInstrs) const {
+    return false;
+  }
+  
+  /// isProfitableToIfCvt - Second variant of isProfitableToIfCvt, this one
+  /// checks for the case where two basic blocks from true and false path
+  /// of a if-then-else (diamond) are predicated on mutally exclusive
+  /// predicates.
+  virtual bool
+  isProfitableToIfCvt(MachineBasicBlock &TMBB, unsigned NumTInstrs,
+                      MachineBasicBlock &FMBB, unsigned NumFInstrs) const {
+    return false;
+  }
+
+  /// isProfitableToDupForIfCvt - Return true if it's profitable for
+  /// if-converter to duplicate a specific number of instructions in the
+  /// specified MBB to enable if-conversion.
+  virtual bool
+  isProfitableToDupForIfCvt(MachineBasicBlock &MBB,unsigned NumInstrs) const {
+    return false;
   }
   
   /// copyRegToReg - Emit instructions to copy between a pair of registers. It
@@ -551,6 +597,13 @@ public:
     return true;
   }
 
+  /// isSchedulingBoundary - Test if the given instruction should be
+  /// considered a scheduling boundary. This primarily includes labels and
+  /// terminators.
+  virtual bool isSchedulingBoundary(const MachineInstr *MI,
+                                    const MachineBasicBlock *MBB,
+                                    const MachineFunction &MF) const = 0;
+
   /// GetInstSize - Returns the size of the specified Instruction.
   /// 
   virtual unsigned GetInstSizeInBytes(const MachineInstr *MI) const {
@@ -567,6 +620,12 @@ public:
   /// length.
   virtual unsigned getInlineAsmLength(const char *Str,
                                       const MCAsmInfo &MAI) const;
+
+  /// CreateTargetHazardRecognizer - Allocate and return a hazard recognizer
+  /// to use for this target when scheduling the machine instructions after
+  /// register allocation.
+  virtual ScheduleHazardRecognizer*
+  CreateTargetPostRAHazardRecognizer(const InstrItineraryData&) const = 0;
 };
 
 /// TargetInstrInfoImpl - This is the default implementation of
@@ -578,6 +637,8 @@ protected:
   TargetInstrInfoImpl(const TargetInstrDesc *desc, unsigned NumOpcodes)
   : TargetInstrInfo(desc, NumOpcodes) {}
 public:
+  virtual void ReplaceTailWithBranchTo(MachineBasicBlock::iterator OldInst,
+                                       MachineBasicBlock *NewDest) const;
   virtual MachineInstr *commuteInstruction(MachineInstr *MI,
                                            bool NewMI = false) const;
   virtual bool findCommutedOpIndices(MachineInstr *MI, unsigned &SrcOpIdx1,
@@ -593,7 +654,13 @@ public:
                                   MachineFunction &MF) const;
   virtual bool produceSameValue(const MachineInstr *MI0,
                                 const MachineInstr *MI1) const;
+  virtual bool isSchedulingBoundary(const MachineInstr *MI,
+                                    const MachineBasicBlock *MBB,
+                                    const MachineFunction &MF) const;
   virtual unsigned GetFunctionSizeInBytes(const MachineFunction &MF) const;
+
+  virtual ScheduleHazardRecognizer *
+  CreateTargetPostRAHazardRecognizer(const InstrItineraryData&) const;
 };
 
 } // End llvm namespace
