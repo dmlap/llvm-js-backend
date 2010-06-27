@@ -67,6 +67,11 @@ ARMInterworking("arm-interworking", cl::Hidden,
   cl::desc("Enable / disable ARM interworking (for debugging only)"),
   cl::init(true));
 
+static cl::opt<bool>
+EnableARMCodePlacement("arm-code-placement", cl::Hidden,
+  cl::desc("Enable code placement pass for ARM."),
+  cl::init(false));
+
 static bool CC_ARM_APCS_Custom_f64(unsigned &ValNo, EVT &ValVT, EVT &LocVT,
                                    CCValAssign::LocInfo &LocInfo,
                                    ISD::ArgFlagsTy &ArgFlags,
@@ -454,11 +459,8 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
   setOperationAction(ISD::ATOMIC_LOAD_XOR,  MVT::i64, Expand);
   setOperationAction(ISD::ATOMIC_LOAD_NAND, MVT::i64, Expand);
 
-  // If the subtarget does not have extract instructions, sign_extend_inreg
-  // needs to be expanded. Extract is available in ARM mode on v6 and up,
-  // and on most Thumb2 implementations.
-  if (!Subtarget->hasV6Ops()
-      || (Subtarget->isThumb2() && !Subtarget->hasT2ExtractPack())) {
+  // Requires SXTB/SXTH, available on v6 and up in both ARM and Thumb modes.
+  if (!Subtarget->hasV6Ops()) {
     setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i16, Expand);
     setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i8,  Expand);
   }
@@ -532,10 +534,9 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
     setSchedulingPreference(Sched::Hybrid);
 
   maxStoresPerMemcpy = 1;   //// temporary - rewrite interface to use type
-  // Do not enable CodePlacementOpt for now: it currently runs after the
-  // ARMConstantIslandPass and messes up branch relaxation and placement
-  // of constant islands.
-  // benefitFromCodePlacementOpt = true;
+
+  if (EnableARMCodePlacement)
+    benefitFromCodePlacementOpt = true;
 }
 
 const char *ARMTargetLowering::getTargetNodeName(unsigned Opcode) const {
