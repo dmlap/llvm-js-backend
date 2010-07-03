@@ -36,6 +36,8 @@ class TargetAsmParser;
 class Twine;
 
 class AsmParser : public MCAsmParser {
+  AsmParser(const AsmParser &);   // DO NOT IMPLEMENT
+  void operator=(const AsmParser &);  // DO NOT IMPLEMENT
 private:
   AsmLexer Lexer;
   MCContext &Ctx;
@@ -56,7 +58,7 @@ private:
   /// in the directive name and the location of the directive keyword.
   StringMap<bool(AsmParser::*)(StringRef, SMLoc)> DirectiveMap;
 public:
-  AsmParser(SourceMgr &SM, MCContext &Ctx, MCStreamer &Out,
+  AsmParser(const Target &T, SourceMgr &SM, MCContext &Ctx, MCStreamer &Out,
             const MCAsmInfo &MAI);
   ~AsmParser();
 
@@ -143,6 +145,10 @@ private:
   bool ParseDirectiveDarwinSubsectionsViaSymbols();
   // Darwin specific .dump and .load
   bool ParseDirectiveDarwinDumpOrLoad(SMLoc IDLoc, bool IsDump);
+  // Darwin specific .secure_log_unique
+  bool ParseDirectiveDarwinSecureLogUnique(SMLoc IDLoc);
+  // Darwin specific .secure_log_reset
+  bool ParseDirectiveDarwinSecureLogReset(SMLoc IDLoc);
 
   bool ParseDirectiveAbort(); // ".abort"
   bool ParseDirectiveInclude(); // ".include"

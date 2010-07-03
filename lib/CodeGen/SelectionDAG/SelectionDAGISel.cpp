@@ -709,6 +709,14 @@ void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
       FastIS->startNewBlock(BB);
       // Do FastISel on as many instructions as possible.
       for (; BI != End; ++BI) {
+#if 0
+        // Defer instructions with no side effects; they'll be emitted
+        // on-demand later.
+        if (BI->isSafeToSpeculativelyExecute() &&
+            !FuncInfo->isExportedInst(BI))
+          continue;
+#endif
+
         // Try to select the instruction with FastISel.
         if (FastIS->SelectInstruction(BI))
           continue;
@@ -724,7 +732,7 @@ void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
           if (!BI->getType()->isVoidTy() && !BI->use_empty()) {
             unsigned &R = FuncInfo->ValueMap[BI];
             if (!R)
-              R = FuncInfo->CreateRegForValue(BI);
+              R = FuncInfo->CreateRegs(BI->getType());
           }
 
           bool HadTailCall = false;
@@ -1081,6 +1089,7 @@ SelectInlineAsmMemoryOperands(std::vector<SDValue> &Ops) {
   Ops.push_back(InOps[InlineAsm::Op_InputChain]); // 0
   Ops.push_back(InOps[InlineAsm::Op_AsmString]);  // 1
   Ops.push_back(InOps[InlineAsm::Op_MDNode]);     // 2, !srcloc
+  Ops.push_back(InOps[InlineAsm::Op_IsAlignStack]);  // 3
 
   unsigned i = InlineAsm::Op_FirstOperand, e = InOps.size();
   if (InOps[e-1].getValueType() == MVT::Flag)

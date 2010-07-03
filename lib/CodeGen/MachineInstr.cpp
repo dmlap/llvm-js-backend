@@ -881,14 +881,14 @@ int MachineInstr::findFirstPredOperandIdx() const {
 bool MachineInstr::
 isRegTiedToUseOperand(unsigned DefOpIdx, unsigned *UseOpIdx) const {
   if (isInlineAsm()) {
-    assert(DefOpIdx >= 2);
+    assert(DefOpIdx >= 3);
     const MachineOperand &MO = getOperand(DefOpIdx);
     if (!MO.isReg() || !MO.isDef() || MO.getReg() == 0)
       return false;
     // Determine the actual operand index that corresponds to this index.
     unsigned DefNo = 0;
     unsigned DefPart = 0;
-    for (unsigned i = 1, e = getNumOperands(); i < e; ) {
+    for (unsigned i = 2, e = getNumOperands(); i < e; ) {
       const MachineOperand &FMO = getOperand(i);
       // After the normal asm operands there may be additional imp-def regs.
       if (!FMO.isImm())
@@ -903,7 +903,7 @@ isRegTiedToUseOperand(unsigned DefOpIdx, unsigned *UseOpIdx) const {
       }
       ++DefNo;
     }
-    for (unsigned i = 1, e = getNumOperands(); i != e; ++i) {
+    for (unsigned i = 2, e = getNumOperands(); i != e; ++i) {
       const MachineOperand &FMO = getOperand(i);
       if (!FMO.isImm())
         continue;
@@ -946,7 +946,7 @@ isRegTiedToDefOperand(unsigned UseOpIdx, unsigned *DefOpIdx) const {
 
     // Find the flag operand corresponding to UseOpIdx
     unsigned FlagIdx, NumOps=0;
-    for (FlagIdx = 1; FlagIdx < UseOpIdx; FlagIdx += NumOps+1) {
+    for (FlagIdx = 2; FlagIdx < UseOpIdx; FlagIdx += NumOps+1) {
       const MachineOperand &UFMO = getOperand(FlagIdx);
       // After the normal asm operands there may be additional imp-def regs.
       if (!UFMO.isImm())
@@ -964,9 +964,9 @@ isRegTiedToDefOperand(unsigned UseOpIdx, unsigned *DefOpIdx) const {
       if (!DefOpIdx)
         return true;
 
-      unsigned DefIdx = 1;
-      // Remember to adjust the index. First operand is asm string, then there
-      // is a flag for each.
+      unsigned DefIdx = 2;
+      // Remember to adjust the index. First operand is asm string, second is
+      // the AlignStack bit, then there is a flag for each.
       while (DefNo) {
         const MachineOperand &FMO = getOperand(DefIdx);
         assert(FMO.isImm());
@@ -1211,6 +1211,28 @@ void MachineInstr::dump() const {
   dbgs() << "  " << *this;
 }
 
+static void printDebugLoc(DebugLoc DL, const MachineFunction *MF, 
+                         raw_ostream &CommentOS) {
+  const LLVMContext &Ctx = MF->getFunction()->getContext();
+  if (!DL.isUnknown()) {          // Print source line info.
+    DIScope Scope(DL.getScope(Ctx));
+    // Omit the directory, because it's likely to be long and uninteresting.
+    if (Scope.Verify())
+      CommentOS << Scope.getFilename();
+    else
+      CommentOS << "<unknown>";
+    CommentOS << ':' << DL.getLine();
+    if (DL.getCol() != 0)
+      CommentOS << ':' << DL.getCol();
+    DebugLoc InlinedAtDL = DebugLoc::getFromDILocation(DL.getInlinedAt(Ctx));
+    if (!InlinedAtDL.isUnknown()) {
+      CommentOS << " @[ ";
+      printDebugLoc(InlinedAtDL, MF, CommentOS);
+      CommentOS << " ]";
+    }
+  }
+}
+
 void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM) const {
   // We can be a bit tidier if we know the TargetMachine and/or MachineFunction.
   const MachineFunction *MF = 0;
@@ -1308,19 +1330,8 @@ void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM) const {
 
   if (!debugLoc.isUnknown() && MF) {
     if (!HaveSemi) OS << ";";
-
-    // TODO: print InlinedAtLoc information
-
-    DIScope Scope(debugLoc.getScope(MF->getFunction()->getContext()));
     OS << " dbg:";
-    // Omit the directory, since it's usually long and uninteresting.
-    if (Scope.Verify())
-      OS << Scope.getFilename();
-    else
-      OS << "<unknown>";
-    OS << ':' << debugLoc.getLine();
-    if (debugLoc.getCol() != 0)
-      OS << ':' << debugLoc.getCol();
+    printDebugLoc(debugLoc, MF, OS);
   }
 
   OS << "\n";

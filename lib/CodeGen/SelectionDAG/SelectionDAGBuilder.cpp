@@ -805,27 +805,63 @@ void SelectionDAGBuilder::visit(unsigned Opcode, const User &I) {
   }
 }
 
+// getValue - Return an SDValue for the given Value.
 SDValue SelectionDAGBuilder::getValue(const Value *V) {
+  // If we already have an SDValue for this value, use it. It's important
+  // to do this first, so that we don't create a CopyFromReg if we already
+  // have a regular SDValue.
   SDValue &N = NodeMap[V];
   if (N.getNode()) return N;
 
+  // If there's a virtual register allocated and initialized for this
+  // value, use it.
+  DenseMap<const Value *, unsigned>::iterator It = FuncInfo.ValueMap.find(V);
+  if (It != FuncInfo.ValueMap.end()) {
+    unsigned InReg = It->second;
+    RegsForValue RFV(*DAG.getContext(), TLI, InReg, V->getType());
+    SDValue Chain = DAG.getEntryNode();
+    return N = RFV.getCopyFromRegs(DAG, FuncInfo, getCurDebugLoc(), Chain, NULL);
+  }
+
+  // Otherwise create a new SDValue and remember it.
+  SDValue Val = getValueImpl(V);
+  NodeMap[V] = Val;
+  return Val;
+}
+
+/// getNonRegisterValue - Return an SDValue for the given Value, but
+/// don't look in FuncInfo.ValueMap for a virtual register.
+SDValue SelectionDAGBuilder::getNonRegisterValue(const Value *V) {
+  // If we already have an SDValue for this value, use it.
+  SDValue &N = NodeMap[V];
+  if (N.getNode()) return N;
+
+  // Otherwise create a new SDValue and remember it.
+  SDValue Val = getValueImpl(V);
+  NodeMap[V] = Val;
+  return Val;
+}
+
+/// getValueImpl - Helper function for getValue and getMaterializedValue.
+/// Create an SDValue for the given value.
+SDValue SelectionDAGBuilder::getValueImpl(const Value *V) {
   if (const Constant *C = dyn_cast<Constant>(V)) {
     EVT VT = TLI.getValueType(V->getType(), true);
 
     if (const ConstantInt *CI = dyn_cast<ConstantInt>(C))
-      return N = DAG.getConstant(*CI, VT);
+      return DAG.getConstant(*CI, VT);
 
     if (const GlobalValue *GV = dyn_cast<GlobalValue>(C))
-      return N = DAG.getGlobalAddress(GV, VT);
+      return DAG.getGlobalAddress(GV, VT);
 
     if (isa<ConstantPointerNull>(C))
-      return N = DAG.getConstant(0, TLI.getPointerTy());
+      return DAG.getConstant(0, TLI.getPointerTy());
 
     if (const ConstantFP *CFP = dyn_cast<ConstantFP>(C))
-      return N = DAG.getConstantFP(*CFP, VT);
+      return DAG.getConstantFP(*CFP, VT);
 
     if (isa<UndefValue>(C) && !V->getType()->isAggregateType())
-      return N = DAG.getUNDEF(VT);
+      return DAG.getUNDEF(VT);
 
     if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(C)) {
       visit(CE->getOpcode(), *CE);
@@ -913,12 +949,18 @@ SDValue SelectionDAGBuilder::getValue(const Value *V) {
       return DAG.getFrameIndex(SI->second, TLI.getPointerTy());
   }
 
-  unsigned InReg = FuncInfo.ValueMap[V];
-  assert(InReg && "Value not in map!");
+  // If this is an instruction which fast-isel has deferred, select it now.
+  if (const Instruction *Inst = dyn_cast<Instruction>(V)) {
+    assert(Inst->isSafeToSpeculativelyExecute() &&
+           "Instruction with side effects deferred!");
+    visit(*Inst);
+    DenseMap<const Value *, SDValue>::iterator NIt = NodeMap.find(Inst);
+    if (NIt != NodeMap.end() && NIt->second.getNode())
+      return NIt->second;
+  }
 
-  RegsForValue RFV(*DAG.getContext(), TLI, InReg, V->getType());
-  SDValue Chain = DAG.getEntryNode();
-  return RFV.getCopyFromRegs(DAG, FuncInfo, getCurDebugLoc(), Chain, NULL);
+  llvm_unreachable("Can't get register for value!");
+  return SDValue();
 }
 
 /// Get the EVTs and ArgFlags collections that represent the legalized return 
@@ -1466,7 +1508,7 @@ void SelectionDAGBuilder::visitJumpTableHeader(JumpTable &JT,
   // therefore require extension or truncating.
   SwitchOp = DAG.getZExtOrTrunc(Sub, getCurDebugLoc(), TLI.getPointerTy());
 
-  unsigned JumpTableReg = FuncInfo.MakeReg(TLI.getPointerTy());
+  unsigned JumpTableReg = FuncInfo.CreateReg(TLI.getPointerTy());
   SDValue CopyTo = DAG.getCopyToReg(getControlRoot(), getCurDebugLoc(),
                                     JumpTableReg, SwitchOp);
   JT.Reg = JumpTableReg;
@@ -1517,7 +1559,7 @@ void SelectionDAGBuilder::visitBitTestHeader(BitTestBlock &B,
   SDValue ShiftOp = DAG.getZExtOrTrunc(Sub, getCurDebugLoc(),
                                        TLI.getPointerTy());
 
-  B.Reg = FuncInfo.MakeReg(TLI.getPointerTy());
+  B.Reg = FuncInfo.CreateReg(TLI.getPointerTy());
   SDValue CopyTo = DAG.getCopyToReg(getControlRoot(), getCurDebugLoc(),
                                     B.Reg, ShiftOp);
 
@@ -2404,7 +2446,6 @@ void SelectionDAGBuilder::visitPtrToInt(const User &I) {
   // What to do depends on the size of the integer and the size of the pointer.
   // We can either truncate, zero extend, or no-op, accordingly.
   SDValue N = getValue(I.getOperand(0));
-  EVT SrcVT = N.getValueType();
   EVT DestVT = TLI.getValueType(I.getType());
   setValue(&I, DAG.getZExtOrTrunc(N, getCurDebugLoc(), DestVT));
 }
@@ -2413,7 +2454,6 @@ void SelectionDAGBuilder::visitIntToPtr(const User &I) {
   // What to do depends on the size of the integer and the size of the pointer.
   // We can either truncate, zero extend, or no-op, accordingly.
   SDValue N = getValue(I.getOperand(0));
-  EVT SrcVT = N.getValueType();
   EVT DestVT = TLI.getValueType(I.getType());
   setValue(&I, DAG.getZExtOrTrunc(N, getCurDebugLoc(), DestVT));
 }
@@ -4742,7 +4782,7 @@ static SDValue getMemCmpLoad(const Value *PtrVal, MVT LoadVT,
 /// lowered like a normal call.
 bool SelectionDAGBuilder::visitMemCmpCall(const CallInst &I) {
   // Verify that the prototype makes sense.  int memcmp(void*,void*,size_t)
-  if (I.getNumOperands() != 4)
+  if (I.getNumArgOperands() != 3)
     return false;
 
   const Value *LHS = I.getArgOperand(0), *RHS = I.getArgOperand(1);
@@ -4841,7 +4881,7 @@ void SelectionDAGBuilder::visitCall(const CallInst &I) {
     if (!F->hasLocalLinkage() && F->hasName()) {
       StringRef Name = F->getName();
       if (Name == "copysign" || Name == "copysignf" || Name == "copysignl") {
-        if (I.getNumOperands() == 3 &&   // Basic sanity checks.
+        if (I.getNumArgOperands() == 2 &&   // Basic sanity checks.
             I.getArgOperand(0)->getType()->isFloatingPointTy() &&
             I.getType() == I.getArgOperand(0)->getType() &&
             I.getType() == I.getArgOperand(1)->getType()) {
@@ -4852,7 +4892,7 @@ void SelectionDAGBuilder::visitCall(const CallInst &I) {
           return;
         }
       } else if (Name == "fabs" || Name == "fabsf" || Name == "fabsl") {
-        if (I.getNumOperands() == 2 &&   // Basic sanity checks.
+        if (I.getNumArgOperands() == 1 &&   // Basic sanity checks.
             I.getArgOperand(0)->getType()->isFloatingPointTy() &&
             I.getType() == I.getArgOperand(0)->getType()) {
           SDValue Tmp = getValue(I.getArgOperand(0));
@@ -4861,7 +4901,7 @@ void SelectionDAGBuilder::visitCall(const CallInst &I) {
           return;
         }
       } else if (Name == "sin" || Name == "sinf" || Name == "sinl") {
-        if (I.getNumOperands() == 2 &&   // Basic sanity checks.
+        if (I.getNumArgOperands() == 1 &&   // Basic sanity checks.
             I.getArgOperand(0)->getType()->isFloatingPointTy() &&
             I.getType() == I.getArgOperand(0)->getType() &&
             I.onlyReadsMemory()) {
@@ -4871,7 +4911,7 @@ void SelectionDAGBuilder::visitCall(const CallInst &I) {
           return;
         }
       } else if (Name == "cos" || Name == "cosf" || Name == "cosl") {
-        if (I.getNumOperands() == 2 &&   // Basic sanity checks.
+        if (I.getNumArgOperands() == 1 &&   // Basic sanity checks.
             I.getArgOperand(0)->getType()->isFloatingPointTy() &&
             I.getType() == I.getArgOperand(0)->getType() &&
             I.onlyReadsMemory()) {
@@ -4881,7 +4921,7 @@ void SelectionDAGBuilder::visitCall(const CallInst &I) {
           return;
         }
       } else if (Name == "sqrt" || Name == "sqrtf" || Name == "sqrtl") {
-        if (I.getNumOperands() == 2 &&   // Basic sanity checks.
+        if (I.getNumArgOperands() == 1 &&   // Basic sanity checks.
             I.getArgOperand(0)->getType()->isFloatingPointTy() &&
             I.getType() == I.getArgOperand(0)->getType() &&
             I.onlyReadsMemory()) {
@@ -5414,6 +5454,10 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
   const MDNode *SrcLoc = CS.getInstruction()->getMetadata("srcloc");
   AsmNodeOperands.push_back(DAG.getMDNode(SrcLoc));
 
+  // Remember the AlignStack bit as operand 3.
+  AsmNodeOperands.push_back(DAG.getTargetConstant(IA->isAlignStack() ? 1 : 0,
+                                            MVT::i1));
+
   // Loop over all of the inputs, copying the operand values into the
   // appropriate registers and processing the output regs.
   RegsForValue RetValRegs;
@@ -5602,7 +5646,7 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
   }
 
   // Finish up input operands.  Set the input chain and add the flag last.
-  AsmNodeOperands[0] = Chain;
+  AsmNodeOperands[InlineAsm::Op_InputChain] = Chain;
   if (Flag.getNode()) AsmNodeOperands.push_back(Flag);
 
   Chain = DAG.getNode(ISD::INLINEASM, getCurDebugLoc(),
@@ -5883,7 +5927,7 @@ SDValue TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
 
 void
 SelectionDAGBuilder::CopyValueToVirtualRegister(const Value *V, unsigned Reg) {
-  SDValue Op = getValue(V);
+  SDValue Op = getNonRegisterValue(V);
   assert((Op.getOpcode() != ISD::CopyFromReg ||
           cast<RegisterSDNode>(Op.getOperand(1))->getReg() != Reg) &&
          "Copy from a reg to the same reg!");
@@ -5901,7 +5945,6 @@ void SelectionDAGISel::LowerArguments(const BasicBlock *LLVMBB) {
   // If this is the entry block, emit arguments.
   const Function &F = *LLVMBB->getParent();
   SelectionDAG &DAG = SDB->DAG;
-  SDValue OldRoot = DAG.getRoot();
   DebugLoc dl = SDB->getCurDebugLoc();
   const TargetData *TD = TLI.getTargetData();
   SmallVector<ISD::InputArg, 16> Ins;
@@ -6125,17 +6168,20 @@ SelectionDAGBuilder::HandlePHINodesInSuccessorBlocks(const BasicBlock *LLVMBB) {
       if (const Constant *C = dyn_cast<Constant>(PHIOp)) {
         unsigned &RegOut = ConstantsOut[C];
         if (RegOut == 0) {
-          RegOut = FuncInfo.CreateRegForValue(C);
+          RegOut = FuncInfo.CreateRegs(C->getType());
           CopyValueToVirtualRegister(C, RegOut);
         }
         Reg = RegOut;
       } else {
-        Reg = FuncInfo.ValueMap[PHIOp];
-        if (Reg == 0) {
+        DenseMap<const Value *, unsigned>::iterator I =
+          FuncInfo.ValueMap.find(PHIOp);
+        if (I != FuncInfo.ValueMap.end())
+          Reg = I->second;
+        else {
           assert(isa<AllocaInst>(PHIOp) &&
                  FuncInfo.StaticAllocaMap.count(cast<AllocaInst>(PHIOp)) &&
                  "Didn't codegen value into a register!??");
-          Reg = FuncInfo.CreateRegForValue(PHIOp);
+          Reg = FuncInfo.CreateRegs(PHIOp->getType());
           CopyValueToVirtualRegister(PHIOp, Reg);
         }
       }

@@ -286,6 +286,8 @@ void CppWriter::printLinkageType(GlobalValue::LinkageTypes LT) {
     Out << "GlobalValue::PrivateLinkage"; break;
   case GlobalValue::LinkerPrivateLinkage:
     Out << "GlobalValue::LinkerPrivateLinkage"; break;
+  case GlobalValue::LinkerPrivateWeakLinkage:
+    Out << "GlobalValue::LinkerPrivateWeakLinkage"; break;
   case GlobalValue::AvailableExternallyLinkage:
     Out << "GlobalValue::AvailableExternallyLinkage "; break;
   case GlobalValue::LinkOnceAnyLinkage:
@@ -1397,8 +1399,8 @@ void CppWriter::printInstruction(const Instruction *I,
     if (call->getNumArgOperands() > 1) {
       Out << "std::vector<Value*> " << iName << "_params;";
       nl(Out);
-      for (unsigned i = 1; i < call->getNumOperands(); ++i) {
-        Out << iName << "_params.push_back(" << opNames[i] << ");";
+      for (unsigned i = 0; i < call->getNumArgOperands(); ++i) {
+        Out << iName << "_params.push_back(" << opNames[i+1] << ");";
         nl(Out);
       }
       Out << "CallInst* " << iName << " = CallInst::Create("
@@ -1419,6 +1421,7 @@ void CppWriter::printInstruction(const Instruction *I,
     nl(Out) << iName << "->setTailCall("
         << (call->isTailCall() ? "true" : "false");
     Out << ");";
+    nl(Out);
     printAttributes(call->getAttributes(), iName);
     Out << iName << "->setAttributes(" << iName << "_PAL);";
     nl(Out);

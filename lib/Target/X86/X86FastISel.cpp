@@ -423,20 +423,33 @@ bool X86FastISel::X86SelectAddress(const Value *V, X86AddressMode &AM) {
         Disp += SL->getElementOffset(Idx);
       } else {
         uint64_t S = TD.getTypeAllocSize(GTI.getIndexedType());
-        if (const ConstantInt *CI = dyn_cast<ConstantInt>(Op)) {
-          // Constant-offset addressing.
-          Disp += CI->getSExtValue() * S;
-        } else if (IndexReg == 0 &&
-                   (!AM.GV || !Subtarget->isPICStyleRIPRel()) &&
-                   (S == 1 || S == 2 || S == 4 || S == 8)) {
-          // Scaled-index addressing.
-          Scale = S;
-          IndexReg = getRegForGEPIndex(Op).first;
-          if (IndexReg == 0)
-            return false;
-        } else
-          // Unsupported.
-          goto unsupported_gep;
+        SmallVector<const Value *, 4> Worklist;
+        Worklist.push_back(Op);
+        do {
+          Op = Worklist.pop_back_val();
+          if (const ConstantInt *CI = dyn_cast<ConstantInt>(Op)) {
+            // Constant-offset addressing.
+            Disp += CI->getSExtValue() * S;
+          } else if (isa<AddOperator>(Op) &&
+                     isa<ConstantInt>(cast<AddOperator>(Op)->getOperand(1))) {
+            // An add with a constant operand. Fold the constant.
+            ConstantInt *CI =
+              cast<ConstantInt>(cast<AddOperator>(Op)->getOperand(1));
+            Disp += CI->getSExtValue() * S;
+            // Add the other operand back to the work list.
+            Worklist.push_back(cast<AddOperator>(Op)->getOperand(0));
+          } else if (IndexReg == 0 &&
+                     (!AM.GV || !Subtarget->isPICStyleRIPRel()) &&
+                     (S == 1 || S == 2 || S == 4 || S == 8)) {
+            // Scaled-index addressing.
+            Scale = S;
+            IndexReg = getRegForGEPIndex(Op).first;
+            if (IndexReg == 0)
+              return false;
+          } else
+            // Unsupported.
+            goto unsupported_gep;
+        } while (!Worklist.empty());
       }
     }
     // Check for displacement overflow.
@@ -922,7 +935,7 @@ bool X86FastISel::X86SelectBranch(const Instruction *I) {
       if (CI->getIntrinsicID() == Intrinsic::sadd_with_overflow ||
           CI->getIntrinsicID() == Intrinsic::uadd_with_overflow) {
         const MachineInstr *SetMI = 0;
-        unsigned Reg = lookUpRegForValue(EI);
+        unsigned Reg = getRegForValue(EI);
 
         for (MachineBasicBlock::const_reverse_iterator
                RI = MBB->rbegin(), RE = MBB->rend(); RI != RE; ++RI) {

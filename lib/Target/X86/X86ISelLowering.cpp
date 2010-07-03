@@ -1485,11 +1485,11 @@ X86TargetLowering::LowerMemArgument(SDValue Chain,
   // could be overwritten by lowering of arguments in case of a tail call.
   if (Flags.isByVal()) {
     int FI = MFI->CreateFixedObject(Flags.getByValSize(),
-                                    VA.getLocMemOffset(), isImmutable, false);
+                                    VA.getLocMemOffset(), isImmutable);
     return DAG.getFrameIndex(FI, getPointerTy());
   } else {
     int FI = MFI->CreateFixedObject(ValVT.getSizeInBits()/8,
-                                    VA.getLocMemOffset(), isImmutable, false);
+                                    VA.getLocMemOffset(), isImmutable);
     SDValue FIN = DAG.getFrameIndex(FI, getPointerTy());
     return DAG.getLoad(ValVT, dl, Chain, FIN,
                        PseudoSourceValue::getFixedStack(FI), 0,
@@ -1617,8 +1617,7 @@ X86TargetLowering::LowerFormalArguments(SDValue Chain,
   if (isVarArg) {
     if (Is64Bit || (CallConv != CallingConv::X86_FastCall &&
                     CallConv != CallingConv::X86_ThisCall)) {
-      FuncInfo->setVarArgsFrameIndex(MFI->CreateFixedObject(1, StackSize,
-                                                            true, false));
+      FuncInfo->setVarArgsFrameIndex(MFI->CreateFixedObject(1, StackSize,true));
     }
     if (Is64Bit) {
       unsigned TotalNumIntRegs = 0, TotalNumXMMRegs = 0;
@@ -1790,7 +1789,7 @@ EmitTailCallStoreRetAddr(SelectionDAG & DAG, MachineFunction &MF,
   // Calculate the new stack slot for the return address.
   int SlotSize = Is64Bit ? 8 : 4;
   int NewReturnAddrFI =
-    MF.getFrameInfo()->CreateFixedObject(SlotSize, FPDiff-SlotSize, false, false);
+    MF.getFrameInfo()->CreateFixedObject(SlotSize, FPDiff-SlotSize, false);
   EVT VT = Is64Bit ? MVT::i64 : MVT::i32;
   SDValue NewRetAddrFrIdx = DAG.getFrameIndex(NewReturnAddrFI, VT);
   Chain = DAG.getStore(Chain, dl, RetAddrFrIdx, NewRetAddrFrIdx,
@@ -2020,7 +2019,7 @@ X86TargetLowering::LowerCall(SDValue Chain, SDValue Callee,
         // Create frame index.
         int32_t Offset = VA.getLocMemOffset()+FPDiff;
         uint32_t OpSize = (VA.getLocVT().getSizeInBits()+7)/8;
-        FI = MF.getFrameInfo()->CreateFixedObject(OpSize, Offset, true, false);
+        FI = MF.getFrameInfo()->CreateFixedObject(OpSize, Offset, true);
         FIN = DAG.getFrameIndex(FI, getPointerTy());
 
         if (Flags.isByVal()) {
@@ -2061,7 +2060,6 @@ X86TargetLowering::LowerCall(SDValue Chain, SDValue Callee,
                                      FPDiff, dl);
   }
 
-  bool WasGlobalOrExternal = false;
   if (getTargetMachine().getCodeModel() == CodeModel::Large) {
     assert(Is64Bit && "Large code model is only legal in 64-bit mode.");
     // In the 64-bit large code model, we have to make all calls
@@ -2069,7 +2067,6 @@ X86TargetLowering::LowerCall(SDValue Chain, SDValue Callee,
     // pc-relative offset may not be large enough to hold the whole
     // address.
   } else if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee)) {
-    WasGlobalOrExternal = true;
     // If the callee is a GlobalAddress node (quite common, every direct call
     // is) turn it into a TargetGlobalAddress node so that legalize doesn't hack
     // it.
@@ -2101,7 +2098,6 @@ X86TargetLowering::LowerCall(SDValue Chain, SDValue Callee,
                                           G->getOffset(), OpFlags);
     }
   } else if (ExternalSymbolSDNode *S = dyn_cast<ExternalSymbolSDNode>(Callee)) {
-    WasGlobalOrExternal = true;
     unsigned char OpFlags = 0;
 
     // On ELF targets, in either X86-64 or X86-32 mode, direct calls to external
@@ -2424,7 +2420,6 @@ X86TargetLowering::IsEligibleForTailCallOptimization(SDValue Callee,
         ((X86TargetMachine&)getTargetMachine()).getInstrInfo();
       for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
         CCValAssign &VA = ArgLocs[i];
-        EVT RegVT = VA.getLocVT();
         SDValue Arg = Outs[i].Val;
         ISD::ArgFlagsTy Flags = Outs[i].Flags;
         if (VA.getLocInfo() == CCValAssign::Indirect)
@@ -2491,7 +2486,7 @@ SDValue X86TargetLowering::getReturnAddressFrameIndex(SelectionDAG &DAG) const {
     // Set up a frame object for the return address.
     uint64_t SlotSize = TD->getPointerSize();
     ReturnAddrIndex = MF.getFrameInfo()->CreateFixedObject(SlotSize, -SlotSize,
-                                                           false, false);
+                                                           false);
     FuncInfo->setRAIndex(ReturnAddrIndex);
   }
 
@@ -4462,7 +4457,6 @@ SDValue RewriteAsNarrowerShuffle(ShuffleVectorSDNode *SVOp,
   unsigned NumElems = VT.getVectorNumElements();
   unsigned NewWidth = (NumElems == 4) ? 2 : 4;
   EVT MaskVT = MVT::getIntVectorWithNumElements(NewWidth);
-  EVT MaskEltVT = MaskVT.getVectorElementType();
   EVT NewVT = MaskVT;
   switch (VT.getSimpleVT().SimpleTy) {
   default: assert(false && "Unexpected!");
@@ -6026,6 +6020,7 @@ SDValue X86TargetLowering::EmitTest(SDValue Op, unsigned X86CC,
   bool NeedCF = false;
   bool NeedOF = false;
   switch (X86CC) {
+  default: break;
   case X86::COND_A: case X86::COND_AE:
   case X86::COND_B: case X86::COND_BE:
     NeedCF = true;
@@ -6035,120 +6030,129 @@ SDValue X86TargetLowering::EmitTest(SDValue Op, unsigned X86CC,
   case X86::COND_O: case X86::COND_NO:
     NeedOF = true;
     break;
-  default: break;
   }
 
   // See if we can use the EFLAGS value from the operand instead of
   // doing a separate TEST. TEST always sets OF and CF to 0, so unless
   // we prove that the arithmetic won't overflow, we can't use OF or CF.
-  if (Op.getResNo() == 0 && !NeedOF && !NeedCF) {
-    unsigned Opcode = 0;
-    unsigned NumOperands = 0;
-    switch (Op.getNode()->getOpcode()) {
-    case ISD::ADD:
-      // Due to an isel shortcoming, be conservative if this add is
-      // likely to be selected as part of a load-modify-store
-      // instruction. When the root node in a match is a store, isel
-      // doesn't know how to remap non-chain non-flag uses of other
-      // nodes in the match, such as the ADD in this case. This leads
-      // to the ADD being left around and reselected, with the result
-      // being two adds in the output.  Alas, even if none our users
-      // are stores, that doesn't prove we're O.K.  Ergo, if we have
-      // any parents that aren't CopyToReg or SETCC, eschew INC/DEC.
-      // A better fix seems to require climbing the DAG back to the
-      // root, and it doesn't seem to be worth the effort.
-      for (SDNode::use_iterator UI = Op.getNode()->use_begin(),
-             UE = Op.getNode()->use_end(); UI != UE; ++UI)
-        if (UI->getOpcode() != ISD::CopyToReg && UI->getOpcode() != ISD::SETCC)
-          goto default_case;
-      if (ConstantSDNode *C =
-            dyn_cast<ConstantSDNode>(Op.getNode()->getOperand(1))) {
-        // An add of one will be selected as an INC.
-        if (C->getAPIntValue() == 1) {
-          Opcode = X86ISD::INC;
-          NumOperands = 1;
-          break;
-        }
-        // An add of negative one (subtract of one) will be selected as a DEC.
-        if (C->getAPIntValue().isAllOnesValue()) {
-          Opcode = X86ISD::DEC;
-          NumOperands = 1;
-          break;
-        }
-      }
-      // Otherwise use a regular EFLAGS-setting add.
-      Opcode = X86ISD::ADD;
-      NumOperands = 2;
-      break;
-    case ISD::AND: {
-      // If the primary and result isn't used, don't bother using X86ISD::AND,
-      // because a TEST instruction will be better.
-      bool NonFlagUse = false;
-      for (SDNode::use_iterator UI = Op.getNode()->use_begin(),
-             UE = Op.getNode()->use_end(); UI != UE; ++UI) {
-        SDNode *User = *UI;
-        unsigned UOpNo = UI.getOperandNo();
-        if (User->getOpcode() == ISD::TRUNCATE && User->hasOneUse()) {
-          // Look pass truncate.
-          UOpNo = User->use_begin().getOperandNo();
-          User = *User->use_begin();
-        }
-        if (User->getOpcode() != ISD::BRCOND &&
-            User->getOpcode() != ISD::SETCC &&
-            (User->getOpcode() != ISD::SELECT || UOpNo != 0)) {
-          NonFlagUse = true;
-          break;
-        }
-      }
-      if (!NonFlagUse)
-        break;
-    }
-    // FALL THROUGH
-    case ISD::SUB:
-    case ISD::OR:
-    case ISD::XOR:
-      // Due to the ISEL shortcoming noted above, be conservative if this op is
-      // likely to be selected as part of a load-modify-store instruction.
-      for (SDNode::use_iterator UI = Op.getNode()->use_begin(),
+  if (Op.getResNo() != 0 || NeedOF || NeedCF)
+    // Emit a CMP with 0, which is the TEST pattern.
+    return DAG.getNode(X86ISD::CMP, dl, MVT::i32, Op,
+                       DAG.getConstant(0, Op.getValueType()));
+
+  unsigned Opcode = 0;
+  unsigned NumOperands = 0;
+  switch (Op.getNode()->getOpcode()) {
+  case ISD::ADD:
+    // Due to an isel shortcoming, be conservative if this add is likely to be
+    // selected as part of a load-modify-store instruction. When the root node
+    // in a match is a store, isel doesn't know how to remap non-chain non-flag
+    // uses of other nodes in the match, such as the ADD in this case. This
+    // leads to the ADD being left around and reselected, with the result being
+    // two adds in the output.  Alas, even if none our users are stores, that
+    // doesn't prove we're O.K.  Ergo, if we have any parents that aren't
+    // CopyToReg or SETCC, eschew INC/DEC.  A better fix seems to require
+    // climbing the DAG back to the root, and it doesn't seem to be worth the
+    // effort.
+    for (SDNode::use_iterator UI = Op.getNode()->use_begin(),
            UE = Op.getNode()->use_end(); UI != UE; ++UI)
-        if (UI->getOpcode() == ISD::STORE)
-          goto default_case;
-      // Otherwise use a regular EFLAGS-setting instruction.
-      switch (Op.getNode()->getOpcode()) {
-      case ISD::SUB: Opcode = X86ISD::SUB; break;
-      case ISD::OR:  Opcode = X86ISD::OR;  break;
-      case ISD::XOR: Opcode = X86ISD::XOR; break;
-      case ISD::AND: Opcode = X86ISD::AND; break;
-      default: llvm_unreachable("unexpected operator!");
+      if (UI->getOpcode() != ISD::CopyToReg && UI->getOpcode() != ISD::SETCC)
+        goto default_case;
+
+    if (ConstantSDNode *C =
+        dyn_cast<ConstantSDNode>(Op.getNode()->getOperand(1))) {
+      // An add of one will be selected as an INC.
+      if (C->getAPIntValue() == 1) {
+        Opcode = X86ISD::INC;
+        NumOperands = 1;
+        break;
       }
-      NumOperands = 2;
-      break;
-    case X86ISD::ADD:
-    case X86ISD::SUB:
-    case X86ISD::INC:
-    case X86ISD::DEC:
-    case X86ISD::OR:
-    case X86ISD::XOR:
-    case X86ISD::AND:
-      return SDValue(Op.getNode(), 1);
-    default:
-    default_case:
-      break;
+
+      // An add of negative one (subtract of one) will be selected as a DEC.
+      if (C->getAPIntValue().isAllOnesValue()) {
+        Opcode = X86ISD::DEC;
+        NumOperands = 1;
+        break;
+      }
     }
-    if (Opcode != 0) {
-      SDVTList VTs = DAG.getVTList(Op.getValueType(), MVT::i32);
-      SmallVector<SDValue, 4> Ops;
-      for (unsigned i = 0; i != NumOperands; ++i)
-        Ops.push_back(Op.getOperand(i));
-      SDValue New = DAG.getNode(Opcode, dl, VTs, &Ops[0], NumOperands);
-      DAG.ReplaceAllUsesWith(Op, New);
-      return SDValue(New.getNode(), 1);
+
+    // Otherwise use a regular EFLAGS-setting add.
+    Opcode = X86ISD::ADD;
+    NumOperands = 2;
+    break;
+  case ISD::AND: {
+    // If the primary and result isn't used, don't bother using X86ISD::AND,
+    // because a TEST instruction will be better.
+    bool NonFlagUse = false;
+    for (SDNode::use_iterator UI = Op.getNode()->use_begin(),
+           UE = Op.getNode()->use_end(); UI != UE; ++UI) {
+      SDNode *User = *UI;
+      unsigned UOpNo = UI.getOperandNo();
+      if (User->getOpcode() == ISD::TRUNCATE && User->hasOneUse()) {
+        // Look pass truncate.
+        UOpNo = User->use_begin().getOperandNo();
+        User = *User->use_begin();
+      }
+
+      if (User->getOpcode() != ISD::BRCOND &&
+          User->getOpcode() != ISD::SETCC &&
+          (User->getOpcode() != ISD::SELECT || UOpNo != 0)) {
+        NonFlagUse = true;
+        break;
+      }
     }
+
+    if (!NonFlagUse)
+      break;
+  }
+    // FALL THROUGH
+  case ISD::SUB:
+  case ISD::OR:
+  case ISD::XOR:
+    // Due to the ISEL shortcoming noted above, be conservative if this op is
+    // likely to be selected as part of a load-modify-store instruction.
+    for (SDNode::use_iterator UI = Op.getNode()->use_begin(),
+           UE = Op.getNode()->use_end(); UI != UE; ++UI)
+      if (UI->getOpcode() == ISD::STORE)
+        goto default_case;
+
+    // Otherwise use a regular EFLAGS-setting instruction.
+    switch (Op.getNode()->getOpcode()) {
+    default: llvm_unreachable("unexpected operator!");
+    case ISD::SUB: Opcode = X86ISD::SUB; break;
+    case ISD::OR:  Opcode = X86ISD::OR;  break;
+    case ISD::XOR: Opcode = X86ISD::XOR; break;
+    case ISD::AND: Opcode = X86ISD::AND; break;
+    }
+
+    NumOperands = 2;
+    break;
+  case X86ISD::ADD:
+  case X86ISD::SUB:
+  case X86ISD::INC:
+  case X86ISD::DEC:
+  case X86ISD::OR:
+  case X86ISD::XOR:
+  case X86ISD::AND:
+    return SDValue(Op.getNode(), 1);
+  default:
+  default_case:
+    break;
   }
 
-  // Otherwise just emit a CMP with 0, which is the TEST pattern.
-  return DAG.getNode(X86ISD::CMP, dl, MVT::i32, Op,
-                     DAG.getConstant(0, Op.getValueType()));
+  if (Opcode == 0)
+    // Emit a CMP with 0, which is the TEST pattern.
+    return DAG.getNode(X86ISD::CMP, dl, MVT::i32, Op,
+                       DAG.getConstant(0, Op.getValueType()));
+
+  SDVTList VTs = DAG.getVTList(Op.getValueType(), MVT::i32);
+  SmallVector<SDValue, 4> Ops;
+  for (unsigned i = 0; i != NumOperands; ++i)
+    Ops.push_back(Op.getOperand(i));
+
+  SDValue New = DAG.getNode(Opcode, dl, VTs, &Ops[0], NumOperands);
+  DAG.ReplaceAllUsesWith(Op, New);
+  return SDValue(New.getNode(), 1);
 }
 
 /// Emit nodes that will be selected as "cmp Op0,Op1", or something
@@ -6701,7 +6705,6 @@ X86TargetLowering::LowerDYNAMIC_STACKALLOC(SDValue Op,
 
   SDValue Flag;
 
-  EVT IntPtr = getPointerTy();
   EVT SPTy = Subtarget->is64Bit() ? MVT::i64 : MVT::i32;
 
   Chain = DAG.getCopyToReg(Chain, dl, X86::EAX, Size, Flag);
@@ -6781,9 +6784,6 @@ SDValue X86TargetLowering::LowerVASTART(SDValue Op, SelectionDAG &DAG) const {
 SDValue X86TargetLowering::LowerVAARG(SDValue Op, SelectionDAG &DAG) const {
   // X86-64 va_list is a struct { i32, i32, i8*, i8* }.
   assert(Subtarget->is64Bit() && "This code only handles 64-bit va_arg!");
-  SDValue Chain = Op.getOperand(0);
-  SDValue SrcPtr = Op.getOperand(1);
-  SDValue SrcSV = Op.getOperand(2);
 
   report_fatal_error("VAArgInst is not yet implemented for x86-64!");
   return SDValue();
@@ -10021,7 +10021,7 @@ static bool LowerToBSwap(CallInst *CI) {
   // so don't worry about this.
 
   // Verify this is a simple bswap.
-  if (CI->getNumOperands() != 2 ||
+  if (CI->getNumArgOperands() != 1 ||
       CI->getType() != CI->getArgOperand(0)->getType() ||
       !CI->getType()->isIntegerTy())
     return false;
