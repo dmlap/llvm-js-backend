@@ -168,19 +168,6 @@ namespace {
       return false;
     }
 
-    raw_ostream &printType(raw_ostream &Out, const Type *Ty,
-                           bool isSigned = false,
-                           const std::string &VariableName = "",
-                           bool IgnoreName = false,
-                           const AttrListPtr &PAL = AttrListPtr());
-    raw_ostream &printSimpleType(raw_ostream &Out, const Type *Ty,
-                                 bool isSigned,
-                                 const std::string &NameSoFar = "");
-
-    void printStructReturnPointerFunctionType(raw_ostream &Out,
-                                              const AttrListPtr &PAL,
-                                              const PointerType *Ty);
-
     /// writeOperandDeref - Print the result of dereferencing the specified
     /// operand with '*'.  This is equivalent to printing '*' then using
     /// writeOperand, but avoids excess syntax in some cases.
@@ -198,9 +185,7 @@ namespace {
     void writeOperand(Value *Operand, bool Static = false);
     void writeInstComputationInline(Instruction &I);
     void writeOperandInternal(Value *Operand, bool Static = false);
-    void writeOperandWithCast(Value* Operand, unsigned Opcode);
     void writeOperandWithCast(Value* Operand, const ICmpInst &I);
-    bool writeInstructionCast(const Instruction &I);
 
     void writeMemoryAccess(Value *Operand, const Type *OperandType,
                            bool IsVolatile, unsigned Alignment);
@@ -211,9 +196,7 @@ namespace {
     void lowerIntrinsics(Function &F);
 
     void printModule(Module *M);
-    void printModuleTypes(const TypeSymbolTable &ST);
     std::string getOperand(Value *Operand, bool Static = false);
-    void printContainedStructs(const Type *Ty, std::set<const Type *> &);
     void printFloatingPointConstants(Function &F);
     void printFloatingPointConstants(const Constant *C);
     void printFunctionSignature(const Function *F, bool Prototype);
@@ -222,10 +205,8 @@ namespace {
     void printBasicBlock(BasicBlock *BB);
     void printLoop(Loop *L);
 
-    void printCast(unsigned opcode, const Type *SrcTy, const Type *DstTy);
     void printConstant(Constant *CPV, bool Static, raw_ostream &Out);
     void printConstant(Constant *CPV, bool Static);
-    void printConstantWithCast(Constant *CPV, unsigned Opcode);
     void printConstantArray(ConstantArray *CPA, bool Static);
     void printConstantVector(ConstantVector *CV, bool Static);
 
@@ -469,196 +450,6 @@ bool JsBackendNameAllUsedStructsAndMergeFunctions::runOnModule(Module &M) {
   return Changed;
 }
 
-/// printStructReturnPointerFunctionType - This is like printType for a struct
-/// return type, except, instead of printing the type as void (*)(Struct*, ...)
-/// print it as "Struct (*)(...)", for struct return functions.
-void JsWriter::printStructReturnPointerFunctionType(raw_ostream &Out,
-                                                   const AttrListPtr &PAL,
-                                                   const PointerType *TheTy) {
-  const FunctionType *FTy = cast<FunctionType>(TheTy->getElementType());
-  std::string tstr;
-  raw_string_ostream FunctionInnards(tstr);
-  FunctionInnards << " (*) (";
-  bool PrintedType = false;
-
-  FunctionType::param_iterator I = FTy->param_begin(), E = FTy->param_end();
-  const Type *RetTy = cast<PointerType>(I->get())->getElementType();
-  unsigned Idx = 1;
-  for (++I, ++Idx; I != E; ++I, ++Idx) {
-    if (PrintedType)
-      FunctionInnards << ", ";
-    const Type *ArgTy = *I;
-    if (PAL.paramHasAttr(Idx, Attribute::ByVal)) {
-      assert(ArgTy->isPointerTy());
-      ArgTy = cast<PointerType>(ArgTy)->getElementType();
-    }
-    printType(FunctionInnards, ArgTy,
-        /*isSigned=*/PAL.paramHasAttr(Idx, Attribute::SExt), "");
-    PrintedType = true;
-  }
-  if (FTy->isVarArg()) {
-    if (!PrintedType)
-      FunctionInnards << " int"; //dummy argument for empty vararg functs
-    FunctionInnards << ", ...";
-  } else if (!PrintedType) {
-    FunctionInnards << "void";
-  }
-  FunctionInnards << ')';
-  printType(Out, RetTy, 
-      /*isSigned=*/PAL.paramHasAttr(0, Attribute::SExt), FunctionInnards.str());
-}
-
-raw_ostream &
-JsWriter::printSimpleType(raw_ostream &Out, const Type *Ty, bool isSigned,
-                         const std::string &NameSoFar) {
-  assert((Ty->isPrimitiveType() || Ty->isIntegerTy() || Ty->isVectorTy()) && 
-         "Invalid type for printSimpleType");
-  switch (Ty->getTypeID()) {
-  case Type::VoidTyID:   return Out << "void " << NameSoFar;
-  case Type::IntegerTyID: {
-    unsigned NumBits = cast<IntegerType>(Ty)->getBitWidth();
-    if (NumBits == 1) 
-      return Out << "bool " << NameSoFar;
-    else if (NumBits <= 8)
-      return Out << (isSigned?"signed":"unsigned") << " char " << NameSoFar;
-    else if (NumBits <= 16)
-      return Out << (isSigned?"signed":"unsigned") << " short " << NameSoFar;
-    else if (NumBits <= 32)
-      return Out << (isSigned?"signed":"unsigned") << " int " << NameSoFar;
-    else if (NumBits <= 64)
-      return Out << (isSigned?"signed":"unsigned") << " long long "<< NameSoFar;
-    else { 
-      assert(NumBits <= 128 && "Bit widths > 128 not implemented yet");
-      return Out << (isSigned?"llvmInt128":"llvmUInt128") << " " << NameSoFar;
-    }
-  }
-  case Type::FloatTyID:  return Out << "float "   << NameSoFar;
-  case Type::DoubleTyID: return Out << "double "  << NameSoFar;
-  // Lacking emulation of FP80 on PPC, etc., we assume whichever of these is
-  // present matches host 'long double'.
-  case Type::X86_FP80TyID:
-  case Type::PPC_FP128TyID:
-  case Type::FP128TyID:  return Out << "long double " << NameSoFar;
-      
-  case Type::VectorTyID: {
-    const VectorType *VTy = cast<VectorType>(Ty);
-    return printSimpleType(Out, VTy->getElementType(), isSigned,
-                     " __attribute__((vector_size(" +
-                     utostr(TD->getTypeAllocSize(VTy)) + " ))) " + NameSoFar);
-  }
-    
-  default:
-#ifndef NDEBUG
-    errs() << "Unknown primitive type: " << *Ty << "\n";
-#endif
-    llvm_unreachable(0);
-  }
-}
-
-// Pass the Type* and the variable name and this prints out the variable
-// declaration.
-//
-raw_ostream &JsWriter::printType(raw_ostream &Out, const Type *Ty,
-                                bool isSigned, const std::string &NameSoFar,
-                                bool IgnoreName, const AttrListPtr &PAL) {
-  if (Ty->isPrimitiveType() || Ty->isIntegerTy() || Ty->isVectorTy()) {
-    printSimpleType(Out, Ty, isSigned, NameSoFar);
-    return Out;
-  }
-
-  // Check to see if the type is named.
-  if (!IgnoreName || Ty->isOpaqueTy()) {
-    std::map<const Type *, std::string>::iterator I = TypeNames.find(Ty);
-    if (I != TypeNames.end()) return Out << I->second << ' ' << NameSoFar;
-  }
-
-  switch (Ty->getTypeID()) {
-  case Type::FunctionTyID: {
-    const FunctionType *FTy = cast<FunctionType>(Ty);
-    std::string tstr;
-    raw_string_ostream FunctionInnards(tstr);
-    FunctionInnards << " (" << NameSoFar << ") (";
-    unsigned Idx = 1;
-    for (FunctionType::param_iterator I = FTy->param_begin(),
-           E = FTy->param_end(); I != E; ++I) {
-      const Type *ArgTy = *I;
-      if (PAL.paramHasAttr(Idx, Attribute::ByVal)) {
-        assert(ArgTy->isPointerTy());
-        ArgTy = cast<PointerType>(ArgTy)->getElementType();
-      }
-      if (I != FTy->param_begin())
-        FunctionInnards << ", ";
-      printType(FunctionInnards, ArgTy,
-        /*isSigned=*/PAL.paramHasAttr(Idx, Attribute::SExt), "");
-      ++Idx;
-    }
-    if (FTy->isVarArg()) {
-      if (!FTy->getNumParams())
-        FunctionInnards << " int"; //dummy argument for empty vaarg functs
-      FunctionInnards << ", ...";
-    } else if (!FTy->getNumParams()) {
-      FunctionInnards << "void";
-    }
-    FunctionInnards << ')';
-    printType(Out, FTy->getReturnType(), 
-      /*isSigned=*/PAL.paramHasAttr(0, Attribute::SExt), FunctionInnards.str());
-    return Out;
-  }
-  case Type::StructTyID: {
-    const StructType *STy = cast<StructType>(Ty);
-    Out << NameSoFar + " {\n";
-    unsigned Idx = 0;
-    for (StructType::element_iterator I = STy->element_begin(),
-           E = STy->element_end(); I != E; ++I) {
-      Out << "  ";
-      printType(Out, *I, false, "field" + utostr(Idx++));
-      Out << ";\n";
-    }
-    Out << '}';
-    if (STy->isPacked())
-      Out << " __attribute__ ((packed))";
-    return Out;
-  }
-
-  case Type::PointerTyID: {
-    const PointerType *PTy = cast<PointerType>(Ty);
-    std::string ptrName = "*" + NameSoFar;
-
-    if (PTy->getElementType()->isArrayTy() ||
-        PTy->getElementType()->isVectorTy())
-      ptrName = "(" + ptrName + ")";
-
-    if (!PAL.isEmpty())
-      // Must be a function ptr cast!
-      return printType(Out, PTy->getElementType(), false, ptrName, true, PAL);
-    return printType(Out, PTy->getElementType(), false, ptrName);
-  }
-
-  case Type::ArrayTyID: {
-    const ArrayType *ATy = cast<ArrayType>(Ty);
-    unsigned NumElements = ATy->getNumElements();
-    if (NumElements == 0) NumElements = 1;
-    // Arrays are wrapped in structs to allow them to have normal
-    // value semantics (avoiding the array "decay").
-    Out << NameSoFar << " { ";
-    printType(Out, ATy->getElementType(), false,
-              "array[" + utostr(NumElements) + "]");
-    return Out << "; }";
-  }
-
-  case Type::OpaqueTyID: {
-    std::string TyName = "struct opaque_" + itostr(OpaqueCounter++);
-    assert(TypeNames.find(Ty) == TypeNames.end());
-    TypeNames[Ty] = TyName;
-    return Out << TyName << ' ' << NameSoFar;
-  }
-  default:
-    llvm_unreachable("Unhandled case in getTypeProps!");
-  }
-
-  return Out;
-}
-
 void JsWriter::printConstantArray(ConstantArray *CPA, bool Static) {
 
   // As a special case, print the array as a string if it is an array of
@@ -782,72 +573,6 @@ static bool isFPCSafeToPrint(const ConstantFP *CFP) {
 #endif
 }
 
-/// Print out the casting for a cast operation. This does the double casting
-/// necessary for conversion to the destination type, if necessary. 
-/// @brief Print a cast
-void JsWriter::printCast(unsigned opc, const Type *SrcTy, const Type *DstTy) {
-  // Print the destination type cast
-  switch (opc) {
-    case Instruction::UIToFP:
-    case Instruction::SIToFP:
-    case Instruction::IntToPtr:
-    case Instruction::Trunc:
-    case Instruction::BitCast:
-    case Instruction::FPExt:
-    case Instruction::FPTrunc: // For these the DstTy sign doesn't matter
-      Out << '(';
-      printType(Out, DstTy);
-      Out << ')';
-      break;
-    case Instruction::ZExt:
-    case Instruction::PtrToInt:
-    case Instruction::FPToUI: // For these, make sure we get an unsigned dest
-      Out << '(';
-      printSimpleType(Out, DstTy, false);
-      Out << ')';
-      break;
-    case Instruction::SExt: 
-    case Instruction::FPToSI: // For these, make sure we get a signed dest
-      Out << '(';
-      printSimpleType(Out, DstTy, true);
-      Out << ')';
-      break;
-    default:
-      llvm_unreachable("Invalid cast opcode");
-  }
-
-  // Print the source type cast
-  switch (opc) {
-    case Instruction::UIToFP:
-    case Instruction::ZExt:
-      Out << '(';
-      printSimpleType(Out, SrcTy, false);
-      Out << ')';
-      break;
-    case Instruction::SIToFP:
-    case Instruction::SExt:
-      Out << '(';
-      printSimpleType(Out, SrcTy, true); 
-      Out << ')';
-      break;
-    case Instruction::IntToPtr:
-    case Instruction::PtrToInt:
-      // Avoid "cast to pointer from integer of different size" warnings
-      Out << "(unsigned long)";
-      break;
-    case Instruction::Trunc:
-    case Instruction::BitCast:
-    case Instruction::FPExt:
-    case Instruction::FPTrunc:
-    case Instruction::FPToSI:
-    case Instruction::FPToUI:
-      break; // These don't need a source cast.
-    default:
-      llvm_unreachable("Invalid cast opcode");
-      break;
-  }
-}
-
 void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
   if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(CPV)) {
     switch (CE->getOpcode()) {
@@ -864,7 +589,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
     case Instruction::IntToPtr:
     case Instruction::BitCast:
       Out << "(";
-      printCast(CE->getOpcode(), CE->getOperand(0)->getType(), CE->getType());
       if (CE->getOpcode() == Instruction::SExt &&
           CE->getOperand(0)->getType() == Type::getInt1Ty(CPV->getContext())) {
         // Make sure we really sext from bool here by subtracting from 0
@@ -918,7 +642,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
     case Instruction::AShr:
     {
       Out << '(';
-      printConstantWithCast(CE->getOperand(0), CE->getOpcode());
+      printConstant(CE->getOperand(0), Static);
       switch (CE->getOpcode()) {
       case Instruction::Add:
       case Instruction::FAdd: Out << " + "; break;
@@ -955,7 +679,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
         break;
       default: llvm_unreachable("Illegal opcode here!");
       }
-      printConstantWithCast(CE->getOperand(1), CE->getOpcode());
+      printConstant(CE->getOperand(1), Static);
       Out << ')';
       return;
     }
@@ -985,9 +709,9 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
         case FCmpInst::FCMP_OGE: op = "oge"; break;
         }
         Out << "llvm_fcmp_" << op << "(";
-        printConstantWithCast(CE->getOperand(0), CE->getOpcode());
+        printConstant(CE->getOperand(0), Static);
         Out << ", ";
-        printConstantWithCast(CE->getOperand(1), CE->getOpcode());
+        printConstant(CE->getOperand(1), Static);
         Out << ")";
       }
       Out << ')';
@@ -1115,12 +839,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
     break;
 
   case Type::VectorTyID:
-    // Use C99 compound expression literal initializer syntax.
-    if (!Static) {
-      Out << "(";
-      printType(Out, CPV->getType());
-      Out << ")";
-    }
     if (ConstantVector *CV = dyn_cast<ConstantVector>(CPV)) {
       printConstantVector(CV, Static);
     } else {
@@ -1187,56 +905,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
 // printConstant - The LLVM Constant to C Constant converter.
 void JsWriter::printConstant(Constant *CPV, bool Static) {
   printConstant(CPV, Static, Out);
-}
-
-//  Print a constant assuming that it is the operand for a given Opcode. The
-//  opcodes that care about sign need to cast their operands to the expected
-//  type before the operation proceeds. This function does the casting.
-void JsWriter::printConstantWithCast(Constant* CPV, unsigned Opcode) {
-
-  // Extract the operand's type, we'll need it.
-  const Type* OpTy = CPV->getType();
-
-  // Indicate whether to do the cast or not.
-  bool shouldCast = false;
-  bool typeIsSigned = false;
-
-  // Based on the Opcode for which this Constant is being written, determine
-  // the new type to which the operand should be casted by setting the value
-  // of OpTy. If we change OpTy, also set shouldCast to true so it gets
-  // casted below.
-  switch (Opcode) {
-    default:
-      // for most instructions, it doesn't matter
-      break; 
-    case Instruction::Add:
-    case Instruction::Sub:
-    case Instruction::Mul:
-      // We need to cast integer arithmetic so that it is always performed
-      // as unsigned, to avoid undefined behavior on overflow.
-    case Instruction::LShr:
-    case Instruction::UDiv:
-    case Instruction::URem:
-      shouldCast = true;
-      break;
-    case Instruction::AShr:
-    case Instruction::SDiv:
-    case Instruction::SRem:
-      shouldCast = true;
-      typeIsSigned = true;
-      break;
-  }
-
-  // Write out the casted constant if we should, otherwise just write the
-  // operand.
-  if (shouldCast) {
-    Out << "((";
-    printSimpleType(Out, OpTy, typeIsSigned);
-    Out << ")";
-    printConstant(CPV, false);
-    Out << ")";
-  } else 
-    printConstant(CPV, false);
 }
 
 std::string JsWriter::GetValueName(const Value *Operand) {
@@ -1316,90 +984,6 @@ void JsWriter::writeOperand(Value *Operand, bool Static) {
   writeOperandInternal(Operand, Static);
 }
 
-// Some instructions need to have their result value casted back to the 
-// original types because their operands were casted to the expected type. 
-// This function takes care of detecting that case and printing the cast 
-// for the Instruction.
-bool JsWriter::writeInstructionCast(const Instruction &I) {
-  const Type *Ty = I.getOperand(0)->getType();
-  switch (I.getOpcode()) {
-  case Instruction::Add:
-  case Instruction::Sub:
-  case Instruction::Mul:
-    // We need to cast integer arithmetic so that it is always performed
-    // as unsigned, to avoid undefined behavior on overflow.
-  case Instruction::LShr:
-  case Instruction::URem: 
-  case Instruction::UDiv: 
-    Out << "((";
-    printSimpleType(Out, Ty, false);
-    Out << ")(";
-    return true;
-  case Instruction::AShr:
-  case Instruction::SRem: 
-  case Instruction::SDiv: 
-    Out << "((";
-    printSimpleType(Out, Ty, true);
-    Out << ")(";
-    return true;
-  default: break;
-  }
-  return false;
-}
-
-// Write the operand with a cast to another type based on the Opcode being used.
-// This will be used in cases where an instruction has specific type
-// requirements (usually signedness) for its operands. 
-void JsWriter::writeOperandWithCast(Value* Operand, unsigned Opcode) {
-
-  // Extract the operand's type, we'll need it.
-  const Type* OpTy = Operand->getType();
-
-  // Indicate whether to do the cast or not.
-  bool shouldCast = false;
-
-  // Indicate whether the cast should be to a signed type or not.
-  bool castIsSigned = false;
-
-  // Based on the Opcode for which this Operand is being written, determine
-  // the new type to which the operand should be casted by setting the value
-  // of OpTy. If we change OpTy, also set shouldCast to true.
-  switch (Opcode) {
-    default:
-      // for most instructions, it doesn't matter
-      break; 
-    case Instruction::Add:
-    case Instruction::Sub:
-    case Instruction::Mul:
-      // We need to cast integer arithmetic so that it is always performed
-      // as unsigned, to avoid undefined behavior on overflow.
-    case Instruction::LShr:
-    case Instruction::UDiv:
-    case Instruction::URem: // Cast to unsigned first
-      shouldCast = true;
-      castIsSigned = false;
-      break;
-    case Instruction::GetElementPtr:
-    case Instruction::AShr:
-    case Instruction::SDiv:
-    case Instruction::SRem: // Cast to signed first
-      shouldCast = true;
-      castIsSigned = true;
-      break;
-  }
-
-  // Write out the casted operand if we should, otherwise just write the
-  // operand.
-  if (shouldCast) {
-    Out << "((";
-    printSimpleType(Out, OpTy, castIsSigned);
-    Out << ")";
-    writeOperand(Operand);
-    Out << ")";
-  } else 
-    writeOperand(Operand);
-}
-
 // Write the operand with a cast to another type based on the icmp predicate 
 // being used. 
 void JsWriter::writeOperandWithCast(Value* Operand, const ICmpInst &Cmp) {
@@ -1418,11 +1002,6 @@ void JsWriter::writeOperandWithCast(Value* Operand, const ICmpInst &Cmp) {
     writeOperand(Operand);
     return;
   }
-  
-  // If the operand was a pointer, convert to a large integer type.
-  const Type* OpTy = Operand->getType();
-  if (OpTy->isPointerTy())
-    OpTy = TD->getIntPtrType(Operand->getContext());
   
   Out << "(";
   writeOperand(Operand);
@@ -1569,9 +1148,6 @@ bool JsWriter::doInitialization(Module &M) {
     Out << "\");\n"
         << "/* End Module asm statements */\n";
   }
-
-  // Loop over the symbol table, emitting all named constants...
-  printModuleTypes(M.getTypeSymbolTable());
 
   // Output the module-level locals
   if (!M.global_empty()) {
@@ -1720,42 +1296,6 @@ void JsWriter::printFloatingPointConstants(const Constant *C) {
     
   } else {
     llvm_unreachable("Unknown float type!");
-  }
-}
-
-
-
-/// printSymbolTable - Run through symbol table looking for type names.  If a
-/// type name is found, emit its declaration...
-///
-void JsWriter::printModuleTypes(const TypeSymbolTable &TST) {
-  // No need to explicitly define types
-}
-
-// Push the struct onto the stack and recursively push all structs
-// this one depends on.
-//
-// TODO:  Make this work properly with vector types
-//
-void JsWriter::printContainedStructs(const Type *Ty,
-                                    std::set<const Type*> &StructPrinted) {
-  // Don't walk through pointers.
-  if (Ty->isPointerTy() || Ty->isPrimitiveType() || Ty->isIntegerTy())
-    return;
-  
-  // Print all contained types first.
-  for (Type::subtype_iterator I = Ty->subtype_begin(),
-       E = Ty->subtype_end(); I != E; ++I)
-    printContainedStructs(*I, StructPrinted);
-  
-  if (Ty->isStructTy() || Ty->isArrayTy()) {
-    // Check to see if we have already printed this struct.
-    if (StructPrinted.insert(Ty).second) {
-      // Print structure type out.
-      std::string Name = TypeNames[Ty];
-      printType(Out, Ty, false, Name, true);
-      Out << ";\n\n";
-    }
   }
 }
 
@@ -2103,10 +1643,6 @@ void JsWriter::visitICmpInst(ICmpInst &I) {
   // We must cast the results of icmp which might be promoted.
   bool needsCast = false;
 
-  // Write out the cast of the instruction's value back to the proper type
-  // if necessary.
-  bool NeedsClosingParens = writeInstructionCast(I);
-
   bool HasPtrOperand = I.getOperand(0)->getType()->isPointerTy() || I.getOperand(1)->getType()->isPointerTy();
   // Certain icmp predicate require the operand to be forced to a specific type
   // so we use writeOperandWithCast here instead of writeOperand. Similarly
@@ -2160,9 +1696,6 @@ void JsWriter::visitICmpInst(ICmpInst &I) {
   }
 
   writeOperandWithCast(I.getOperand(1), I);
-  if (NeedsClosingParens)
-    Out << "))";
-
   if (needsCast) {
     Out << "))";
   }
@@ -2453,8 +1986,6 @@ void JsWriter::visitCallInst(CallInst &I) {
 
   // If this is a call to a struct-return function, assign to the first
   // parameter instead of passing it to the call.
-  const AttrListPtr &PAL = I.getAttributes();
-  bool hasByVal = I.hasByValArgument();
   bool isStructRet = I.hasStructRetAttr();
   if (isStructRet) {
     writeOperandDeref(I.getOperand(1));
@@ -2464,10 +1995,6 @@ void JsWriter::visitCallInst(CallInst &I) {
   if (I.isTailCall()) Out << " /*tail*/ ";
   
   if (!WroteCallee) {
-    // If this is an indirect call to a struct return function, we need to cast
-    // the pointer. Ditto for indirect calls with byval arguments.
-    bool NeedsCast = (hasByVal || isStructRet) && !isa<Function>(Callee);
-
     // GCC is a real PITA.  It does not permit codegening casts of functions to
     // function pointers if they are in a call (it generates a trap instruction
     // instead!).  We work around this by inserting a cast to void* in between
@@ -2480,27 +2007,14 @@ void JsWriter::visitCallInst(CallInst &I) {
     // in the common case, we handle casts where the number of arguments passed
     // match exactly.
     //
-    if (ConstantExpr *CE = dyn_cast<ConstantExpr>(Callee))
-      if (CE->isCast())
+    if (ConstantExpr *CE = dyn_cast<ConstantExpr>(Callee)) {
+      if (CE->isCast()) {
         if (Function *RF = dyn_cast<Function>(CE->getOperand(0))) {
-          NeedsCast = true;
           Callee = RF;
         }
-  
-    if (NeedsCast) {
-      // Ok, just cast the pointer type.
-      Out << "((";
-      if (isStructRet)
-        printStructReturnPointerFunctionType(Out, PAL,
-                             cast<PointerType>(I.getCalledValue()->getType()));
-      else if (hasByVal)
-        printType(Out, I.getCalledValue()->getType(), false, "", true, PAL);
-      else
-        printType(Out, I.getCalledValue()->getType());
-      Out << ")(void*)";
+      }
     }
     writeOperand(Callee);
-    if (NeedsCast) Out << ')';
   }
 
   Out << '(';
@@ -2510,8 +2024,6 @@ void JsWriter::visitCallInst(CallInst &I) {
     Out << "0 /*dummy arg*/";
     PrintedArg = true;
   }
-
-  unsigned NumDeclaredParams = FTy->getNumParams();
 
   CallSite::arg_iterator AI = I.op_begin()+1, AE = I.op_end();
   unsigned ArgNo = 0;
@@ -2523,13 +2035,6 @@ void JsWriter::visitCallInst(CallInst &I) {
 
   for (; AI != AE; ++AI, ++ArgNo) {
     if (PrintedArg) Out << ", ";
-    if (ArgNo < NumDeclaredParams &&
-        (*AI)->getType() != FTy->getParamType(ArgNo)) {
-      Out << '(';
-      printType(Out, FTy->getParamType(ArgNo), 
-            /*isSigned=*/PAL.paramHasAttr(ArgNo+1, Attribute::SExt));
-      Out << ')';
-    }
     // Check if the argument is expected to be passed by value.
     if (I.paramHasAttr(ArgNo+1, Attribute::ByVal))
       writeOperandDeref(*AI);
@@ -2623,9 +2128,6 @@ bool JsWriter::visitBuiltinCall(CallInst &I, Intrinsic::ID ID,
   case Intrinsic::x86_sse_cmp_ps:
   case Intrinsic::x86_sse2_cmp_sd:
   case Intrinsic::x86_sse2_cmp_pd:
-    Out << '(';
-    printType(Out, I.getType());
-    Out << ')';  
     // Multiple GCC builtins multiplex onto this intrinsic.
     switch (cast<ConstantInt>(I.getOperand(3))->getZExtValue()) {
     default: llvm_unreachable("Invalid llvm.x86.sse.cmp!");
@@ -2654,9 +2156,6 @@ bool JsWriter::visitBuiltinCall(CallInst &I, Intrinsic::ID ID,
     Out << ")";
     return true;
   case Intrinsic::ppc_altivec_lvsl:
-    Out << '(';
-    printType(Out, I.getType());
-    Out << ')';  
     Out << "__builtin_altivec_lvsl(0, (void*)";
     writeOperand(I.getOperand(1));
     Out << ")";
@@ -2882,30 +2381,7 @@ void JsWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
 
 void JsWriter::writeMemoryAccess(Value *Operand, const Type *OperandType,
                                 bool IsVolatile, unsigned Alignment) {
-
-  bool IsUnaligned = Alignment &&
-    Alignment < TD->getABITypeAlignment(OperandType);
-
-  if (IsVolatile || IsUnaligned) {
-    Out << "((";
-    if (IsUnaligned)
-      Out << "struct __attribute__ ((packed, aligned(" << Alignment << "))) {";
-    printType(Out, OperandType, false, IsUnaligned ? "data" : "volatile*");
-    if (IsUnaligned) {
-      Out << "; } ";
-      if (IsVolatile) Out << "volatile ";
-      Out << "*";
-    }
-    Out << ")";
-  }
-
   writeOperand(Operand);
-
-  if (IsVolatile || IsUnaligned) {
-    Out << ')';
-    if (IsUnaligned)
-      Out << "->data";
-  }
 }
 
 void JsWriter::visitLoadInst(LoadInst &I) {
@@ -2948,12 +2424,10 @@ void JsWriter::visitVAArgInst(VAArgInst &I) {
 }
 
 void JsWriter::visitInsertElementInst(InsertElementInst &I) {
-  const Type *EltTy = I.getType()->getElementType();
   writeOperand(I.getOperand(0));
   Out << ";\n  ";
-  Out << "((";
-  printType(Out, PointerType::getUnqual(EltTy));
-  Out << ")(&" << GetValueName(&I) << "))[";
+  Out << "(";
+  Out << "(&" << GetValueName(&I) << "))[";
   writeOperand(I.getOperand(2));
   Out << "] = (";
   writeOperand(I.getOperand(1));
@@ -2962,22 +2436,16 @@ void JsWriter::visitInsertElementInst(InsertElementInst &I) {
 
 void JsWriter::visitExtractElementInst(ExtractElementInst &I) {
   // We know that our operand is not inlined.
-  Out << "((";
-  const Type *EltTy = 
-    cast<VectorType>(I.getOperand(0)->getType())->getElementType();
-  printType(Out, PointerType::getUnqual(EltTy));
-  Out << ")(&" << GetValueName(I.getOperand(0)) << "))[";
+  Out << "(";
+  Out << "(&" << GetValueName(I.getOperand(0)) << "))[";
   writeOperand(I.getOperand(1));
   Out << "]";
 }
 
 void JsWriter::visitShuffleVectorInst(ShuffleVectorInst &SVI) {
-  Out << "(";
-  printType(Out, SVI.getType());
-  Out << "){ ";
+  Out << "{ ";
   const VectorType *VT = SVI.getType();
   unsigned NumElts = VT->getNumElements();
-  const Type *EltTy = VT->getElementType();
 
   for (unsigned i = 0; i != NumElts; ++i) {
     if (i) Out << ", ";
@@ -2988,9 +2456,7 @@ void JsWriter::visitShuffleVectorInst(ShuffleVectorInst &SVI) {
       Value *Op = SVI.getOperand((unsigned)SrcVal >= NumElts);
       if (isa<Instruction>(Op)) {
         // Do an extractelement of this value from the appropriate input.
-        Out << "((";
-        printType(Out, PointerType::getUnqual(EltTy));
-        Out << ")(&" << GetValueName(Op)
+        Out << "((&" << GetValueName(Op)
             << "))[" << (SrcVal & (NumElts-1)) << "]";
       } else if (isa<ConstantAggregateZero>(Op) || isa<UndefValue>(Op)) {
         Out << "0";
