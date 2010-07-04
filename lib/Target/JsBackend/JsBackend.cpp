@@ -903,7 +903,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
 }
 
 // printConstant - The LLVM Constant to C Constant converter.
-void JsWriter::printConstant(Constant *CPV, bool Static) {
+void inline JsWriter::printConstant(Constant *CPV, bool Static) {
   printConstant(CPV, Static, Out);
 }
 
