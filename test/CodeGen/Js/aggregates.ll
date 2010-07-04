@@ -1,5 +1,5 @@
 ; RUN: llvm-as < %s | llvm-dis > %t1
-; RUN: llc < %s -march=js -O0 -o aggregate.js
+; RUN: llc < %s -march=js -O0 -o aggregates.js
 ; RUN: llc < %s -march=js -O0 | FileCheck %s
 
 @STR = private constant [2 x i8] c"a\00"
