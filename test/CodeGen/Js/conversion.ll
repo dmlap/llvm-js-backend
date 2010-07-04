@@ -55,7 +55,7 @@ entry:
 
 ; pointer to int conversions??
 
-; CHECK: = (-2 & 255);
+; CHECK: = -2;
   %Q = bitcast i8 254 to i8
 ;  %R = bitcast <2 x i16> <i16 1, i16 2> to i32
 

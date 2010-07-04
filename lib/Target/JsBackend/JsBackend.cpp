@@ -1870,7 +1870,7 @@ void JsWriter::printBasicBlock(BasicBlock *BB) {
   // Output all of the instructions in the basic block...
   for (BasicBlock::iterator II = BB->begin(), E = --BB->end(); II != E;
        ++II) {
-    if (!isInlinableInst(*II) && !isDirectAlloca(II)) {
+    if (!isInlinableInst(*II)) {
       Out << "        ";
       if (II->getType() != Type::getVoidTy(BB->getContext()) &&
           !isInlineAsm(*II)) {
@@ -2316,6 +2316,7 @@ void JsWriter::visitCastInst(CastInst &I) {
   }
   const Type *MaskTy;
   switch(I.getOpcode()) {
+  case Instruction::BitCast:
   case Instruction::FPExt:
     writeOperand(I.getOperand(0));
     return;
@@ -2563,34 +2564,16 @@ bool JsWriter::visitBuiltinCall(CallInst &I, Intrinsic::ID ID,
     Out << "__sync_synchronize()";
     return true;
   case Intrinsic::vastart:
-    Out << "0; ";
-      
-    Out << "va_start(*(va_list*)";
     writeOperand(I.getOperand(1));
-    Out << ", ";
-    // Output the last argument to the enclosing function.
-    if (I.getParent()->getParent()->arg_empty())
-      Out << "vararg_dummy_arg";
-    else
-      writeOperand(--I.getParent()->getParent()->arg_end());
-    Out << ')';
+    Out << "._ = 0";
     return true;
   case Intrinsic::vaend:
-    if (!isa<ConstantPointerNull>(I.getOperand(1))) {
-      Out << "0; va_end(*(va_list*)";
-      writeOperand(I.getOperand(1));
-      Out << ')';
-    } else {
-      Out << "va_end(*(va_list*)0)";
-    }
     return true;
   case Intrinsic::vacopy:
-    Out << "0; ";
-    Out << "va_copy(*(va_list*)";
     writeOperand(I.getOperand(1));
-    Out << ", *(va_list*)";
+    Out << "._ = ";
     writeOperand(I.getOperand(2));
-    Out << ')';
+    Out << "._";
     return true;
   case Intrinsic::returnaddress:
     Out << "__builtin_return_address(";
@@ -2855,16 +2838,17 @@ void JsWriter::visitInlineAsm(CallInst &CI) {
 }
 
 void JsWriter::visitAllocaInst(AllocaInst &I) {
-  Out << '(';
-  printType(Out, I.getType());
-  Out << ") alloca(sizeof(";
-  printType(Out, I.getType()->getElementType());
-  Out << ')';
-  if (I.isArrayAllocation()) {
-    Out << " * " ;
-    writeOperand(I.getOperand(0));
+  const Type* ElementType = I.getType()->getElementType();
+  switch (ElementType->getTypeID()) {
+  case Type::IntegerTyID:
+    if(ElementType == Type::getInt8Ty(I.getContext())) {
+      Out << "''";
+      break;
+    }
+  default:
+    Out << "[]";
+    break;
   }
-  Out << ')';
 }
 
 void JsWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
@@ -2957,11 +2941,10 @@ void JsWriter::visitGetElementPtrInst(GetElementPtrInst &I) {
 }
 
 void JsWriter::visitVAArgInst(VAArgInst &I) {
-  Out << "va_arg(*(va_list*)";
+  
+  Out << "arguments[";
   writeOperand(I.getOperand(0));
-  Out << ", ";
-  printType(Out, I.getType());
-  Out << ");\n ";
+  Out << "._++]";
 }
 
 void JsWriter::visitInsertElementInst(InsertElementInst &I) {

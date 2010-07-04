@@ -4,6 +4,11 @@
 
 @X = constant float 1.5
     
+define i32 @test(i32) {
+entry:
+  ret i32 0;
+}
+
 define void @misc() {
 entry:
 ; CHECK: (4 == 5)
@@ -43,5 +48,20 @@ entry:
 ; CHECK: (1 == 1 && 1 == 1)
   %L = fcmp ord double 1.0, 1.0
   %LL = add i1 %L, 1
+  br label %bb0
+
+bb0:
+; CHECK: = false;
+; CHECK: = true;
+  %N = phi i1 [0, %entry], [1, %bb0]
+  br i1 %N, label %bb1, label %bb0
+
+bb1:
+; CHECK: ((true) ? (17) : (42));
+  %O = select i1 true, i8 17, i8 42
+
+  %P = add i32 5, 5
+; CHECK: test(
+  %Q = tail call fastcc i32 @test(i32 %P)
   ret void
 }
