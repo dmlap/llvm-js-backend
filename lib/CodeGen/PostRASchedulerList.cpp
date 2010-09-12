@@ -85,7 +85,7 @@ namespace {
   public:
     static char ID;
     PostRAScheduler(CodeGenOpt::Level ol) :
-      MachineFunctionPass(&ID), OptLevel(ol) {}
+      MachineFunctionPass(ID), OptLevel(ol) {}
 
     void getAnalysisUsage(AnalysisUsage &AU) const {
       AU.setPreservesCFG();
@@ -130,7 +130,7 @@ namespace {
 
     /// KillIndices - The index of the most recent kill (proceding bottom-up),
     /// or ~0u if the register is not live.
-    unsigned KillIndices[TargetRegisterInfo::FirstVirtualRegister];
+    std::vector<unsigned> KillIndices;
 
   public:
     SchedulePostRATDList(MachineFunction &MF,
@@ -140,7 +140,8 @@ namespace {
                          AntiDepBreaker *ADB,
                          AliasAnalysis *aa)
       : ScheduleDAGInstrs(MF, MLI, MDT), Topo(SUnits),
-      HazardRec(HR), AntiDepBreak(ADB), AA(aa) {}
+        HazardRec(HR), AntiDepBreak(ADB), AA(aa),
+        KillIndices(TRI->getNumRegs()) {}
 
     ~SchedulePostRATDList() {
     }
@@ -212,7 +213,7 @@ bool PostRAScheduler::runOnMachineFunction(MachineFunction &Fn) {
   const MachineLoopInfo &MLI = getAnalysis<MachineLoopInfo>();
   const MachineDominatorTree &MDT = getAnalysis<MachineDominatorTree>();
   const TargetMachine &TM = Fn.getTarget();
-  const InstrItineraryData &InstrItins = TM.getInstrItineraryData();
+  const InstrItineraryData *InstrItins = TM.getInstrItineraryData();
   ScheduleHazardRecognizer *HR =
     TM.getInstrInfo()->CreateTargetPostRAHazardRecognizer(InstrItins);
   AntiDepBreaker *ADB =

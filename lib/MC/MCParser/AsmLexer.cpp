@@ -23,7 +23,6 @@ using namespace llvm;
 AsmLexer::AsmLexer(const MCAsmInfo &_MAI) : MAI(_MAI)  {
   CurBuf = NULL;
   CurPtr = NULL;
-  TokStart = 0;
 }
 
 AsmLexer::~AsmLexer() {
@@ -38,10 +37,6 @@ void AsmLexer::setBuffer(const MemoryBuffer *buf, const char *ptr) {
     CurPtr = CurBuf->getBufferStart();
   
   TokStart = 0;
-}
-
-SMLoc AsmLexer::getLoc() const {
-  return SMLoc::getFromPointer(TokStart);
 }
 
 /// ReturnError - Set the error to the specified string at the specified
@@ -122,6 +117,13 @@ AsmToken AsmLexer::LexLineComment() {
   return AsmToken(AsmToken::EndOfStatement, StringRef(CurPtr, 0));
 }
 
+static void SkipIgnoredIntegerSuffix(const char *&CurPtr) {
+  if (CurPtr[0] == 'L' && CurPtr[1] == 'L')
+    CurPtr += 2;
+  if (CurPtr[0] == 'U' && CurPtr[1] == 'L' && CurPtr[2] == 'L')
+    CurPtr += 3;
+}
+
 
 /// LexDigit: First character is [0-9].
 ///   Local Label: [0-9][:]
@@ -138,7 +140,7 @@ AsmToken AsmLexer::LexDigit() {
       ++CurPtr;
     
     StringRef Result(TokStart, CurPtr - TokStart);
-    
+
     long long Value;
     if (Result.getAsInteger(10, Value)) {
       // We have to handle minint_as_a_positive_value specially, because
@@ -148,6 +150,11 @@ AsmToken AsmLexer::LexDigit() {
       else
         return ReturnError(TokStart, "Invalid decimal number");
     }
+    
+    // The darwin/x86 (and x86-64) assembler accepts and ignores ULL and LL
+    // suffixes on integer literals.
+    SkipIgnoredIntegerSuffix(CurPtr);
+    
     return AsmToken(AsmToken::Integer, Result, Value);
   }
   
@@ -170,8 +177,12 @@ AsmToken AsmLexer::LexDigit() {
     StringRef Result(TokStart, CurPtr - TokStart);
     
     long long Value;
-    if (Result.getAsInteger(2, Value))
+    if (Result.substr(2).getAsInteger(2, Value))
       return ReturnError(TokStart, "Invalid binary number");
+    
+    // The darwin/x86 (and x86-64) assembler accepts and ignores ULL and LL
+    // suffixes on integer literals.
+    SkipIgnoredIntegerSuffix(CurPtr);
     
     return AsmToken(AsmToken::Integer, Result, Value);
   }
@@ -190,6 +201,10 @@ AsmToken AsmLexer::LexDigit() {
     if (StringRef(TokStart, CurPtr - TokStart).getAsInteger(0, Result))
       return ReturnError(TokStart, "Invalid hexadecimal number");
       
+    // The darwin/x86 (and x86-64) assembler accepts and ignores ULL and LL
+    // suffixes on integer literals.
+    SkipIgnoredIntegerSuffix(CurPtr);
+    
     return AsmToken(AsmToken::Integer, StringRef(TokStart, CurPtr - TokStart),
                     (int64_t)Result);
   }
@@ -202,6 +217,10 @@ AsmToken AsmLexer::LexDigit() {
   long long Value;
   if (Result.getAsInteger(8, Value))
     return ReturnError(TokStart, "Invalid octal number");
+  
+  // The darwin/x86 (and x86-64) assembler accepts and ignores ULL and LL
+  // suffixes on integer literals.
+  SkipIgnoredIntegerSuffix(CurPtr);
   
   return AsmToken(AsmToken::Integer, Result, Value);
 }
@@ -229,7 +248,7 @@ StringRef AsmLexer::LexUntilEndOfStatement() {
   TokStart = CurPtr;
 
   while (!isAtStartOfComment(*CurPtr) && // Start of line comment.
-	  *CurPtr != ';' &&  // End of statement marker.
+          *CurPtr != ';' &&  // End of statement marker.
          *CurPtr != '\n' &&
          *CurPtr != '\r' &&
          (*CurPtr != 0 || CurPtr != CurBuf->getBufferEnd())) {

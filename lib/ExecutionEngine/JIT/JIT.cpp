@@ -67,7 +67,7 @@ extern "C" void LLVMLinkInJIT() {
 }
 
 
-#if defined(__GNUC__) && !defined(__ARM__EABI__)
+#if defined(__GNUC__) && !defined(__ARM_EABI__) && !defined(__USING_SJLJ_EXCEPTIONS__)
  
 // libgcc defines the __register_frame function to dynamically register new
 // dwarf frames for exception handling. This functionality is not portable
@@ -219,10 +219,8 @@ ExecutionEngine *JIT::createJIT(Module *M,
                                 StringRef MArch,
                                 StringRef MCPU,
                                 const SmallVectorImpl<std::string>& MAttrs) {
-  // Make sure we can resolve symbols in the program as well. The zero arg
-  // to the function tells DynamicLibrary to load the program, not a library.
-  if (sys::DynamicLibrary::LoadLibraryPermanently(0, ErrorStr))
-    return 0;
+  // Try to register the program as a source of symbols to resolve against.
+  sys::DynamicLibrary::LoadLibraryPermanently(0, NULL);
 
   // Pick a target either via -march or by guessing the native arch.
   TargetMachine *TM = JIT::selectTarget(M, MArch, MCPU, MAttrs, ErrorStr);
@@ -308,7 +306,7 @@ JIT::JIT(Module *M, TargetMachine &tm, TargetJITInfo &tji,
   }
   
   // Register routine for informing unwinding runtime about new EH frames
-#if defined(__GNUC__) && !defined(__ARM_EABI__)
+#if defined(__GNUC__) && !defined(__ARM_EABI__) && !defined(__USING_SJLJ_EXCEPTIONS__)
 #if USE_KEYMGR
   struct LibgccObjectInfo* LOI = (struct LibgccObjectInfo*)
     _keymgr_get_and_lock_processwide_ptr(KEYMGR_GCC3_DW2_OBJ_LIST);
@@ -626,10 +624,7 @@ void JIT::runJITOnFunction(Function *F, MachineCodeInfo *MCI) {
 void JIT::runJITOnFunctionUnlocked(Function *F, const MutexGuard &locked) {
   assert(!isAlreadyCodeGenerating && "Error: Recursive compilation detected!");
 
-  // JIT the function
-  isAlreadyCodeGenerating = true;
-  jitstate->getPM(locked).run(*F);
-  isAlreadyCodeGenerating = false;
+  jitTheFunction(F, locked);
 
   // If the function referred to another function that had not yet been
   // read from bitcode, and we are jitting non-lazily, emit it now.
@@ -640,15 +635,21 @@ void JIT::runJITOnFunctionUnlocked(Function *F, const MutexGuard &locked) {
     assert(!PF->hasAvailableExternallyLinkage() &&
            "Externally-defined function should not be in pending list.");
 
-    // JIT the function
-    isAlreadyCodeGenerating = true;
-    jitstate->getPM(locked).run(*PF);
-    isAlreadyCodeGenerating = false;
+    jitTheFunction(PF, locked);
     
     // Now that the function has been jitted, ask the JITEmitter to rewrite
     // the stub with real address of the function.
     updateFunctionStub(PF);
   }
+}
+
+void JIT::jitTheFunction(Function *F, const MutexGuard &locked) {
+  isAlreadyCodeGenerating = true;
+  jitstate->getPM(locked).run(*F);
+  isAlreadyCodeGenerating = false;
+
+  // clear basic block addresses after this function is done
+  getBasicBlockAddressMap(locked).clear();
 }
 
 /// getPointerToFunction - This method is used to get the address of the
@@ -685,6 +686,41 @@ void *JIT::getPointerToFunction(Function *F) {
   void *Addr = getPointerToGlobalIfAvailable(F);
   assert(Addr && "Code generation didn't add function to GlobalAddress table!");
   return Addr;
+}
+
+void JIT::addPointerToBasicBlock(const BasicBlock *BB, void *Addr) {
+  MutexGuard locked(lock);
+  
+  BasicBlockAddressMapTy::iterator I =
+    getBasicBlockAddressMap(locked).find(BB);
+  if (I == getBasicBlockAddressMap(locked).end()) {
+    getBasicBlockAddressMap(locked)[BB] = Addr;
+  } else {
+    // ignore repeats: some BBs can be split into few MBBs?
+  }
+}
+
+void JIT::clearPointerToBasicBlock(const BasicBlock *BB) {
+  MutexGuard locked(lock);
+  getBasicBlockAddressMap(locked).erase(BB);
+}
+
+void *JIT::getPointerToBasicBlock(BasicBlock *BB) {
+  // make sure it's function is compiled by JIT
+  (void)getPointerToFunction(BB->getParent());
+
+  // resolve basic block address
+  MutexGuard locked(lock);
+  
+  BasicBlockAddressMapTy::iterator I =
+    getBasicBlockAddressMap(locked).find(BB);
+  if (I != getBasicBlockAddressMap(locked).end()) {
+    return I->second;
+  } else {
+    assert(0 && "JIT does not have BB address for address-of-label, was"
+           " it eliminated by optimizer?");
+    return 0;
+  }
 }
 
 /// getOrEmitGlobalVariable - Return the address of the specified global

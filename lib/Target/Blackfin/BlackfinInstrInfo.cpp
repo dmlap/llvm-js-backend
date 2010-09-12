@@ -28,34 +28,6 @@ BlackfinInstrInfo::BlackfinInstrInfo(BlackfinSubtarget &ST)
     RI(ST, *this),
     Subtarget(ST) {}
 
-/// Return true if the instruction is a register to register move and
-/// leave the source and dest operands in the passed parameters.
-bool BlackfinInstrInfo::isMoveInstr(const MachineInstr &MI,
-                                    unsigned &SrcReg,
-                                    unsigned &DstReg,
-                                    unsigned &SrcSR,
-                                    unsigned &DstSR) const {
-  SrcSR = DstSR = 0; // No sub-registers.
-  switch (MI.getOpcode()) {
-  case BF::MOVE:
-  case BF::MOVE_ncccc:
-  case BF::MOVE_ccncc:
-  case BF::MOVECC_zext:
-  case BF::MOVECC_nz:
-    DstReg = MI.getOperand(0).getReg();
-    SrcReg = MI.getOperand(1).getReg();
-    return true;
-  case BF::SLL16i:
-    if (MI.getOperand(2).getImm()!=0)
-      return false;
-    DstReg = MI.getOperand(0).getReg();
-    SrcReg = MI.getOperand(1).getReg();
-    return true;
-  default:
-    return false;
-  }
-}
-
 /// isLoadFromStackSlot - If the specified machine instruction is a direct
 /// load from a stack slot, return the virtual or physical register number of
 /// the destination along with the FrameIndex of the loaded stack slot.  If
@@ -122,6 +94,66 @@ InsertBranch(MachineBasicBlock &MBB,
   llvm_unreachable("Implement conditional branches!");
 }
 
+void BlackfinInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
+                                    MachineBasicBlock::iterator I, DebugLoc DL,
+                                    unsigned DestReg, unsigned SrcReg,
+                                    bool KillSrc) const {
+  if (BF::ALLRegClass.contains(DestReg, SrcReg)) {
+    BuildMI(MBB, I, DL, get(BF::MOVE), DestReg)
+      .addReg(SrcReg, getKillRegState(KillSrc));
+    return;
+  }
+
+  if (BF::D16RegClass.contains(DestReg, SrcReg)) {
+    BuildMI(MBB, I, DL, get(BF::SLL16i), DestReg)
+      .addReg(SrcReg, getKillRegState(KillSrc))
+      .addImm(0);
+    return;
+  }
+
+  if (BF::DRegClass.contains(DestReg)) {
+    if (SrcReg == BF::NCC) {
+      BuildMI(MBB, I, DL, get(BF::MOVENCC_z), DestReg)
+        .addReg(SrcReg, getKillRegState(KillSrc));
+      BuildMI(MBB, I, DL, get(BF::BITTGL), DestReg).addReg(DestReg).addImm(0);
+      return;
+    }
+    if (SrcReg == BF::CC) {
+      BuildMI(MBB, I, DL, get(BF::MOVECC_zext), DestReg)
+        .addReg(SrcReg, getKillRegState(KillSrc));
+      return;
+    }
+  }
+
+  if (BF::DRegClass.contains(SrcReg)) {
+    if (DestReg == BF::NCC) {
+      BuildMI(MBB, I, DL, get(BF::SETEQri_not), DestReg)
+        .addReg(SrcReg, getKillRegState(KillSrc)).addImm(0);
+      return;
+    }
+    if (DestReg == BF::CC) {
+      BuildMI(MBB, I, DL, get(BF::MOVECC_nz), DestReg)
+        .addReg(SrcReg, getKillRegState(KillSrc));
+      return;
+    }
+  }
+
+
+  if (DestReg == BF::NCC && SrcReg == BF::CC) {
+    BuildMI(MBB, I, DL, get(BF::MOVE_ncccc), DestReg)
+      .addReg(SrcReg, getKillRegState(KillSrc));
+    return;
+  }
+
+  if (DestReg == BF::CC && SrcReg == BF::NCC) {
+    BuildMI(MBB, I, DL, get(BF::MOVE_ccncc), DestReg)
+      .addReg(SrcReg, getKillRegState(KillSrc));
+    return;
+  }
+
+  llvm_unreachable("Bad reg-to-reg copy");
+}
+
 static bool inClass(const TargetRegisterClass &Test,
                     unsigned Reg,
                     const TargetRegisterClass *RC) {
@@ -129,62 +161,6 @@ static bool inClass(const TargetRegisterClass &Test,
     return Test.contains(Reg);
   else
     return &Test==RC || Test.hasSubClass(RC);
-}
-
-bool BlackfinInstrInfo::copyRegToReg(MachineBasicBlock &MBB,
-                                     MachineBasicBlock::iterator I,
-                                     unsigned DestReg,
-                                     unsigned SrcReg,
-                                     const TargetRegisterClass *DestRC,
-                                     const TargetRegisterClass *SrcRC,
-                                     DebugLoc DL) const {
-  if (inClass(BF::ALLRegClass, DestReg, DestRC) &&
-      inClass(BF::ALLRegClass, SrcReg,  SrcRC)) {
-    BuildMI(MBB, I, DL, get(BF::MOVE), DestReg).addReg(SrcReg);
-    return true;
-  }
-
-  if (inClass(BF::D16RegClass, DestReg, DestRC) &&
-      inClass(BF::D16RegClass, SrcReg,  SrcRC)) {
-    BuildMI(MBB, I, DL, get(BF::SLL16i), DestReg).addReg(SrcReg).addImm(0);
-    return true;
-  }
-
-  if (inClass(BF::AnyCCRegClass, SrcReg, SrcRC) &&
-      inClass(BF::DRegClass, DestReg, DestRC)) {
-    if (inClass(BF::NotCCRegClass, SrcReg, SrcRC)) {
-      BuildMI(MBB, I, DL, get(BF::MOVENCC_z), DestReg).addReg(SrcReg);
-      BuildMI(MBB, I, DL, get(BF::BITTGL), DestReg).addReg(DestReg).addImm(0);
-    } else {
-      BuildMI(MBB, I, DL, get(BF::MOVECC_zext), DestReg).addReg(SrcReg);
-    }
-    return true;
-  }
-
-  if (inClass(BF::AnyCCRegClass, DestReg, DestRC) &&
-      inClass(BF::DRegClass, SrcReg,  SrcRC)) {
-    if (inClass(BF::NotCCRegClass, DestReg, DestRC))
-      BuildMI(MBB, I, DL, get(BF::SETEQri_not), DestReg).addReg(SrcReg);
-    else
-      BuildMI(MBB, I, DL, get(BF::MOVECC_nz), DestReg).addReg(SrcReg);
-    return true;
-  }
-
-  if (inClass(BF::NotCCRegClass, DestReg, DestRC) &&
-      inClass(BF::JustCCRegClass, SrcReg,  SrcRC)) {
-    BuildMI(MBB, I, DL, get(BF::MOVE_ncccc), DestReg).addReg(SrcReg);
-    return true;
-  }
-
-  if (inClass(BF::JustCCRegClass, DestReg, DestRC) &&
-      inClass(BF::NotCCRegClass, SrcReg,  SrcRC)) {
-    BuildMI(MBB, I, DL, get(BF::MOVE_ccncc), DestReg).addReg(SrcReg);
-    return true;
-  }
-
-  llvm_unreachable((std::string("Bad regclasses for reg-to-reg copy: ")+
-                    SrcRC->getName() + " -> " + DestRC->getName()).c_str());
-  return false;
 }
 
 void

@@ -25,6 +25,7 @@
           <li><a href="#linkage_private">'<tt>private</tt>' Linkage</a></li>
           <li><a href="#linkage_linker_private">'<tt>linker_private</tt>' Linkage</a></li>
           <li><a href="#linkage_linker_private_weak">'<tt>linker_private_weak</tt>' Linkage</a></li>
+          <li><a href="#linkage_linker_private_weak_def_auto">'<tt>linker_private_weak_def_auto</tt>' Linkage</a></li>
           <li><a href="#linkage_internal">'<tt>internal</tt>' Linkage</a></li>
           <li><a href="#linkage_available_externally">'<tt>available_externally</tt>' Linkage</a></li>
           <li><a href="#linkage_linkonce">'<tt>linkonce</tt>' Linkage</a></li>
@@ -73,7 +74,6 @@
               <li><a href="#t_array">Array Type</a></li>
               <li><a href="#t_struct">Structure Type</a></li>
               <li><a href="#t_pstruct">Packed Structure Type</a></li>
-              <li><a href="#t_union">Union Type</a></li>
               <li><a href="#t_vector">Vector Type</a></li>
             </ol>
           </li>
@@ -370,11 +370,9 @@
    what is considered 'well formed'.  For example, the following instruction is
    syntactically okay, but not well formed:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 %x = <a href="#i_add">add</a> i32 1, %x
 </pre>
-</div>
 
 <p>because the definition of <tt>%x</tt> does not dominate all of its uses. The
    LLVM infrastructure provides a verification pass that may be used to verify
@@ -437,29 +435,23 @@
 
 <p>The easy way:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 %result = <a href="#i_mul">mul</a> i32 %X, 8
 </pre>
-</div>
 
 <p>After strength reduction:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 %result = <a href="#i_shl">shl</a> i32 %X, i8 3
 </pre>
-</div>
 
 <p>And the hard way:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 %0 = <a href="#i_add">add</a> i32 %X, %X           <i>; yields {i32}:%0</i>
 %1 = <a href="#i_add">add</a> i32 %0, %0           <i>; yields {i32}:%1</i>
 %result = <a href="#i_add">add</a> i32 %1, %1
 </pre>
-</div>
 
 <p>This last way of multiplying <tt>%X</tt> by 8 illustrates several important
    lexical features of LLVM:</p>
@@ -498,28 +490,27 @@
    forward declarations, and merges symbol table entries. Here is an example of
    the "hello world" module:</p>
 
-<div class="doc_code">
-<pre>
-<i>; Declare the string constant as a global constant.</i>
-<a href="#identifiers">@.LC0</a> = <a href="#linkage_internal">internal</a> <a href="#globalvars">constant</a> <a href="#t_array">[13 x i8]</a> c"hello world\0A\00"    <i>; [13 x i8]*</i>
+<pre class="doc_code">
+<i>; Declare the string constant as a global constant.</i>&nbsp;
+<a href="#identifiers">@.LC0</a> = <a href="#linkage_internal">internal</a> <a href="#globalvars">constant</a> <a href="#t_array">[13 x i8]</a> c"hello world\0A\00"      <i>; [13 x i8]*</i>&nbsp;
 
-<i>; External declaration of the puts function</i>
-<a href="#functionstructure">declare</a> i32 @puts(i8*)                                     <i>; i32 (i8*)* </i>
+<i>; External declaration of the puts function</i>&nbsp;
+<a href="#functionstructure">declare</a> i32 @puts(i8*)                                      <i>; i32 (i8*)* </i>&nbsp;
 
 <i>; Definition of main function</i>
-define i32 @main() {                                        <i>; i32()* </i>
-  <i>; Convert [13 x i8]* to i8  *...</i>
-  %cast210 = <a href="#i_getelementptr">getelementptr</a> [13 x i8]* @.LC0, i64 0, i64 0   <i>; i8*</i>
+define i32 @main() {   <i>; i32()* </i>&nbsp;
+  <i>; Convert [13 x i8]* to i8  *...</i>&nbsp;
+  %cast210 = <a href="#i_getelementptr">getelementptr</a> [13 x i8]* @.LC0, i64 0, i64 0   <i>; i8*</i>&nbsp;
 
-  <i>; Call puts function to write out the string to stdout.</i>
-  <a href="#i_call">call</a> i32 @puts(i8* %cast210)                             <i>; i32</i>
-  <a href="#i_ret">ret</a> i32 0<br>}
+  <i>; Call puts function to write out the string to stdout.</i>&nbsp;
+  <a href="#i_call">call</a> i32 @puts(i8* %cast210)           <i>; i32</i>&nbsp;
+  <a href="#i_ret">ret</a> i32 0&nbsp;
+}
 
 <i>; Named metadata</i>
 !1 = metadata !{i32 41}
 !foo = !{!1, null}
 </pre>
-</div>
 
 <p>This example is made up of a <a href="#globalvars">global variable</a> named
    "<tt>.LC0</tt>", an external declaration of the "<tt>puts</tt>" function,
@@ -565,6 +556,15 @@ define i32 @main() {                                        <i>; i32()* </i>
       <tt>linker_private_weak</tt> symbols are subject to coalescing by the
       linker. The symbols are removed by the linker from the final linked image
       (executable or dynamic library).</dd>
+
+  <dt><tt><b><a name="linkage_linker_private_weak_def_auto">linker_private_weak_def_auto</a></b></tt></dt>
+  <dd>Similar to "<tt>linker_private_weak</tt>", but it's known that the address
+      of the object is not taken. For instance, functions that had an inline
+      definition, but the compiler decided not to inline it. Note,
+      unlike <tt>linker_private</tt> and <tt>linker_private_weak</tt>,
+      <tt>linker_private_weak_def_auto</tt> may have only <tt>default</tt>
+      visibility.  The symbols are removed by the linker from the final linked
+      image (executable or dynamic library).</dd>
 
   <dt><tt><b><a name="linkage_internal">internal</a></b></tt></dt>
   <dd>Similar to private, but the value shows as a local symbol
@@ -793,14 +793,12 @@ define i32 @main() {                                        <i>; i32()* </i>
    it easier to read the IR and make the IR more condensed (particularly when
    recursive types are involved).  An example of a name specification is:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 %mytype = type { %mytype*, i32 }
 </pre>
-</div>
 
 <p>You may give a name to any <a href="#typesystem">type</a> except
-   "<a href="t_void">void</a>".  Type name aliases may be used anywhere a type
+   "<a href="#t_void">void</a>".  Type name aliases may be used anywhere a type
    is expected with the syntax "%mytype".</p>
 
 <p>Note that type names are aliases for the structural type that they indicate,
@@ -869,11 +867,9 @@ define i32 @main() {                                        <i>; i32()* </i>
 <p>For example, the following defines a global in a numbered address space with
    an initializer, section, and alignment:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 @G = addrspace(5) constant float 1.0, section "foo", align 4
 </pre>
-</div>
 
 </div>
 
@@ -926,15 +922,13 @@ define i32 @main() {                                        <i>; i32()* </i>
    alignments must be a power of 2.</p>
 
 <h5>Syntax:</h5>
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 define [<a href="#linkage">linkage</a>] [<a href="#visibility">visibility</a>]
        [<a href="#callingconv">cconv</a>] [<a href="#paramattrs">ret attrs</a>]
        &lt;ResultType&gt; @&lt;FunctionName&gt; ([argument list])
        [<a href="#fnattrs">fn Attrs</a>] [section "name"] [align N]
        [<a href="#gc">gc</a>] { ... }
 </pre>
-</div>
 
 </div>
 
@@ -951,11 +945,9 @@ define [<a href="#linkage">linkage</a>] [<a href="#visibility">visibility</a>]
    optional <a href="#visibility">visibility style</a>.</p>
 
 <h5>Syntax:</h5>
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 @&lt;Name&gt; = alias [Linkage] [Visibility] &lt;AliaseeTy&gt; @&lt;Aliasee&gt;
 </pre>
-</div>
 
 </div>
 
@@ -967,16 +959,18 @@ define [<a href="#linkage">linkage</a>] [<a href="#visibility">visibility</a>]
 <div class="doc_text">
 
 <p>Named metadata is a collection of metadata. <a href="#metadata">Metadata
-   nodes</a> (but not metadata strings) and null are the only valid operands for
+   nodes</a> (but not metadata strings) are the only valid operands for
    a named metadata.</p>
 
 <h5>Syntax:</h5>
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
+; Some unnamed metadata nodes, which are referenced by the named metadata.
+!0 = metadata !{metadata !"zero"}
 !1 = metadata !{metadata !"one"}
-!name = !{null, !1}
+!2 = metadata !{metadata !"two"}
+; A named metadata.
+!name = !{!0, !1, !2}
 </pre>
-</div>
 
 </div>
 
@@ -996,13 +990,11 @@ define [<a href="#linkage">linkage</a>] [<a href="#visibility">visibility</a>]
    multiple parameter attributes are needed, they are space separated. For
    example:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 declare i32 @printf(i8* noalias nocapture, ...)
 declare i32 @atoi(i8 zeroext)
 declare signext i8 @returns_signed_char()
 </pre>
-</div>
 
 <p>Note that any attributes for the function result (<tt>nounwind</tt>,
    <tt>readonly</tt>) come immediately after the argument list.</p>
@@ -1062,7 +1054,15 @@ declare signext i8 @returns_signed_char()
       The caller shares the responsibility with the callee for ensuring that
       these requirements are met.
       For further details, please see the discussion of the NoAlias response in
-      <a href="AliasAnalysis.html#MustMayNo">alias analysis</a>.</dd>
+      <a href="AliasAnalysis.html#MustMayNo">alias analysis</a>.<br>
+<br>
+      Note that this definition of <tt>noalias</tt> is intentionally
+      similar to the definition of <tt>restrict</tt> in C99 for function
+      arguments, though it is slightly weaker.
+<br>
+      For function return values, C99's <tt>restrict</tt> is not meaningful,
+      while LLVM's <tt>noalias</tt> is.
+      </dd>
 
   <dt><tt><b><a name="nocapture">nocapture</a></b></tt></dt>
   <dd>This indicates that the callee does not make any copies of the pointer
@@ -1087,11 +1087,9 @@ declare signext i8 @returns_signed_char()
 <p>Each function may specify a garbage collector name, which is simply a
    string:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 define void @f() gc "name" { ... }
 </pre>
-</div>
 
 <p>The compiler declares the supported values of <i>name</i>. Specifying a
    collector which will cause the compiler to alter its output in order to
@@ -1114,14 +1112,12 @@ define void @f() gc "name" { ... }
 <p>Function attributes are simple keywords that follow the type specified. If
    multiple attributes are needed, they are space separated. For example:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 define void @f() noinline { ... }
 define void @f() alwaysinline { ... }
 define void @f() alwaysinline optsize { ... }
 define void @f() optsize { ... }
 </pre>
-</div>
 
 <dl>
   <dt><tt><b>alignstack(&lt;<em>n</em>&gt;)</b></tt></dt>
@@ -1139,15 +1135,21 @@ define void @f() optsize { ... }
       this function is desirable (such as the "inline" keyword in C/C++).  It
       is just a hint; it imposes no requirements on the inliner.</dd>
 
+  <dt><tt><b>naked</b></tt></dt>
+  <dd>This attribute disables prologue / epilogue emission for the function.
+      This can have very system-specific consequences.</dd>
+
+  <dt><tt><b>noimplicitfloat</b></tt></dt>
+  <dd>This attributes disables implicit floating point instructions.</dd>
+
   <dt><tt><b>noinline</b></tt></dt>
   <dd>This attribute indicates that the inliner should never inline this
       function in any situation. This attribute may not be used together with
       the <tt>alwaysinline</tt> attribute.</dd>
 
-  <dt><tt><b>optsize</b></tt></dt>
-  <dd>This attribute suggests that optimization passes and code generator passes
-      make choices that keep the code size of this function low, and otherwise
-      do optimizations specifically to reduce code size.</dd>
+  <dt><tt><b>noredzone</b></tt></dt>
+  <dd>This attribute indicates that the code generator should not use a red
+      zone, even if the target-specific ABI normally permits it.</dd>
 
   <dt><tt><b>noreturn</b></tt></dt>
   <dd>This function attribute indicates that the function never returns
@@ -1158,6 +1160,11 @@ define void @f() optsize { ... }
   <dd>This function attribute indicates that the function never returns with an
       unwind or exceptional control flow.  If the function does unwind, its
       runtime behavior is undefined.</dd>
+
+  <dt><tt><b>optsize</b></tt></dt>
+  <dd>This attribute suggests that optimization passes and code generator passes
+      make choices that keep the code size of this function low, and otherwise
+      do optimizations specifically to reduce code size.</dd>
 
   <dt><tt><b>readnone</b></tt></dt>
   <dd>This attribute indicates that the function computes its result (or decides
@@ -1201,17 +1208,6 @@ define void @f() optsize { ... }
       function that doesn't have an <tt>sspreq</tt> attribute or which has
       an <tt>ssp</tt> attribute, then the resulting function will have
       an <tt>sspreq</tt> attribute.</dd>
-
-  <dt><tt><b>noredzone</b></tt></dt>
-  <dd>This attribute indicates that the code generator should not use a red
-      zone, even if the target-specific ABI normally permits it.</dd>
-
-  <dt><tt><b>noimplicitfloat</b></tt></dt>
-  <dd>This attributes disables implicit floating point instructions.</dd>
-
-  <dt><tt><b>naked</b></tt></dt>
-  <dd>This attribute disables prologue / epilogue emission for the function.
-      This can have very system-specific consequences.</dd>
 </dl>
 
 </div>
@@ -1228,12 +1224,10 @@ define void @f() optsize { ... }
    concatenated by LLVM and treated as a single unit, but may be separated in
    the <tt>.ll</tt> file if desired.  The syntax is very simple:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 module asm "inline asm code goes here"
 module asm "more can go here"
 </pre>
-</div>
 
 <p>The strings can contain any character by escaping non-printable characters.
    The escape sequence used is simply "\xx" where "xx" is the two digit hex code
@@ -1255,11 +1249,9 @@ module asm "more can go here"
    data is to be laid out in memory. The syntax for the data layout is
    simply:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 target datalayout = "<i>layout specification</i>"
 </pre>
-</div>
 
 <p>The <i>layout specification</i> consists of a list of specifications
    separated by the minus sign character ('-').  Each specification starts with
@@ -1482,7 +1474,6 @@ Classifications</a> </div>
           <a href="#t_pointer">pointer</a>,
           <a href="#t_vector">vector</a>,
           <a href="#t_struct">structure</a>,
-          <a href="#t_union">union</a>,
           <a href="#t_array">array</a>,
           <a href="#t_label">label</a>,
           <a href="#t_metadata">metadata</a>.
@@ -1502,7 +1493,6 @@ Classifications</a> </div>
           <a href="#t_pointer">pointer</a>,
           <a href="#t_struct">structure</a>,
           <a href="#t_pstruct">packed structure</a>,
-          <a href="#t_union">union</a>,
           <a href="#t_vector">vector</a>,
           <a href="#t_opaque">opaque</a>.
       </td>
@@ -1650,10 +1640,8 @@ Classifications</a> </div>
 
 <p>Aggregate Types are a subset of derived types that can contain multiple
   member types. <a href="#t_array">Arrays</a>,
-  <a href="#t_struct">structs</a>, <a href="#t_vector">vectors</a> and
-  <a href="#t_union">unions</a> are aggregate types.</p>
-
-</div>
+  <a href="#t_struct">structs</a>, and <a href="#t_vector">vectors</a> are
+  aggregate types.</p>
 
 </div>
 
@@ -1723,9 +1711,7 @@ Classifications</a> </div>
 <h5>Overview:</h5>
 <p>The function type can be thought of as a function signature.  It consists of
    a return type and a list of formal parameter types. The return type of a
-   function type is a scalar type, a void type, a struct type, or a union
-   type.  If the return type is a struct type then all struct elements must be
-   of first class types, and the struct must have at least one element.</p>
+   function type is a first class type or a void type.</p>
 
 <h5>Syntax:</h5>
 <pre>
@@ -1838,53 +1824,6 @@ Classifications</a> </div>
   <td class="left">
 <tt>&lt;&nbsp;{&nbsp;float,&nbsp;i32&nbsp;(i32)*&nbsp;}&nbsp;&gt;</tt></td>
     <td class="left">A pair, where the first element is a <tt>float</tt> and the
-      second element is a <a href="#t_pointer">pointer</a> to a
-      <a href="#t_function">function</a> that takes an <tt>i32</tt>, returning
-      an <tt>i32</tt>.</td>
-  </tr>
-</table>
-
-</div>
-
-<!-- _______________________________________________________________________ -->
-<div class="doc_subsubsection"> <a name="t_union">Union Type</a> </div>
-
-<div class="doc_text">
-
-<h5>Overview:</h5>
-<p>A union type describes an object with size and alignment suitable for
-   an object of any one of a given set of types (also known as an "untagged"
-   union). It is similar in concept and usage to a
-   <a href="#t_struct">struct</a>, except that all members of the union
-   have an offset of zero. The elements of a union may be any type that has a
-   size. Unions must have at least one member - empty unions are not allowed.
-   </p>
-
-<p>The size of the union as a whole will be the size of its largest member,
-   and the alignment requirements of the union as a whole will be the largest
-   alignment requirement of any member.</p>
-
-<p>Union members are accessed using '<tt><a href="#i_load">load</a></tt> and
-   '<tt><a href="#i_store">store</a></tt>' by getting a pointer to a field with
-   the '<tt><a href="#i_getelementptr">getelementptr</a></tt>' instruction.
-   Since all members are at offset zero, the getelementptr instruction does
-   not affect the address, only the type of the resulting pointer.</p>
-
-<h5>Syntax:</h5>
-<pre>
-  union { &lt;type list&gt; }
-</pre>
-
-<h5>Examples:</h5>
-<table class="layout">
-  <tr class="layout">
-    <td class="left"><tt>union { i32, i32*, float }</tt></td>
-    <td class="left">A union of three types: an <tt>i32</tt>, a pointer to
-      an <tt>i32</tt>, and a <tt>float</tt>.</td>
-  </tr><tr class="layout">
-    <td class="left">
-      <tt>union {&nbsp;float,&nbsp;i32&nbsp;(i32)&nbsp;*&nbsp;}</tt></td>
-    <td class="left">A union, where the first element is a <tt>float</tt> and the
       second element is a <a href="#t_pointer">pointer</a> to a
       <a href="#t_function">function</a> that takes an <tt>i32</tt>, returning
       an <tt>i32</tt>.</td>
@@ -2134,14 +2073,6 @@ Classifications</a> </div>
       the number and types of elements must match those specified by the
       type.</dd>
 
-  <dt><b>Union constants</b></dt>
-  <dd>Union constants are represented with notation similar to a structure with
-      a single element - that is, a single typed element surrounded
-      by braces (<tt>{}</tt>)).  For example: "<tt>{ i32 4 }</tt>".  The
-      <a href="#t_union">union type</a> can be initialized with a single-element
-      struct as long as the type of the struct element matches the type of
-      one of the union members.</dd>
-
   <dt><b>Array constants</b></dt>
   <dd>Array constants are represented with notation similar to array type
      definitions (a comma separated list of elements, surrounded by square
@@ -2190,13 +2121,11 @@ Classifications</a> </div>
    have <a href="#t_pointer">pointer</a> type. For example, the following is a
    legal LLVM file:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 @X = global i32 17
 @Y = global i32 42
 @Z = global [2 x i32*] [ i32* @X, i32* @Y ]
 </pre>
-</div>
 
 </div>
 
@@ -2215,8 +2144,7 @@ Classifications</a> </div>
    surprising) transformations that are valid (in pseudo IR):</p>
 
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
   %A = add %X, undef
   %B = sub %X, undef
   %C = xor %X, undef
@@ -2225,13 +2153,11 @@ Safe:
   %B = undef
   %C = undef
 </pre>
-</div>
 
 <p>This is safe because all of the output bits are affected by the undef bits.
 Any output bit can have a zero or one depending on the input bits.</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
   %A = or %X, undef
   %B = and %X, undef
 Safe:
@@ -2241,7 +2167,6 @@ Unsafe:
   %A = undef
   %B = undef
 </pre>
-</div>
 
 <p>These logical operations have bits that are not always affected by the input.
 For example, if "%X" has a zero bit, then the output of the 'and' operation will
@@ -2252,8 +2177,7 @@ optimize the and to 0.  Likewise, it is safe to assume that all the bits of
 the undef operand to the or could be set, allowing the or to be folded to
 -1.</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
   %A = select undef, %X, %Y
   %B = select undef, 42, %Y
   %C = select %X, %Y, undef
@@ -2266,7 +2190,6 @@ Unsafe:
   %B = undef
   %C = undef
 </pre>
-</div>
 
 <p>This set of examples show that undefined select (and conditional branch)
 conditions can go "either way" but they have to come from one of the two
@@ -2276,8 +2199,7 @@ the optimizer is allowed to assume that the undef operand could be the same as
 %Y, allowing the whole select to be eliminated.</p>
 
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
   %A = xor undef, undef
 
   %B = undef
@@ -2295,7 +2217,6 @@ Safe:
   %E = undef
   %F = undef
 </pre>
-</div>
 
 <p>This example points out that two undef operands are not necessarily the same.
 This can be surprising to people (and also matches C semantics) where they
@@ -2308,15 +2229,13 @@ so the value is not necessarily consistent over time.  In fact, %A and %C need
 to have the same semantics or the core LLVM "replace all uses with" concept
 would not hold.</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
   %A = fdiv undef, %X
   %B = fdiv %X, undef
 Safe:
   %A = undef
 b: unreachable
 </pre>
-</div>
 
 <p>These examples show the crucial difference between an <em>undefined
 value</em> and <em>undefined behavior</em>.  An undefined value (like undef) is
@@ -2331,15 +2250,13 @@ it: since the undefined operation "can't happen", the optimizer can assume that
 it occurs in dead code.
 </p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 a:  store undef -> %X
 b:  store %X -> undef
 Safe:
 a: &lt;deleted&gt;
 b: unreachable
 </pre>
-</div>
 
 <p>These examples reiterate the fdiv example: a store "of" an undefined value
 can be assumed to not have any effect: we can assume that the value is
@@ -2365,7 +2282,6 @@ has undefined behavior.</p>
 
 <p>Trap value behavior is defined in terms of value <i>dependence</i>:</p>
 
-<p>
 <ul>
 <li>Values other than <a href="#i_phi"><tt>phi</tt></a> nodes depend on
     their operands.</li>
@@ -2397,7 +2313,8 @@ has undefined behavior.</p>
 
 <li>An instruction with externally visible side effects depends on the most
     recent preceding instruction with externally visible side effects, following
-    the order in the IR. (This includes volatile loads and stores.)</li>
+    the order in the IR. (This includes
+    <a href="#volatile">volatile operations</a>.)</li>
 
 <li>An instruction <i>control-depends</i> on a
     <a href="#terminators">terminator instruction</a>
@@ -2408,7 +2325,6 @@ has undefined behavior.</p>
 <li>Dependence is transitive.</li>
 
 </ul>
-</p>
 
 <p>Whenever a trap value is generated, all values which depend on it evaluate
    to trap. If they have side effects, the evoke their side effects as if each
@@ -2417,8 +2333,7 @@ has undefined behavior.</p>
 
 <p>Here are some examples:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 entry:
   %trap = sub nuw i32 0, 1           ; Results in a trap value.
   %still_trap = and i32 %trap, 0     ; Whereas (and i32 undef, 0) would return 0.
@@ -2453,7 +2368,6 @@ end:
                                      ; so this is defined (ignoring earlier
                                      ; undefined behavior in this example).
 </pre>
-</div>
 
 </div>
 
@@ -2504,13 +2418,11 @@ end:
 
   <dt><b><tt>zext (CST to TYPE)</tt></b></dt>
   <dd>Zero extend a constant to another type. The bit size of CST must be
-      smaller or equal to the bit size of TYPE.  Both types must be
-      integers.</dd>
+      smaller than the bit size of TYPE.  Both types must be integers.</dd>
 
   <dt><b><tt>sext (CST to TYPE)</tt></b></dt>
   <dd>Sign extend a constant to another type. The bit size of CST must be
-      smaller or equal to the bit size of TYPE.  Both types must be
-      integers.</dd>
+      smaller than the bit size of TYPE.  Both types must be integers.</dd>
 
   <dt><b><tt>fptrunc (CST to TYPE)</tt></b></dt>
   <dd>Truncate a floating point constant to another floating point type. The
@@ -2637,31 +2549,25 @@ end:
    containing the asm needs to align its stack conservatively.  An example
    inline assembler expression is:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 i32 (i32) asm "bswap $0", "=r,r"
 </pre>
-</div>
 
 <p>Inline assembler expressions may <b>only</b> be used as the callee operand of
    a <a href="#i_call"><tt>call</tt> instruction</a>.  Thus, typically we
    have:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 %X = call i32 asm "<a href="#int_bswap">bswap</a> $0", "=r,r"(i32 %Y)
 </pre>
-</div>
 
 <p>Inline asms with side effects not visible in the constraint list must be
    marked as having side effects.  This is done through the use of the
    '<tt>sideeffect</tt>' keyword, like so:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 call void asm sideeffect "eieio", ""()
 </pre>
-</div>
 
 <p>In some cases inline asms will contain code that will not work unless the
    stack is aligned in some way, such as calls or SSE instructions on x86,
@@ -2670,11 +2576,9 @@ call void asm sideeffect "eieio", ""()
    contain and should generate its usual stack alignment code in the prologue
    if the '<tt>alignstack</tt>' keyword is present:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 call void asm alignstack "eieio", ""()
 </pre>
-</div>
 
 <p>If both keywords appear the '<tt>sideeffect</tt>' keyword must come
    first.</p>
@@ -2698,13 +2602,11 @@ call void asm alignstack "eieio", ""()
    front-end to correlate backend errors that occur with inline asm back to the
    source code that produced it.  For example:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 call void asm sideeffect "something bad", ""()<b>, !srcloc !42</b>
 ...
 !42 = !{ i32 1234567 }
 </pre>
-</div>
 
 <p>It is up to the front-end to make sense of the magic numbers it places in the
    IR.</p>
@@ -2739,22 +2641,18 @@ call void asm sideeffect "something bad", ""()<b>, !srcloc !42</b>
    example: "<tt>!foo =  metadata !{!4, !3}</tt>".
 
 <p>Metadata can be used as function arguments. Here <tt>llvm.dbg.value</tt> 
-   function is using two metadata arguments.
+   function is using two metadata arguments.</p>
 
-   <div class="doc_code">
-     <pre>
+     <pre class="doc_code">
        call void @llvm.dbg.value(metadata !24, i64 0, metadata !25)
      </pre>
-   </div></p>
 
 <p>Metadata can be attached with an instruction. Here metadata <tt>!21</tt> is
-   attached with <tt>add</tt> instruction using <tt>!dbg</tt> identifier.
+   attached with <tt>add</tt> instruction using <tt>!dbg</tt> identifier.</p>
 
-  <div class="doc_code">
-    <pre>
+    <pre class="doc_code">
       %indvar.next = add i64 %indvar, 1, !dbg !21
     </pre>
-  </div></p>
 </div>
 
 
@@ -3555,7 +3453,7 @@ Instruction</a> </div>
 
 <p>If the <tt>exact</tt> keyword is present, the result value of the
    <tt>sdiv</tt> is a <a href="#trapvalues">trap value</a> if the result would
-   be rounded or if overflow would occur.</p>
+   be rounded.</p>
 
 <h5>Example:</h5>
 <pre>
@@ -4195,7 +4093,7 @@ Instruction</a> </div>
 
 <h5>Arguments:</h5>
 <p>The first operand of an '<tt>extractvalue</tt>' instruction is a value
-   of <a href="#t_struct">struct</a>, <a href="#t_union">union</a>  or
+   of <a href="#t_struct">struct</a> or
    <a href="#t_array">array</a> type.  The operands are constant indices to
    specify which value to extract in a similar manner as indices in a
    '<tt><a href="#i_getelementptr">getelementptr</a></tt>' instruction.</p>
@@ -4229,7 +4127,7 @@ Instruction</a> </div>
 
 <h5>Arguments:</h5>
 <p>The first operand of an '<tt>insertvalue</tt>' instruction is a value
-   of <a href="#t_struct">struct</a>, <a href="#t_union">union</a> or
+   of <a href="#t_struct">struct</a> or
    <a href="#t_array">array</a> type.  The second operand is a first-class
    value to insert.  The following operands are constant indices indicating
    the position at which to insert the value in a similar manner as indices in a
@@ -4382,8 +4280,8 @@ Instruction</a> </div>
 
 <h5>Syntax:</h5>
 <pre>
-  store &lt;ty&gt; &lt;value&gt;, &lt;ty&gt;* &lt;pointer&gt;[, align &lt;alignment&gt;][, !nontemporal !<index>]                   <i>; yields {void}</i>
-  volatile store &lt;ty&gt; &lt;value&gt;, &lt;ty&gt;* &lt;pointer&gt;[, align &lt;alignment&gt;][, !nontemporal !<index>]          <i>; yields {void}</i>
+  store &lt;ty&gt; &lt;value&gt;, &lt;ty&gt;* &lt;pointer&gt;[, align &lt;alignment&gt;][, !nontemporal !&lt;index&gt;]                   <i>; yields {void}</i>
+  volatile store &lt;ty&gt; &lt;value&gt;, &lt;ty&gt;* &lt;pointer&gt;[, align &lt;alignment&gt;][, !nontemporal !&lt;index&gt;]          <i>; yields {void}</i>
 </pre>
 
 <h5>Overview:</h5>
@@ -4408,7 +4306,7 @@ Instruction</a> </div>
    produce less efficient code. An alignment of 1 is always safe.</p>
 
 <p>The optional !nontemporal metadata must reference a single metatadata
-   name <index> corresponding to a metadata node with one i32 entry of
+   name &lt;index&gt; corresponding to a metadata node with one i32 entry of
    value 1.  The existence of the !nontemporal metatadata on the
    instruction tells the optimizer and code generator that this load is
    not expected to be reused in the cache.  The code generator may
@@ -4462,12 +4360,12 @@ Instruction</a> </div>
    indexes a value of the type pointed to (not necessarily the value directly
    pointed to, since the first index can be non-zero), etc. The first type
    indexed into must be a pointer value, subsequent types can be arrays,
-   vectors, structs and unions. Note that subsequent types being indexed into
+   vectors, and structs. Note that subsequent types being indexed into
    can never be pointers, since that would require loading the pointer before
    continuing calculation.</p>
 
 <p>The type of each index argument depends on the type it is indexing into.
-   When indexing into a (optionally packed) structure or union, only <tt>i32</tt>
+   When indexing into a (optionally packed) structure, only <tt>i32</tt>
    integer <b>constants</b> are allowed.  When indexing into an array, pointer
    or vector, integers of any width are allowed, and they are not required to be
    constant.</p>
@@ -4475,8 +4373,7 @@ Instruction</a> </div>
 <p>For example, let's consider a C code fragment and how it gets compiled to
    LLVM:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 struct RT {
   char A;
   int B[10][20];
@@ -4492,12 +4389,10 @@ int *foo(struct ST *s) {
   return &amp;s[1].Z.B[5][13];
 }
 </pre>
-</div>
 
 <p>The LLVM code generated by the GCC frontend is:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 %RT = <a href="#namedtypes">type</a> { i8 , [10 x [20 x i32]], i8  }
 %ST = <a href="#namedtypes">type</a> { i32, double, %RT }
 
@@ -4507,7 +4402,6 @@ entry:
   ret i32* %reg
 }
 </pre>
-</div>
 
 <h5>Semantics:</h5>
 <p>In the example above, the first index is indexing into the '<tt>%ST*</tt>'
@@ -5578,8 +5472,7 @@ freestanding environments and non-C-based languages.</p>
    instruction and the variable argument handling intrinsic functions are
    used.</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
 define i32 @test(i32 %X, ...) {
   ; Initialize variable argument processing
   %ap = alloca i8*
@@ -5604,7 +5497,6 @@ declare void @llvm.va_start(i8*)
 declare void @llvm.va_copy(i8*, i8*)
 declare void @llvm.va_end(i8*)
 </pre>
-</div>
 
 </div>
 
@@ -6178,8 +6070,8 @@ LLVM</a>.</p>
 
 <h5>Syntax:</h5>
 <p>This is an overloaded intrinsic. You can use llvm.memset on any integer bit
-   width and for different address spaces. Not all targets support all bit
-   widths however.</p>
+   width and for different address spaces. However, not all targets support all
+   bit widths.</p>
 
 <pre>
   declare void @llvm.memset.p0i8.i32(i8* &lt;dest&gt;, i8 &lt;val&gt;,
@@ -6193,14 +6085,14 @@ LLVM</a>.</p>
    particular byte value.</p>
 
 <p>Note that, unlike the standard libc function, the <tt>llvm.memset</tt>
-   intrinsic does not return a value, takes extra alignment/volatile arguments,
-   and the destination can be in an arbitrary address space.</p>
+   intrinsic does not return a value and takes extra alignment/volatile
+   arguments.  Also, the destination can be in an arbitrary address space.</p>
 
 <h5>Arguments:</h5>
 <p>The first argument is a pointer to the destination to fill, the second is the
-   byte value to fill it with, the third argument is an integer argument
+   byte value with which to fill it, the third argument is an integer argument
    specifying the number of bytes to fill, and the fourth argument is the known
-   alignment of destination location.</p>
+   alignment of the destination location.</p>
 
 <p>If the call to this intrinsic has an alignment value that is not 0 or 1,
    then the caller guarantees that the destination pointer is aligned to that
@@ -6970,14 +6862,12 @@ LLVM</a>.</p>
    pointer has signature <tt>i32 (i32, i32)*</tt>.  It can be created as
    follows:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
   %tramp = alloca [10 x i8], align 4 ; size and alignment only correct for X86
   %tramp1 = getelementptr [10 x i8]* %tramp, i32 0, i32 0
   %p = call i8* @llvm.init.trampoline(i8* %tramp1, i8* bitcast (i32 (i8* nest , i32, i32)* @f to i8*), i8* %nval)
   %fp = bitcast i8* %p to i32 (i32, i32)*
 </pre>
-</div>
 
 <p>The call <tt>%val = call i32 %fp(i32 %x, i32 %y)</tt> is then equivalent
    to <tt>%val = call i32 %f(i8* %nval, i32 %x, i32 %y)</tt>.</p>

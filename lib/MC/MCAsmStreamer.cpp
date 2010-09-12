@@ -31,7 +31,7 @@ class MCAsmStreamer : public MCStreamer {
   formatted_raw_ostream &OS;
   const MCAsmInfo &MAI;
   OwningPtr<MCInstPrinter> InstPrinter;
-  MCCodeEmitter *Emitter;
+  OwningPtr<MCCodeEmitter> Emitter;
   
   SmallString<128> CommentToEmit;
   raw_svector_ostream CommentStream;
@@ -217,6 +217,7 @@ static inline int64_t truncateToSize(int64_t Value, unsigned Bytes) {
 void MCAsmStreamer::SwitchSection(const MCSection *Section) {
   assert(Section && "Cannot switch to a null section!");
   if (Section != CurSection) {
+    PrevSection = CurSection;
     CurSection = Section;
     Section->PrintSwitchToSection(MAI, OS);
   }
@@ -288,6 +289,7 @@ void MCAsmStreamer::EmitSymbolAttribute(MCSymbol *Symbol,
   case MCSA_WeakDefinition: OS << "\t.weak_definition\t"; break;
       // .weak_reference
   case MCSA_WeakReference:  OS << MAI.getWeakRefDirective(); break;
+  case MCSA_WeakDefAutoPrivate: OS << "\t.weak_def_can_be_hidden\t"; break;
   }
 
   OS << *Symbol;

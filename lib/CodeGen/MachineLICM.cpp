@@ -68,16 +68,16 @@ namespace {
 
     BitVector AllocatableSet;
 
-    // For each opcode, keep a list of potentail CSE instructions.
+    // For each opcode, keep a list of potential CSE instructions.
     DenseMap<unsigned, std::vector<const MachineInstr*> > CSEMap;
 
   public:
     static char ID; // Pass identification, replacement for typeid
     MachineLICM() :
-      MachineFunctionPass(&ID), PreRegAlloc(true) {}
+      MachineFunctionPass(ID), PreRegAlloc(true) {}
 
     explicit MachineLICM(bool PreRA) :
-      MachineFunctionPass(&ID), PreRegAlloc(PreRA) {}
+      MachineFunctionPass(ID), PreRegAlloc(PreRA) {}
 
     virtual bool runOnMachineFunction(MachineFunction &MF);
 
@@ -127,8 +127,8 @@ namespace {
     void AddToLiveIns(unsigned Reg);
 
     /// IsLICMCandidate - Returns true if the instruction may be a suitable
-    /// candidate for LICM. e.g. If the instruction is a call, then it's obviously
-    /// not safe to hoist it.
+    /// candidate for LICM. e.g. If the instruction is a call, then it's
+    /// obviously not safe to hoist it.
     bool IsLICMCandidate(MachineInstr &I);
 
     /// IsLoopInvariantInst - Returns true if the instruction is loop
@@ -189,8 +189,8 @@ namespace {
 } // end anonymous namespace
 
 char MachineLICM::ID = 0;
-static RegisterPass<MachineLICM>
-X("machinelicm", "Machine Loop Invariant Code Motion");
+INITIALIZE_PASS(MachineLICM, "machinelicm",
+                "Machine Loop Invariant Code Motion", false, false);
 
 FunctionPass *llvm::createMachineLICMPass(bool PreRegAlloc) {
   return new MachineLICM(PreRegAlloc);
@@ -199,9 +199,14 @@ FunctionPass *llvm::createMachineLICMPass(bool PreRegAlloc) {
 /// LoopIsOuterMostWithPredecessor - Test if the given loop is the outer-most
 /// loop that has a unique predecessor.
 static bool LoopIsOuterMostWithPredecessor(MachineLoop *CurLoop) {
+  // Check whether this loop even has a unique predecessor.
+  if (!CurLoop->getLoopPredecessor())
+    return false;
+  // Ok, now check to see if any of its outer loops do.
   for (MachineLoop *L = CurLoop->getParentLoop(); L; L = L->getParentLoop())
     if (L->getLoopPredecessor())
       return false;
+  // None of them did, so this is the outermost with a unique predecessor.
   return true;
 }
 
@@ -224,14 +229,17 @@ bool MachineLICM::runOnMachineFunction(MachineFunction &MF) {
   DT  = &getAnalysis<MachineDominatorTree>();
   AA  = &getAnalysis<AliasAnalysis>();
 
-  for (MachineLoopInfo::iterator I = MLI->begin(), E = MLI->end(); I != E; ++I){
-    CurLoop = *I;
+  SmallVector<MachineLoop *, 8> Worklist(MLI->begin(), MLI->end());
+  while (!Worklist.empty()) {
+    CurLoop = Worklist.pop_back_val();
     CurPreheader = 0;
 
     // If this is done before regalloc, only visit outer-most preheader-sporting
     // loops.
-    if (PreRegAlloc && !LoopIsOuterMostWithPredecessor(CurLoop))
+    if (PreRegAlloc && !LoopIsOuterMostWithPredecessor(CurLoop)) {
+      Worklist.append(CurLoop->begin(), CurLoop->end());
       continue;
+    }
 
     if (!PreRegAlloc)
       HoistRegionPostRA();
@@ -480,35 +488,25 @@ void MachineLICM::HoistRegion(MachineDomTreeNode *N) {
     MII = NextMII;
   }
 
-  const std::vector<MachineDomTreeNode*> &Children = N->getChildren();
-  for (unsigned I = 0, E = Children.size(); I != E; ++I)
-    HoistRegion(Children[I]);
+  // Don't hoist things out of a large switch statement.  This often causes
+  // code to be hoisted that wasn't going to be executed, and increases
+  // register pressure in a situation where it's likely to matter.
+  if (BB->succ_size() < 25) {
+    const std::vector<MachineDomTreeNode*> &Children = N->getChildren();
+    for (unsigned I = 0, E = Children.size(); I != E; ++I)
+      HoistRegion(Children[I]);
+  }
 }
 
 /// IsLICMCandidate - Returns true if the instruction may be a suitable
 /// candidate for LICM. e.g. If the instruction is a call, then it's obviously
 /// not safe to hoist it.
 bool MachineLICM::IsLICMCandidate(MachineInstr &I) {
-  if (I.isImplicitDef())
+  // Check if it's safe to move the instruction.
+  bool DontMoveAcrossStore = true;
+  if (!I.isSafeToMove(TII, AA, DontMoveAcrossStore))
     return false;
-
-  const TargetInstrDesc &TID = I.getDesc();
   
-  // Ignore stuff that we obviously can't hoist.
-  if (TID.mayStore() || TID.isCall() || TID.isTerminator() ||
-      TID.hasUnmodeledSideEffects())
-    return false;
-
-  if (TID.mayLoad()) {
-    // Okay, this instruction does a load. As a refinement, we allow the target
-    // to decide whether the loaded value is actually a constant. If so, we can
-    // actually use it as a load.
-    if (!I.isInvariantLoad(AA))
-      // FIXME: we should be able to hoist loads with no other side effects if
-      // there are no other instructions which can change memory in this loop.
-      // This is a trivial form of alias analysis.
-      return false;
-  }
   return true;
 }
 
@@ -719,7 +717,9 @@ MachineLICM::LookForDuplicate(const MachineInstr *MI,
 
 bool MachineLICM::EliminateCSE(MachineInstr *MI,
           DenseMap<unsigned, std::vector<const MachineInstr*> >::iterator &CI) {
-  if (CI == CSEMap.end())
+  // Do not CSE implicit_def so ProcessImplicitDefs can properly propagate
+  // the undef property onto uses.
+  if (CI == CSEMap.end() || MI->isImplicitDef())
     return false;
 
   if (const MachineInstr *Dup = LookForDuplicate(MI, CI->second)) {

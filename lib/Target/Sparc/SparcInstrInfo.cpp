@@ -28,46 +28,6 @@ SparcInstrInfo::SparcInstrInfo(SparcSubtarget &ST)
     RI(ST, *this), Subtarget(ST) {
 }
 
-static bool isZeroImm(const MachineOperand &op) {
-  return op.isImm() && op.getImm() == 0;
-}
-
-/// Return true if the instruction is a register to register move and
-/// leave the source and dest operands in the passed parameters.
-///
-bool SparcInstrInfo::isMoveInstr(const MachineInstr &MI,
-                                 unsigned &SrcReg, unsigned &DstReg,
-                                 unsigned &SrcSR, unsigned &DstSR) const {
-  SrcSR = DstSR = 0; // No sub-registers.
-
-  // We look for 3 kinds of patterns here:
-  // or with G0 or 0
-  // add with G0 or 0
-  // fmovs or FpMOVD (pseudo double move).
-  if (MI.getOpcode() == SP::ORrr || MI.getOpcode() == SP::ADDrr) {
-    if (MI.getOperand(1).getReg() == SP::G0) {
-      DstReg = MI.getOperand(0).getReg();
-      SrcReg = MI.getOperand(2).getReg();
-      return true;
-    } else if (MI.getOperand(2).getReg() == SP::G0) {
-      DstReg = MI.getOperand(0).getReg();
-      SrcReg = MI.getOperand(1).getReg();
-      return true;
-    }
-  } else if ((MI.getOpcode() == SP::ORri || MI.getOpcode() == SP::ADDri) &&
-             isZeroImm(MI.getOperand(2)) && MI.getOperand(1).isReg()) {
-    DstReg = MI.getOperand(0).getReg();
-    SrcReg = MI.getOperand(1).getReg();
-    return true;
-  } else if (MI.getOpcode() == SP::FMOVS || MI.getOpcode() == SP::FpMOVD ||
-             MI.getOpcode() == SP::FMOVD) {
-    SrcReg = MI.getOperand(1).getReg();
-    DstReg = MI.getOperand(0).getReg();
-    return true;
-  }
-  return false;
-}
-
 /// isLoadFromStackSlot - If the specified machine instruction is a direct
 /// load from a stack slot, return the virtual or physical register number of
 /// the destination along with the FrameIndex of the loaded stack slot.  If
@@ -117,29 +77,21 @@ SparcInstrInfo::InsertBranch(MachineBasicBlock &MBB,MachineBasicBlock *TBB,
   return 1;
 }
 
-bool SparcInstrInfo::copyRegToReg(MachineBasicBlock &MBB,
-                                  MachineBasicBlock::iterator I,
-                                  unsigned DestReg, unsigned SrcReg,
-                                  const TargetRegisterClass *DestRC,
-                                  const TargetRegisterClass *SrcRC,
-                                  DebugLoc DL) const {
-  if (DestRC != SrcRC) {
-    // Not yet supported!
-    return false;
-  }
-
-  if (DestRC == SP::IntRegsRegisterClass)
-    BuildMI(MBB, I, DL, get(SP::ORrr), DestReg).addReg(SP::G0).addReg(SrcReg);
-  else if (DestRC == SP::FPRegsRegisterClass)
-    BuildMI(MBB, I, DL, get(SP::FMOVS), DestReg).addReg(SrcReg);
-  else if (DestRC == SP::DFPRegsRegisterClass)
-    BuildMI(MBB, I, DL, get(Subtarget.isV9() ? SP::FMOVD : SP::FpMOVD),DestReg)
-      .addReg(SrcReg);
+void SparcInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
+                                 MachineBasicBlock::iterator I, DebugLoc DL,
+                                 unsigned DestReg, unsigned SrcReg,
+                                 bool KillSrc) const {
+  if (SP::IntRegsRegClass.contains(DestReg, SrcReg))
+    BuildMI(MBB, I, DL, get(SP::ORrr), DestReg).addReg(SP::G0)
+      .addReg(SrcReg, getKillRegState(KillSrc));
+  else if (SP::FPRegsRegClass.contains(DestReg, SrcReg))
+    BuildMI(MBB, I, DL, get(SP::FMOVS), DestReg)
+      .addReg(SrcReg, getKillRegState(KillSrc));
+  else if (SP::DFPRegsRegClass.contains(DestReg, SrcReg))
+    BuildMI(MBB, I, DL, get(Subtarget.isV9() ? SP::FMOVD : SP::FpMOVD), DestReg)
+      .addReg(SrcReg, getKillRegState(KillSrc));
   else
-    // Can't copy this register
-    return false;
-
-  return true;
+    llvm_unreachable("Impossible reg-to-reg copy");
 }
 
 void SparcInstrInfo::
@@ -180,61 +132,6 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
     BuildMI(MBB, I, DL, get(SP::LDDFri), DestReg).addFrameIndex(FI).addImm(0);
   else
     llvm_unreachable("Can't load this register from stack slot");
-}
-
-MachineInstr *SparcInstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
-                                                    MachineInstr* MI,
-                                          const SmallVectorImpl<unsigned> &Ops,
-                                                    int FI) const {
-  if (Ops.size() != 1) return NULL;
-
-  unsigned OpNum = Ops[0];
-  bool isFloat = false;
-  MachineInstr *NewMI = NULL;
-  switch (MI->getOpcode()) {
-  case SP::ORrr:
-    if (MI->getOperand(1).isReg() && MI->getOperand(1).getReg() == SP::G0&&
-        MI->getOperand(0).isReg() && MI->getOperand(2).isReg()) {
-      if (OpNum == 0)    // COPY -> STORE
-        NewMI = BuildMI(MF, MI->getDebugLoc(), get(SP::STri))
-          .addFrameIndex(FI)
-          .addImm(0)
-          .addReg(MI->getOperand(2).getReg());
-      else               // COPY -> LOAD
-        NewMI = BuildMI(MF, MI->getDebugLoc(), get(SP::LDri),
-                        MI->getOperand(0).getReg())
-          .addFrameIndex(FI)
-          .addImm(0);
-    }
-    break;
-  case SP::FMOVS:
-    isFloat = true;
-    // FALLTHROUGH
-  case SP::FMOVD:
-    if (OpNum == 0) { // COPY -> STORE
-      unsigned SrcReg = MI->getOperand(1).getReg();
-      bool isKill = MI->getOperand(1).isKill();
-      bool isUndef = MI->getOperand(1).isUndef();
-      NewMI = BuildMI(MF, MI->getDebugLoc(),
-                      get(isFloat ? SP::STFri : SP::STDFri))
-        .addFrameIndex(FI)
-        .addImm(0)
-        .addReg(SrcReg, getKillRegState(isKill) | getUndefRegState(isUndef));
-    } else {             // COPY -> LOAD
-      unsigned DstReg = MI->getOperand(0).getReg();
-      bool isDead = MI->getOperand(0).isDead();
-      bool isUndef = MI->getOperand(0).isUndef();
-      NewMI = BuildMI(MF, MI->getDebugLoc(),
-                      get(isFloat ? SP::LDFri : SP::LDDFri))
-        .addReg(DstReg, RegState::Define |
-                getDeadRegState(isDead) | getUndefRegState(isUndef))
-        .addFrameIndex(FI)
-        .addImm(0);
-    }
-    break;
-  }
-
-  return NewMI;
 }
 
 unsigned SparcInstrInfo::getGlobalBaseReg(MachineFunction *MF) const

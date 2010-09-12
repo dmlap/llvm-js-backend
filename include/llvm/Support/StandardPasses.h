@@ -20,6 +20,7 @@
 #define LLVM_SUPPORT_STANDARDPASSES_H
 
 #include "llvm/PassManager.h"
+#include "llvm/Analysis/Dominators.h"
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/Verifier.h"
 #include "llvm/Transforms/Scalar.h"
@@ -116,12 +117,12 @@ namespace llvm {
       PM->add(createArgumentPromotionPass());   // Scalarize uninlined fn args
     
     // Start of function pass.
-    
     PM->add(createScalarReplAggregatesPass());  // Break up aggregate allocas
     if (SimplifyLibCalls)
       PM->add(createSimplifyLibCallsPass());    // Library Call Optimizations
     PM->add(createInstructionCombiningPass());  // Cleanup for scalarrepl.
     PM->add(createJumpThreadingPass());         // Thread jumps.
+    PM->add(createCorrelatedValuePropagationPass()); // Propagate conditionals
     PM->add(createCFGSimplificationPass());     // Merge & remove BBs
     PM->add(createInstructionCombiningPass());  // Combine silly seq's
     
@@ -146,6 +147,7 @@ namespace llvm {
     // opened up by them.
     PM->add(createInstructionCombiningPass());
     PM->add(createJumpThreadingPass());         // Thread jumps
+    PM->add(createCorrelatedValuePropagationPass());
     PM->add(createDeadStoreEliminationPass());  // Delete dead stores
     PM->add(createAggressiveDCEPass());         // Delete dead instructions
     PM->add(createCFGSimplificationPass());     // Merge & remove BBs

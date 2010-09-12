@@ -7,10 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file contains a pass that expand pseudo instructions into target
+// This file contains a pass that expands pseudo instructions into target
 // instructions to allow proper scheduling, if-conversion, and other late
 // optimizations. This pass should be run after register allocation but before
-// post- regalloc scheduling pass.
+// the post-regalloc scheduling pass.
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,14 +19,21 @@
 #include "ARMBaseInstrInfo.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
-
+#include "llvm/Target/TargetRegisterInfo.h"
 using namespace llvm;
 
 namespace {
   class ARMExpandPseudo : public MachineFunctionPass {
+    // Constants for register spacing in NEON load/store instructions.
+    enum NEONRegSpacing {
+      SingleSpc,
+      EvenDblSpc,
+      OddDblSpc
+    };
+
   public:
     static char ID;
-    ARMExpandPseudo() : MachineFunctionPass(&ID) {}
+    ARMExpandPseudo() : MachineFunctionPass(ID) {}
 
     const TargetInstrInfo *TII;
     const TargetRegisterInfo *TRI;
@@ -41,6 +48,10 @@ namespace {
     void TransferImpOps(MachineInstr &OldMI,
                         MachineInstrBuilder &UseMI, MachineInstrBuilder &DefMI);
     bool ExpandMBB(MachineBasicBlock &MBB);
+    void ExpandVLD(MachineBasicBlock::iterator &MBBI, unsigned Opc,
+                   bool hasWriteBack, NEONRegSpacing RegSpc, unsigned NumRegs);
+    void ExpandVST(MachineBasicBlock::iterator &MBBI, unsigned Opc,
+                   bool hasWriteBack, NEONRegSpacing RegSpc, unsigned NumRegs);
   };
   char ARMExpandPseudo::ID = 0;
 }
@@ -56,11 +67,127 @@ void ARMExpandPseudo::TransferImpOps(MachineInstr &OldMI,
     const MachineOperand &MO = OldMI.getOperand(i);
     assert(MO.isReg() && MO.getReg());
     if (MO.isUse())
-      UseMI.addReg(MO.getReg(), getKillRegState(MO.isKill()));
+      UseMI.addOperand(MO);
     else
-      DefMI.addReg(MO.getReg(),
-                   getDefRegState(true) | getDeadRegState(MO.isDead()));
+      DefMI.addOperand(MO);
   }
+}
+
+/// ExpandVLD - Translate VLD pseudo instructions with Q, QQ or QQQQ register
+/// operands to real VLD instructions with D register operands.
+void ARMExpandPseudo::ExpandVLD(MachineBasicBlock::iterator &MBBI,
+                                unsigned Opc, bool hasWriteBack,
+                                NEONRegSpacing RegSpc, unsigned NumRegs) {
+  MachineInstr &MI = *MBBI;
+  MachineBasicBlock &MBB = *MI.getParent();
+
+  MachineInstrBuilder MIB = BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(Opc));
+  unsigned OpIdx = 0;
+
+  bool DstIsDead = MI.getOperand(OpIdx).isDead();
+  unsigned DstReg = MI.getOperand(OpIdx++).getReg();
+  unsigned D0, D1, D2, D3;
+  if (RegSpc == SingleSpc) {
+    D0 = TRI->getSubReg(DstReg, ARM::dsub_0);
+    D1 = TRI->getSubReg(DstReg, ARM::dsub_1);
+    D2 = TRI->getSubReg(DstReg, ARM::dsub_2);
+    D3 = TRI->getSubReg(DstReg, ARM::dsub_3);
+  } else if (RegSpc == EvenDblSpc) {
+    D0 = TRI->getSubReg(DstReg, ARM::dsub_0);
+    D1 = TRI->getSubReg(DstReg, ARM::dsub_2);
+    D2 = TRI->getSubReg(DstReg, ARM::dsub_4);
+    D3 = TRI->getSubReg(DstReg, ARM::dsub_6);
+  } else {
+    assert(RegSpc == OddDblSpc && "unknown register spacing for VLD");
+    D0 = TRI->getSubReg(DstReg, ARM::dsub_1);
+    D1 = TRI->getSubReg(DstReg, ARM::dsub_3);
+    D2 = TRI->getSubReg(DstReg, ARM::dsub_5);
+    D3 = TRI->getSubReg(DstReg, ARM::dsub_7);
+  } 
+  MIB.addReg(D0, RegState::Define | getDeadRegState(DstIsDead))
+    .addReg(D1, RegState::Define | getDeadRegState(DstIsDead));
+  if (NumRegs > 2)
+    MIB.addReg(D2, RegState::Define | getDeadRegState(DstIsDead));
+  if (NumRegs > 3)
+    MIB.addReg(D3, RegState::Define | getDeadRegState(DstIsDead));
+
+  if (hasWriteBack)
+    MIB.addOperand(MI.getOperand(OpIdx++));
+
+  // Copy the addrmode6 operands.
+  MIB.addOperand(MI.getOperand(OpIdx++));
+  MIB.addOperand(MI.getOperand(OpIdx++));
+  // Copy the am6offset operand.
+  if (hasWriteBack)
+    MIB.addOperand(MI.getOperand(OpIdx++));
+
+  MIB = AddDefaultPred(MIB);
+  // For an instruction writing double-spaced subregs, the pseudo instruction
+  // has an extra operand that is a use of the super-register.  Copy that over
+  // to the new instruction as an implicit operand.
+  if (RegSpc == EvenDblSpc || RegSpc == OddDblSpc) {
+    MachineOperand MO = MI.getOperand(OpIdx);
+    MO.setImplicit(true);
+    MIB.addOperand(MO);
+  }
+  // Add an implicit def for the super-register.
+  MIB.addReg(DstReg, RegState::ImplicitDefine | getDeadRegState(DstIsDead));
+  TransferImpOps(MI, MIB, MIB);
+  MI.eraseFromParent();
+}
+
+/// ExpandVST - Translate VST pseudo instructions with Q, QQ or QQQQ register
+/// operands to real VST instructions with D register operands.
+void ARMExpandPseudo::ExpandVST(MachineBasicBlock::iterator &MBBI,
+                                unsigned Opc, bool hasWriteBack,
+                                NEONRegSpacing RegSpc, unsigned NumRegs) {
+  MachineInstr &MI = *MBBI;
+  MachineBasicBlock &MBB = *MI.getParent();
+
+  MachineInstrBuilder MIB = BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(Opc));
+  unsigned OpIdx = 0;
+  if (hasWriteBack)
+    MIB.addOperand(MI.getOperand(OpIdx++));
+
+  // Copy the addrmode6 operands.
+  MIB.addOperand(MI.getOperand(OpIdx++));
+  MIB.addOperand(MI.getOperand(OpIdx++));
+  // Copy the am6offset operand.
+  if (hasWriteBack)
+    MIB.addOperand(MI.getOperand(OpIdx++));
+
+  bool SrcIsKill = MI.getOperand(OpIdx).isKill();
+  unsigned SrcReg = MI.getOperand(OpIdx).getReg();
+  unsigned D0, D1, D2, D3;
+  if (RegSpc == SingleSpc) {
+    D0 = TRI->getSubReg(SrcReg, ARM::dsub_0);
+    D1 = TRI->getSubReg(SrcReg, ARM::dsub_1);
+    D2 = TRI->getSubReg(SrcReg, ARM::dsub_2);
+    D3 = TRI->getSubReg(SrcReg, ARM::dsub_3);
+  } else if (RegSpc == EvenDblSpc) {
+    D0 = TRI->getSubReg(SrcReg, ARM::dsub_0);
+    D1 = TRI->getSubReg(SrcReg, ARM::dsub_2);
+    D2 = TRI->getSubReg(SrcReg, ARM::dsub_4);
+    D3 = TRI->getSubReg(SrcReg, ARM::dsub_6);
+  } else {
+    assert(RegSpc == OddDblSpc && "unknown register spacing for VST");
+    D0 = TRI->getSubReg(SrcReg, ARM::dsub_1);
+    D1 = TRI->getSubReg(SrcReg, ARM::dsub_3);
+    D2 = TRI->getSubReg(SrcReg, ARM::dsub_5);
+    D3 = TRI->getSubReg(SrcReg, ARM::dsub_7);
+  } 
+
+  MIB.addReg(D0).addReg(D1);
+  if (NumRegs > 2)
+    MIB.addReg(D2);
+  if (NumRegs > 3)
+    MIB.addReg(D3);
+  MIB = AddDefaultPred(MIB);
+  TransferImpOps(MI, MIB, MIB);
+  if (SrcIsKill)
+    // Add an implicit kill for the super-reg.
+    (*MIB).addRegisterKilled(SrcReg, TRI, true);
+  MI.eraseFromParent();
 }
 
 bool ARMExpandPseudo::ExpandMBB(MachineBasicBlock &MBB) {
@@ -71,9 +198,13 @@ bool ARMExpandPseudo::ExpandMBB(MachineBasicBlock &MBB) {
     MachineInstr &MI = *MBBI;
     MachineBasicBlock::iterator NMBBI = llvm::next(MBBI);
 
+    bool ModifiedOp = true;
     unsigned Opcode = MI.getOpcode();
     switch (Opcode) {
-    default: break;
+    default:
+      ModifiedOp = false;
+      break;
+
     case ARM::tLDRpci_pic: 
     case ARM::t2LDRpci_pic: {
       unsigned NewLdOpc = (Opcode == ARM::tLDRpci_pic)
@@ -92,10 +223,10 @@ bool ARMExpandPseudo::ExpandMBB(MachineBasicBlock &MBB) {
         .addOperand(MI.getOperand(2));
       TransferImpOps(MI, MIB1, MIB2);
       MI.eraseFromParent();
-      Modified = true;
       break;
     }
 
+    case ARM::MOVi32imm:
     case ARM::t2MOVi32imm: {
       unsigned PredReg = 0;
       ARMCC::CondCodes Pred = llvm::getInstrPredicate(&MI, PredReg);
@@ -104,9 +235,13 @@ bool ARMExpandPseudo::ExpandMBB(MachineBasicBlock &MBB) {
       const MachineOperand &MO = MI.getOperand(1);
       MachineInstrBuilder LO16, HI16;
 
-      LO16 = BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(ARM::t2MOVi16),
+      LO16 = BuildMI(MBB, MBBI, MI.getDebugLoc(),
+                     TII->get(Opcode == ARM::MOVi32imm ?
+                              ARM::MOVi16 : ARM::t2MOVi16),
                      DstReg);
-      HI16 = BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(ARM::t2MOVTi16))
+      HI16 = BuildMI(MBB, MBBI, MI.getDebugLoc(),
+                     TII->get(Opcode == ARM::MOVi32imm ?
+                              ARM::MOVTi16 : ARM::t2MOVTi16))
         .addReg(DstReg, getDefRegState(true) | getDeadRegState(DstIsDead))
         .addReg(DstReg);
 
@@ -128,7 +263,6 @@ bool ARMExpandPseudo::ExpandMBB(MachineBasicBlock &MBB) {
       HI16.addImm(Pred).addReg(PredReg);
       TransferImpOps(MI, LO16, HI16);
       MI.eraseFromParent();
-      Modified = true;
       break;
     }
 
@@ -155,9 +289,211 @@ bool ARMExpandPseudo::ExpandMBB(MachineBasicBlock &MBB) {
                      .addReg(OddSrc, getKillRegState(SrcIsKill)));
       TransferImpOps(MI, Even, Odd);
       MI.eraseFromParent();
+    }
+
+    case ARM::VLD1q8Pseudo:
+      ExpandVLD(MBBI, ARM::VLD1q8, false, SingleSpc, 2); break;
+    case ARM::VLD1q16Pseudo:
+      ExpandVLD(MBBI, ARM::VLD1q16, false, SingleSpc, 2); break;
+    case ARM::VLD1q32Pseudo:
+      ExpandVLD(MBBI, ARM::VLD1q32, false, SingleSpc, 2); break;
+    case ARM::VLD1q64Pseudo:
+      ExpandVLD(MBBI, ARM::VLD1q64, false, SingleSpc, 2); break;
+    case ARM::VLD1q8Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD1q8, true, SingleSpc, 2); break;
+    case ARM::VLD1q16Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD1q16, true, SingleSpc, 2); break;
+    case ARM::VLD1q32Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD1q32, true, SingleSpc, 2); break;
+    case ARM::VLD1q64Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD1q64, true, SingleSpc, 2); break;
+
+    case ARM::VLD2d8Pseudo:
+      ExpandVLD(MBBI, ARM::VLD2d8, false, SingleSpc, 2); break;
+    case ARM::VLD2d16Pseudo:
+      ExpandVLD(MBBI, ARM::VLD2d16, false, SingleSpc, 2); break;
+    case ARM::VLD2d32Pseudo:
+      ExpandVLD(MBBI, ARM::VLD2d32, false, SingleSpc, 2); break;
+    case ARM::VLD2q8Pseudo:
+      ExpandVLD(MBBI, ARM::VLD2q8, false, SingleSpc, 4); break;
+    case ARM::VLD2q16Pseudo:
+      ExpandVLD(MBBI, ARM::VLD2q16, false, SingleSpc, 4); break;
+    case ARM::VLD2q32Pseudo:
+      ExpandVLD(MBBI, ARM::VLD2q32, false, SingleSpc, 4); break;
+    case ARM::VLD2d8Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD2d8, true, SingleSpc, 2); break;
+    case ARM::VLD2d16Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD2d16, true, SingleSpc, 2); break;
+    case ARM::VLD2d32Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD2d32, true, SingleSpc, 2); break;
+    case ARM::VLD2q8Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD2q8, true, SingleSpc, 4); break;
+    case ARM::VLD2q16Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD2q16, true, SingleSpc, 4); break;
+    case ARM::VLD2q32Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD2q32, true, SingleSpc, 4); break;
+
+    case ARM::VLD3d8Pseudo:
+      ExpandVLD(MBBI, ARM::VLD3d8, false, SingleSpc, 3); break;
+    case ARM::VLD3d16Pseudo:
+      ExpandVLD(MBBI, ARM::VLD3d16, false, SingleSpc, 3); break;
+    case ARM::VLD3d32Pseudo:
+      ExpandVLD(MBBI, ARM::VLD3d32, false, SingleSpc, 3); break;
+    case ARM::VLD1d64TPseudo:
+      ExpandVLD(MBBI, ARM::VLD1d64T, false, SingleSpc, 3); break;
+    case ARM::VLD3d8Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD3d8_UPD, true, SingleSpc, 3); break;
+    case ARM::VLD3d16Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD3d16_UPD, true, SingleSpc, 3); break;
+    case ARM::VLD3d32Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD3d32_UPD, true, SingleSpc, 3); break;
+    case ARM::VLD1d64TPseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD1d64T_UPD, true, SingleSpc, 3); break;
+    case ARM::VLD3q8Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD3q8_UPD, true, EvenDblSpc, 3); break;
+    case ARM::VLD3q16Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD3q16_UPD, true, EvenDblSpc, 3); break;
+    case ARM::VLD3q32Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD3q32_UPD, true, EvenDblSpc, 3); break;
+    case ARM::VLD3q8oddPseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD3q8_UPD, true, OddDblSpc, 3); break;
+    case ARM::VLD3q16oddPseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD3q16_UPD, true, OddDblSpc, 3); break;
+    case ARM::VLD3q32oddPseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD3q32_UPD, true, OddDblSpc, 3); break;
+
+    case ARM::VLD4d8Pseudo:
+      ExpandVLD(MBBI, ARM::VLD4d8, false, SingleSpc, 4); break;
+    case ARM::VLD4d16Pseudo:
+      ExpandVLD(MBBI, ARM::VLD4d16, false, SingleSpc, 4); break;
+    case ARM::VLD4d32Pseudo:
+      ExpandVLD(MBBI, ARM::VLD4d32, false, SingleSpc, 4); break;
+    case ARM::VLD1d64QPseudo:
+      ExpandVLD(MBBI, ARM::VLD1d64Q, false, SingleSpc, 4); break;
+    case ARM::VLD4d8Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD4d8_UPD, true, SingleSpc, 4); break;
+    case ARM::VLD4d16Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD4d16_UPD, true, SingleSpc, 4); break;
+    case ARM::VLD4d32Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD4d32_UPD, true, SingleSpc, 4); break;
+    case ARM::VLD1d64QPseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD1d64Q_UPD, true, SingleSpc, 4); break;
+    case ARM::VLD4q8Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD4q8_UPD, true, EvenDblSpc, 4); break;
+    case ARM::VLD4q16Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD4q16_UPD, true, EvenDblSpc, 4); break;
+    case ARM::VLD4q32Pseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD4q32_UPD, true, EvenDblSpc, 4); break;
+    case ARM::VLD4q8oddPseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD4q8_UPD, true, OddDblSpc, 4); break;
+    case ARM::VLD4q16oddPseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD4q16_UPD, true, OddDblSpc, 4); break;
+    case ARM::VLD4q32oddPseudo_UPD:
+      ExpandVLD(MBBI, ARM::VLD4q32_UPD, true, OddDblSpc, 4); break;
+
+    case ARM::VST1q8Pseudo:
+      ExpandVST(MBBI, ARM::VST1q8, false, SingleSpc, 2); break;
+    case ARM::VST1q16Pseudo:
+      ExpandVST(MBBI, ARM::VST1q16, false, SingleSpc, 2); break;
+    case ARM::VST1q32Pseudo:
+      ExpandVST(MBBI, ARM::VST1q32, false, SingleSpc, 2); break;
+    case ARM::VST1q64Pseudo:
+      ExpandVST(MBBI, ARM::VST1q64, false, SingleSpc, 2); break;
+    case ARM::VST1q8Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST1q8_UPD, true, SingleSpc, 2); break;
+    case ARM::VST1q16Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST1q16_UPD, true, SingleSpc, 2); break;
+    case ARM::VST1q32Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST1q32_UPD, true, SingleSpc, 2); break;
+    case ARM::VST1q64Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST1q64_UPD, true, SingleSpc, 2); break;
+
+    case ARM::VST2d8Pseudo:
+      ExpandVST(MBBI, ARM::VST2d8, false, SingleSpc, 2); break;
+    case ARM::VST2d16Pseudo:
+      ExpandVST(MBBI, ARM::VST2d16, false, SingleSpc, 2); break;
+    case ARM::VST2d32Pseudo:
+      ExpandVST(MBBI, ARM::VST2d32, false, SingleSpc, 2); break;
+    case ARM::VST2q8Pseudo:
+      ExpandVST(MBBI, ARM::VST2q8, false, SingleSpc, 4); break;
+    case ARM::VST2q16Pseudo:
+      ExpandVST(MBBI, ARM::VST2q16, false, SingleSpc, 4); break;
+    case ARM::VST2q32Pseudo:
+      ExpandVST(MBBI, ARM::VST2q32, false, SingleSpc, 4); break;
+    case ARM::VST2d8Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST2d8_UPD, true, SingleSpc, 2); break;
+    case ARM::VST2d16Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST2d16_UPD, true, SingleSpc, 2); break;
+    case ARM::VST2d32Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST2d32_UPD, true, SingleSpc, 2); break;
+    case ARM::VST2q8Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST2q8_UPD, true, SingleSpc, 4); break;
+    case ARM::VST2q16Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST2q16_UPD, true, SingleSpc, 4); break;
+    case ARM::VST2q32Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST2q32_UPD, true, SingleSpc, 4); break;
+
+    case ARM::VST3d8Pseudo:
+      ExpandVST(MBBI, ARM::VST3d8, false, SingleSpc, 3); break;
+    case ARM::VST3d16Pseudo:
+      ExpandVST(MBBI, ARM::VST3d16, false, SingleSpc, 3); break;
+    case ARM::VST3d32Pseudo:
+      ExpandVST(MBBI, ARM::VST3d32, false, SingleSpc, 3); break;
+    case ARM::VST1d64TPseudo:
+      ExpandVST(MBBI, ARM::VST1d64T, false, SingleSpc, 3); break;
+    case ARM::VST3d8Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST3d8_UPD, true, SingleSpc, 3); break;
+    case ARM::VST3d16Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST3d16_UPD, true, SingleSpc, 3); break;
+    case ARM::VST3d32Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST3d32_UPD, true, SingleSpc, 3); break;
+    case ARM::VST1d64TPseudo_UPD:
+      ExpandVST(MBBI, ARM::VST1d64T_UPD, true, SingleSpc, 3); break;
+    case ARM::VST3q8Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST3q8_UPD, true, EvenDblSpc, 3); break;
+    case ARM::VST3q16Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST3q16_UPD, true, EvenDblSpc, 3); break;
+    case ARM::VST3q32Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST3q32_UPD, true, EvenDblSpc, 3); break;
+    case ARM::VST3q8oddPseudo_UPD:
+      ExpandVST(MBBI, ARM::VST3q8_UPD, true, OddDblSpc, 3); break;
+    case ARM::VST3q16oddPseudo_UPD:
+      ExpandVST(MBBI, ARM::VST3q16_UPD, true, OddDblSpc, 3); break;
+    case ARM::VST3q32oddPseudo_UPD:
+      ExpandVST(MBBI, ARM::VST3q32_UPD, true, OddDblSpc, 3); break;
+
+    case ARM::VST4d8Pseudo:
+      ExpandVST(MBBI, ARM::VST4d8, false, SingleSpc, 4); break;
+    case ARM::VST4d16Pseudo:
+      ExpandVST(MBBI, ARM::VST4d16, false, SingleSpc, 4); break;
+    case ARM::VST4d32Pseudo:
+      ExpandVST(MBBI, ARM::VST4d32, false, SingleSpc, 4); break;
+    case ARM::VST1d64QPseudo:
+      ExpandVST(MBBI, ARM::VST1d64Q, false, SingleSpc, 4); break;
+    case ARM::VST4d8Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST4d8_UPD, true, SingleSpc, 4); break;
+    case ARM::VST4d16Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST4d16_UPD, true, SingleSpc, 4); break;
+    case ARM::VST4d32Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST4d32_UPD, true, SingleSpc, 4); break;
+    case ARM::VST1d64QPseudo_UPD:
+      ExpandVST(MBBI, ARM::VST1d64Q_UPD, true, SingleSpc, 4); break;
+    case ARM::VST4q8Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST4q8_UPD, true, EvenDblSpc, 4); break;
+    case ARM::VST4q16Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST4q16_UPD, true, EvenDblSpc, 4); break;
+    case ARM::VST4q32Pseudo_UPD:
+      ExpandVST(MBBI, ARM::VST4q32_UPD, true, EvenDblSpc, 4); break;
+    case ARM::VST4q8oddPseudo_UPD:
+      ExpandVST(MBBI, ARM::VST4q8_UPD, true, OddDblSpc, 4); break;
+    case ARM::VST4q16oddPseudo_UPD:
+      ExpandVST(MBBI, ARM::VST4q16_UPD, true, OddDblSpc, 4); break;
+    case ARM::VST4q32oddPseudo_UPD:
+      ExpandVST(MBBI, ARM::VST4q32_UPD, true, OddDblSpc, 4); break;
+    }
+
+    if (ModifiedOp)
       Modified = true;
-    }
-    }
     MBBI = NMBBI;
   }
 

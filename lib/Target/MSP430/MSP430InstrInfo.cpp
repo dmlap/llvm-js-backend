@@ -83,48 +83,20 @@ void MSP430InstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
     llvm_unreachable("Cannot store this register to stack slot!");
 }
 
-bool MSP430InstrInfo::copyRegToReg(MachineBasicBlock &MBB,
-                                   MachineBasicBlock::iterator I,
-                                   unsigned DestReg, unsigned SrcReg,
-                                   const TargetRegisterClass *DestRC,
-                                   const TargetRegisterClass *SrcRC,
-                                   DebugLoc DL) const {
-  if (DestRC == SrcRC) {
-    unsigned Opc;
-    if (DestRC == &MSP430::GR16RegClass) {
-      Opc = MSP430::MOV16rr;
-    } else if (DestRC == &MSP430::GR8RegClass) {
-      Opc = MSP430::MOV8rr;
-    } else {
-      return false;
-    }
+void MSP430InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
+                                  MachineBasicBlock::iterator I, DebugLoc DL,
+                                  unsigned DestReg, unsigned SrcReg,
+                                  bool KillSrc) const {
+  unsigned Opc;
+  if (MSP430::GR16RegClass.contains(DestReg, SrcReg))
+    Opc = MSP430::MOV16rr;
+  else if (MSP430::GR8RegClass.contains(DestReg, SrcReg))
+    Opc = MSP430::MOV8rr;
+  else
+    llvm_unreachable("Impossible reg-to-reg copy");
 
-    BuildMI(MBB, I, DL, get(Opc), DestReg).addReg(SrcReg);
-    return true;
-  }
-
-  return false;
-}
-
-bool
-MSP430InstrInfo::isMoveInstr(const MachineInstr& MI,
-                             unsigned &SrcReg, unsigned &DstReg,
-                             unsigned &SrcSubIdx, unsigned &DstSubIdx) const {
-  SrcSubIdx = DstSubIdx = 0; // No sub-registers yet.
-
-  switch (MI.getOpcode()) {
-  default:
-    return false;
-  case MSP430::MOV8rr:
-  case MSP430::MOV16rr:
-   assert(MI.getNumOperands() >= 2 &&
-           MI.getOperand(0).isReg() &&
-           MI.getOperand(1).isReg() &&
-           "invalid register-register move instruction");
-    SrcReg = MI.getOperand(1).getReg();
-    DstReg = MI.getOperand(0).getReg();
-    return true;
-  }
+  BuildMI(MBB, I, DL, get(Opc), DestReg)
+    .addReg(SrcReg, getKillRegState(KillSrc));
 }
 
 bool
@@ -368,7 +340,7 @@ unsigned MSP430InstrInfo::GetInstSizeInBytes(const MachineInstr *MI) const {
     switch (Desc.getOpcode()) {
     default:
       assert(0 && "Unknown instruction size!");
-    case TargetOpcode::DBG_LABEL:
+    case TargetOpcode::PROLOG_LABEL:
     case TargetOpcode::EH_LABEL:
     case TargetOpcode::IMPLICIT_DEF:
     case TargetOpcode::KILL:

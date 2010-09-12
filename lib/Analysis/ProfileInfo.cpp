@@ -71,22 +71,24 @@ ProfileInfoT<Function,BasicBlock>::getExecutionCount(const BasicBlock *BB) {
 
   // Are there zero predecessors of this block?
   if (PI == PE) {
-    Edge e = getEdge(0,BB);
+    Edge e = getEdge(0, BB);
     Count = getEdgeWeight(e);
   } else {
     // Otherwise, if there are predecessors, the execution count of this block is
     // the sum of the edge frequencies from the incoming edges.
     std::set<const BasicBlock*> ProcessedPreds;
     Count = 0;
-    for (; PI != PE; ++PI)
-      if (ProcessedPreds.insert(*PI).second) {
-        double w = getEdgeWeight(getEdge(*PI, BB));
+    for (; PI != PE; ++PI) {
+      const BasicBlock *P = *PI;
+      if (ProcessedPreds.insert(P).second) {
+        double w = getEdgeWeight(getEdge(P, BB));
         if (w == MissingValue) {
           Count = MissingValue;
           break;
         }
         Count += w;
       }
+    }
   }
 
   // If the predecessors did not suffice to get block weight, try successors.
@@ -1074,14 +1076,14 @@ raw_ostream& operator<<(raw_ostream &O, std::pair<const MachineBasicBlock *, con
 namespace {
   struct NoProfileInfo : public ImmutablePass, public ProfileInfo {
     static char ID; // Class identification, replacement for typeinfo
-    NoProfileInfo() : ImmutablePass(&ID) {}
+    NoProfileInfo() : ImmutablePass(ID) {}
     
     /// getAdjustedAnalysisPointer - This method is used when a pass implements
     /// an analysis interface through multiple inheritance.  If needed, it
     /// should override this to adjust the this pointer as needed for the
     /// specified pass info.
-    virtual void *getAdjustedAnalysisPointer(const PassInfo *PI) {
-      if (PI->isPassID(&ProfileInfo::ID))
+    virtual void *getAdjustedAnalysisPointer(AnalysisID PI) {
+      if (PI == &ProfileInfo::ID)
         return (ProfileInfo*)this;
       return this;
     }
@@ -1094,10 +1096,7 @@ namespace {
 
 char NoProfileInfo::ID = 0;
 // Register this pass...
-static RegisterPass<NoProfileInfo>
-X("no-profile", "No Profile Information", false, true);
-
-// Declare that we implement the ProfileInfo interface
-static RegisterAnalysisGroup<ProfileInfo, true> Y(X);
+INITIALIZE_AG_PASS(NoProfileInfo, ProfileInfo, "no-profile",
+                   "No Profile Information", false, true, true);
 
 ImmutablePass *llvm::createNoProfileInfoPass() { return new NoProfileInfo(); }

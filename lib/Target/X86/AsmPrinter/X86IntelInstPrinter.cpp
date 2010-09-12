@@ -14,6 +14,7 @@
 
 #define DEBUG_TYPE "asm-printer"
 #include "X86IntelInstPrinter.h"
+#include "X86InstComments.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCExpr.h"
@@ -30,6 +31,10 @@ using namespace llvm;
 
 void X86IntelInstPrinter::printInst(const MCInst *MI, raw_ostream &OS) {
   printInstruction(MI, OS);
+  
+  // If verbose assembly is enabled, we can print some informative comments.
+  if (CommentStream)
+    EmitAnyX86InstComments(MI, *CommentStream, getRegisterName);
 }
 StringRef X86IntelInstPrinter::getOpcodeName(unsigned Opcode) const {
   return getInstructionName(Opcode);
@@ -81,12 +86,19 @@ void X86IntelInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
   }
 }
 
-void X86IntelInstPrinter::printLeaMemReference(const MCInst *MI, unsigned Op,
-                                               raw_ostream &O) {
+void X86IntelInstPrinter::printMemReference(const MCInst *MI, unsigned Op,
+                                            raw_ostream &O) {
   const MCOperand &BaseReg  = MI->getOperand(Op);
   unsigned ScaleVal         = MI->getOperand(Op+1).getImm();
   const MCOperand &IndexReg = MI->getOperand(Op+2);
   const MCOperand &DispSpec = MI->getOperand(Op+3);
+  const MCOperand &SegReg   = MI->getOperand(Op+4);
+  
+  // If this has a segment register, print it.
+  if (SegReg.getReg()) {
+    printOperand(MI, Op+4, O);
+    O << ':';
+  }
   
   O << '[';
   
@@ -104,7 +116,7 @@ void X86IntelInstPrinter::printLeaMemReference(const MCInst *MI, unsigned Op,
     NeedPlus = true;
   }
   
- 
+  
   if (!DispSpec.isImm()) {
     if (NeedPlus) O << " + ";
     assert(DispSpec.isExpr() && "non-immediate displacement for LEA?");
@@ -125,14 +137,4 @@ void X86IntelInstPrinter::printLeaMemReference(const MCInst *MI, unsigned Op,
   }
   
   O << ']';
-}
-
-void X86IntelInstPrinter::printMemReference(const MCInst *MI, unsigned Op,
-                                            raw_ostream &O) {
-  // If this has a segment register, print it.
-  if (MI->getOperand(Op+4).getReg()) {
-    printOperand(MI, Op+4, O);
-    O << ':';
-  }
-  printLeaMemReference(MI, Op, O);
 }

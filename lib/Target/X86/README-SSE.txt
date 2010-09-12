@@ -2,8 +2,65 @@
 // Random ideas for the X86 backend: SSE-specific stuff.
 //===---------------------------------------------------------------------===//
 
-- Consider eliminating the unaligned SSE load intrinsics, replacing them with
-  unaligned LLVM load instructions.
+//===---------------------------------------------------------------------===//
+
+SSE Variable shift can be custom lowered to something like this, which uses a
+small table + unaligned load + shuffle instead of going through memory.
+
+__m128i_shift_right:
+	.byte	  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15
+	.byte	 -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+
+...
+__m128i shift_right(__m128i value, unsigned long offset) {
+  return _mm_shuffle_epi8(value,
+               _mm_loadu_si128((__m128 *) (___m128i_shift_right + offset)));
+}
+
+//===---------------------------------------------------------------------===//
+
+SSE has instructions for doing operations on complex numbers, we should pattern
+match them.   For example, this should turn into a horizontal add:
+
+typedef float __attribute__((vector_size(16))) v4f32;
+float f32(v4f32 A) {
+  return A[0]+A[1]+A[2]+A[3];
+}
+
+Instead we get this:
+
+_f32:                                   ## @f32
+	pshufd	$1, %xmm0, %xmm1        ## xmm1 = xmm0[1,0,0,0]
+	addss	%xmm0, %xmm1
+	pshufd	$3, %xmm0, %xmm2        ## xmm2 = xmm0[3,0,0,0]
+	movhlps	%xmm0, %xmm0            ## xmm0 = xmm0[1,1]
+	movaps	%xmm0, %xmm3
+	addss	%xmm1, %xmm3
+	movdqa	%xmm2, %xmm0
+	addss	%xmm3, %xmm0
+	ret
+
+Also, there are cases where some simple local SLP would improve codegen a bit.
+compiling this:
+
+_Complex float f32(_Complex float A, _Complex float B) {
+  return A+B;
+}
+
+into:
+
+_f32:                                   ## @f32
+	movdqa	%xmm0, %xmm2
+	addss	%xmm1, %xmm2
+	pshufd	$1, %xmm1, %xmm1        ## xmm1 = xmm1[1,0,0,0]
+	pshufd	$1, %xmm0, %xmm3        ## xmm3 = xmm0[1,0,0,0]
+	addss	%xmm1, %xmm3
+	movaps	%xmm2, %xmm0
+	unpcklps	%xmm3, %xmm0    ## xmm0 = xmm0[0],xmm3[0],xmm0[1],xmm3[1]
+	ret
+
+seems silly when it could just be one addps.
+
 
 //===---------------------------------------------------------------------===//
 
@@ -86,16 +143,6 @@ of a v4sf value.
 
 Better codegen for vector_shuffles like this { x, 0, 0, 0 } or { x, 0, x, 0}.
 Perhaps use pxor / xorp* to clear a XMM register first?
-
-//===---------------------------------------------------------------------===//
-
-X86RegisterInfo::copyRegToReg() returns X86::MOVAPSrr for VR128. Is it possible
-to choose between movaps, movapd, and movdqa based on types of source and
-destination?
-
-How about andps, andpd, and pand? Do we really care about the type of the packed
-elements? If not, why not always use the "ps" variants which are likely to be
-shorter.
 
 //===---------------------------------------------------------------------===//
 
@@ -846,3 +893,34 @@ This would be better kept in the SSE unit by treating XMM0 as a 4xfloat and
 doing a shuffle from v[1] to v[0] then a float store.
 
 //===---------------------------------------------------------------------===//
+
+On SSE4 machines, we compile this code:
+
+define <2 x float> @test2(<2 x float> %Q, <2 x float> %R,
+       <2 x float> *%P) nounwind {
+  %Z = fadd <2 x float> %Q, %R
+
+  store <2 x float> %Z, <2 x float> *%P
+  ret <2 x float> %Z
+}
+
+into:
+
+_test2:                                 ## @test2
+## BB#0:
+	insertps	$0, %xmm2, %xmm2
+	insertps	$16, %xmm3, %xmm2
+	insertps	$0, %xmm0, %xmm3
+	insertps	$16, %xmm1, %xmm3
+	addps	%xmm2, %xmm3
+	movq	%xmm3, (%rdi)
+	movaps	%xmm3, %xmm0
+	pshufd	$1, %xmm3, %xmm1
+                                        ## kill: XMM1<def> XMM1<kill>
+	ret
+
+The insertps's of $0 are pointless complex copies.
+
+//===---------------------------------------------------------------------===//
+
+

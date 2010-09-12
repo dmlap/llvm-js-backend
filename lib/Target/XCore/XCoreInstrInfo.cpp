@@ -46,33 +46,6 @@ static bool isZeroImm(const MachineOperand &op) {
   return op.isImm() && op.getImm() == 0;
 }
 
-/// Return true if the instruction is a register to register move and
-/// leave the source and dest operands in the passed parameters.
-///
-bool XCoreInstrInfo::isMoveInstr(const MachineInstr &MI,
-                                 unsigned &SrcReg, unsigned &DstReg,
-                                 unsigned &SrcSR, unsigned &DstSR) const {
-  SrcSR = DstSR = 0; // No sub-registers.
-
-  // We look for 4 kinds of patterns here:
-  // add dst, src, 0
-  // sub dst, src, 0
-  // or dst, src, src
-  // and dst, src, src
-  if ((MI.getOpcode() == XCore::ADD_2rus || MI.getOpcode() == XCore::SUB_2rus)
-      && isZeroImm(MI.getOperand(2))) {
-    DstReg = MI.getOperand(0).getReg();
-    SrcReg = MI.getOperand(1).getReg();
-    return true;
-  } else if ((MI.getOpcode() == XCore::OR_3r || MI.getOpcode() == XCore::AND_3r)
-      && MI.getOperand(1).getReg() == MI.getOperand(2).getReg()) {
-    DstReg = MI.getOperand(0).getReg();
-    SrcReg = MI.getOperand(1).getReg();
-    return true;
-  }
-  return false;
-}
-
 /// isLoadFromStackSlot - If the specified machine instruction is a direct
 /// load from a stack slot, return the virtual or physical register number of
 /// the destination along with the FrameIndex of the loaded stack slot.  If
@@ -356,37 +329,31 @@ XCoreInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
   return 2;
 }
 
-bool XCoreInstrInfo::copyRegToReg(MachineBasicBlock &MBB,
-                                  MachineBasicBlock::iterator I,
-                                  unsigned DestReg, unsigned SrcReg,
-                                  const TargetRegisterClass *DestRC,
-                                  const TargetRegisterClass *SrcRC,
-                                  DebugLoc DL) const {
+void XCoreInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
+                                 MachineBasicBlock::iterator I, DebugLoc DL,
+                                 unsigned DestReg, unsigned SrcReg,
+                                 bool KillSrc) const {
+  bool GRDest = XCore::GRRegsRegClass.contains(DestReg);
+  bool GRSrc  = XCore::GRRegsRegClass.contains(SrcReg);
 
-  if (DestRC == SrcRC) {
-    if (DestRC == XCore::GRRegsRegisterClass) {
-      BuildMI(MBB, I, DL, get(XCore::ADD_2rus), DestReg)
-        .addReg(SrcReg)
-        .addImm(0);
-      return true;
-    } else {
-      return false;
-    }
+  if (GRDest && GRSrc) {
+    BuildMI(MBB, I, DL, get(XCore::ADD_2rus), DestReg)
+      .addReg(SrcReg, getKillRegState(KillSrc))
+      .addImm(0);
+    return;
   }
   
-  if (SrcRC == XCore::RRegsRegisterClass && SrcReg == XCore::SP &&
-    DestRC == XCore::GRRegsRegisterClass) {
-    BuildMI(MBB, I, DL, get(XCore::LDAWSP_ru6), DestReg)
-      .addImm(0);
-    return true;
+  if (GRDest && SrcReg == XCore::SP) {
+    BuildMI(MBB, I, DL, get(XCore::LDAWSP_ru6), DestReg).addImm(0);
+    return;
   }
-  if (DestRC == XCore::RRegsRegisterClass && DestReg == XCore::SP &&
-    SrcRC == XCore::GRRegsRegisterClass) {
+
+  if (DestReg == XCore::SP && GRSrc) {
     BuildMI(MBB, I, DL, get(XCore::SETSP_1r))
-      .addReg(SrcReg);
-    return true;
+      .addReg(SrcReg, getKillRegState(KillSrc));
+    return;
   }
-  return false;
+  llvm_unreachable("Impossible reg-to-reg copy");
 }
 
 void XCoreInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
@@ -443,7 +410,7 @@ bool XCoreInstrInfo::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
                         it->getFrameIdx(), RC, &RI);
     if (emitFrameMoves) {
       MCSymbol *SaveLabel = MF->getContext().CreateTempSymbol();
-      BuildMI(MBB, MI, DL, get(XCore::DBG_LABEL)).addSym(SaveLabel);
+      BuildMI(MBB, MI, DL, get(XCore::PROLOG_LABEL)).addSym(SaveLabel);
       XFI->getSpillLabels().push_back(std::make_pair(SaveLabel, *it));
     }
   }

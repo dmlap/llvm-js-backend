@@ -33,7 +33,7 @@ using namespace llvm;
   MAP(C9, 38)           \
   MAP(E8, 39)           \
   MAP(F0, 40)           \
-  MAP(F8, 41)		\
+  MAP(F8, 41)           \
   MAP(F9, 42)
 
 // A clone of X86 since we can't depend on something that is generated.
@@ -311,7 +311,7 @@ RecognizableInstr::filter_ret RecognizableInstr::filter() const {
     return FILTER_STRONG;
 
   // Special cases.
-  
+
   if (Name.find("PCMPISTRI") != Name.npos && Name != "PCMPISTRI")
     return FILTER_WEAK;
   if (Name.find("PCMPESTRI") != Name.npos && Name != "PCMPESTRI")
@@ -368,6 +368,12 @@ RecognizableInstr::filter_ret RecognizableInstr::filter() const {
       (Name.find("to") != Name.npos)))
     return FILTER_WEAK;
 
+  // Filter out the intrinsic form of instructions that also have an llvm
+  // operator form.  FIXME this is temporary.
+  if (Name.find("irm") != Name.npos ||
+      Name.find("irr") != Name.npos)
+    return FILTER_WEAK;
+  
   return FILTER_NORMAL;
 }
   
@@ -836,6 +842,7 @@ OperandType RecognizableInstr::typeFromString(const std::string &s,
   TYPE("RST",                 TYPE_ST)
   TYPE("i128mem",             TYPE_M128)
   TYPE("i64i32imm_pcrel",     TYPE_REL64)
+  TYPE("i16imm_pcrel",        TYPE_REL16)
   TYPE("i32imm_pcrel",        TYPE_REL32)
   TYPE("SSECC",               TYPE_IMM3)
   TYPE("brtarget",            TYPE_RELv)
@@ -955,6 +962,7 @@ OperandEncoding RecognizableInstr::relocationEncodingFromString
   ENCODING("i64i8imm",        ENCODING_IB)
   ENCODING("i8imm",           ENCODING_IB)
   ENCODING("i64i32imm_pcrel", ENCODING_ID)
+  ENCODING("i16imm_pcrel",    ENCODING_IW)
   ENCODING("i32imm_pcrel",    ENCODING_ID)
   ENCODING("brtarget",        ENCODING_Iv)
   ENCODING("brtarget8",       ENCODING_IB)

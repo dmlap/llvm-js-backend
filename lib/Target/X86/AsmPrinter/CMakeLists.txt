@@ -2,8 +2,9 @@ include_directories( ${CMAKE_CURRENT_BINARY_DIR}/.. ${CMAKE_CURRENT_SOURCE_DIR}/
 
 add_llvm_library(LLVMX86AsmPrinter
   X86ATTInstPrinter.cpp
-  X86AsmPrinter.cpp
   X86IntelInstPrinter.cpp
-  X86MCInstLower.cpp
+  X86InstComments.cpp
   )
+
 add_dependencies(LLVMX86AsmPrinter X86CodeGenTable_gen)
+target_link_libraries(LLVMX86AsmPrinter LLVMMC)

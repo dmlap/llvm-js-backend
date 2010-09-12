@@ -309,8 +309,6 @@ to write maintainable code more than where to put your curly braces.</p>
 <div class="doc_text">
 
 <ol>
-<li><a href="http://www.psc.edu/%7Esemke/cvs_branches.html">CVS
-Branch and Tag Primer</a></li>
 <li><a href="http://www.fortran-2000.com/ArnaudRecipes/sharedlib.html">Using
 static and shared libraries across platforms</a></li>
 </ol>
@@ -457,8 +455,8 @@ StringMap class which is used extensively in LLVM and Clang.</p>
 may have embedded null characters.  Therefore, they cannot simply take
 a <tt>const char *</tt>, and taking a <tt>const std::string&amp;</tt> requires
 clients to perform a heap allocation which is usually unnecessary.  Instead,
-many LLVM APIs use a <tt>const StringRef&amp;</tt> or a <tt>const 
-Twine&amp;</tt> for passing strings efficiently.</p>
+many LLVM APIs use a <tt>StringRef</tt> or a <tt>const Twine&amp;</tt> for
+passing strings efficiently.</p>
 
 </div>
 
@@ -477,19 +475,17 @@ on <tt>std:string</tt>, but does not require heap allocation.</p>
 an <tt>std::string</tt>, or explicitly with a character pointer and length.
 For example, the <tt>StringRef</tt> find function is declared as:</p>
 
-<div class="doc_code">
-  iterator find(const StringRef &amp;Key);
-</div>
+<pre class="doc_code">
+  iterator find(StringRef Key);
+</pre>
 
 <p>and clients can call it using any one of:</p>
 
-<div class="doc_code">
-<pre>
+<pre class="doc_code">
   Map.find("foo");                 <i>// Lookup "foo"</i>
   Map.find(std::string("bar"));    <i>// Lookup "bar"</i>
   Map.find(StringRef("\0baz", 4)); <i>// Lookup "\0baz"</i>
 </pre>
-</div>
 
 <p>Similarly, APIs which need to return a string may return a <tt>StringRef</tt>
 instance, which can be used directly or converted to an <tt>std::string</tt>
@@ -499,7 +495,8 @@ for more information.</p>
 
 <p>You should rarely use the <tt>StringRef</tt> class directly, because it contains
 pointers to external memory it is not generally safe to store an instance of the
-class (unless you know that the external storage will not be freed).</p>
+class (unless you know that the external storage will not be freed). StringRef is
+small and pervasive enough in LLVM that it should always be passed by value.</p>
 
 </div>
 
@@ -1437,7 +1434,7 @@ to the key string for a value.</p>
 
 <p>The StringMap is very fast for several reasons: quadratic probing is very
 cache efficient for lookups, the hash value of strings in buckets is not
-recomputed when lookup up an element, StringMap rarely has to touch the
+recomputed when looking up an element, StringMap rarely has to touch the
 memory for unrelated objects when looking up a value (even when hash collisions
 happen), hash table growth does not recompute the hash values for strings
 already in the table, and each pair in the map is store in a single allocation

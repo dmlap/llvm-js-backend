@@ -23,6 +23,7 @@
 #define LLVM_CODEGEN_SLOTINDEXES_H
 
 #include "llvm/CodeGen/MachineBasicBlock.h"
+#include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/SmallVector.h"
@@ -127,7 +128,8 @@ namespace llvm {
     friend class SlotIndexes;
     friend struct DenseMapInfo<SlotIndex>;
 
-  private:
+    enum Slot { LOAD, USE, DEF, STORE, NUM };
+
     static const unsigned PHI_BIT = 1 << 2;
 
     PointerIntPair<IndexListEntry*, 3, unsigned> lie;
@@ -145,6 +147,11 @@ namespace llvm {
       return entry().getIndex() | getSlot();
     }
 
+    /// Returns the slot for this SlotIndex.
+    Slot getSlot() const {
+      return static_cast<Slot>(lie.getInt()  & ~PHI_BIT);
+    }
+
     static inline unsigned getHashValue(const SlotIndex &v) {
       IndexListEntry *ptrVal = &v.entry();
       return (unsigned((intptr_t)ptrVal) >> 4) ^
@@ -152,11 +159,6 @@ namespace llvm {
     }
 
   public:
-
-    // FIXME: Ugh. This is public because LiveIntervalAnalysis is still using it
-    // for some spill weight stuff. Fix that, then make this private.
-    enum Slot { LOAD, USE, DEF, STORE, NUM };
-
     static inline SlotIndex getEmptyKey() {
       return SlotIndex(IndexListEntry::getEmptyKeyEntry(), 0);
     }
@@ -234,14 +236,29 @@ namespace llvm {
       return other.getIndex() - getIndex();
     }
 
-    /// Returns the slot for this SlotIndex.
-    Slot getSlot() const {
-      return static_cast<Slot>(lie.getInt()  & ~PHI_BIT);
-    }
-
     /// Returns the state of the PHI bit.
     bool isPHI() const {
       return lie.getInt() & PHI_BIT;
+    }
+
+    /// isLoad - Return true if this is a LOAD slot.
+    bool isLoad() const {
+      return getSlot() == LOAD;
+    }
+
+    /// isDef - Return true if this is a DEF slot.
+    bool isDef() const {
+      return getSlot() == DEF;
+    }
+
+    /// isUse - Return true if this is a USE slot.
+    bool isUse() const {
+      return getSlot() == USE;
+    }
+
+    /// isStore - Return true if this is a STORE slot.
+    bool isStore() const {
+      return getSlot() == STORE;
     }
 
     /// Returns the base index for associated with this index. The base index
@@ -474,7 +491,7 @@ namespace llvm {
   public:
     static char ID;
 
-    SlotIndexes() : MachineFunctionPass(&ID), indexListHead(0) {}
+    SlotIndexes() : MachineFunctionPass(ID), indexListHead(0) {}
 
     virtual void getAnalysisUsage(AnalysisUsage &au) const;
     virtual void releaseMemory(); 
@@ -491,6 +508,11 @@ namespace llvm {
     SlotIndex getZeroIndex() {
       assert(front()->getIndex() == 0 && "First index is not 0?");
       return SlotIndex(front(), 0);
+    }
+
+    /// Returns the base index of the last slot in this analysis.
+    SlotIndex getLastIndex() {
+      return SlotIndex(back(), 0);
     }
 
     /// Returns the invalid index marker for this analysis.
@@ -760,6 +782,47 @@ namespace llvm {
       miEntry->setInstr(newMI);
       mi2iMap.erase(mi2iItr);
       mi2iMap.insert(std::make_pair(newMI, replaceBaseIndex));
+    }
+
+    /// Add the given MachineBasicBlock into the maps.
+    void insertMBBInMaps(MachineBasicBlock *mbb) {
+      MachineFunction::iterator nextMBB =
+        llvm::next(MachineFunction::iterator(mbb));
+      IndexListEntry *startEntry = createEntry(0, 0);
+      IndexListEntry *terminatorEntry = createEntry(0, 0); 
+      IndexListEntry *nextEntry = 0;
+
+      if (nextMBB == mbb->getParent()->end()) {
+        nextEntry = getTail();
+      } else {
+        nextEntry = &getMBBStartIdx(nextMBB).entry();
+      }
+
+      insert(nextEntry, startEntry);
+      insert(nextEntry, terminatorEntry);
+
+      SlotIndex startIdx(startEntry, SlotIndex::LOAD);
+      SlotIndex terminatorIdx(terminatorEntry, SlotIndex::PHI_BIT);
+      SlotIndex endIdx(nextEntry, SlotIndex::LOAD);
+
+      terminatorGaps.insert(
+        std::make_pair(mbb, terminatorIdx));
+
+      mbb2IdxMap.insert(
+        std::make_pair(mbb, std::make_pair(startIdx, endIdx)));
+
+      idx2MBBMap.push_back(IdxMBBPair(startIdx, mbb));
+
+      if (MachineFunction::iterator(mbb) != mbb->getParent()->begin()) {
+        // Have to update the end index of the previous block.
+        MachineBasicBlock *priorMBB =
+          llvm::prior(MachineFunction::iterator(mbb));
+        mbb2IdxMap[priorMBB].second = startIdx;
+      }
+
+      renumberIndexes();
+      std::sort(idx2MBBMap.begin(), idx2MBBMap.end(), Idx2MBBCompare());
+
     }
 
   };

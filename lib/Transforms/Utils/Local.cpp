@@ -306,7 +306,7 @@ bool llvm::SimplifyInstructionsInBlock(BasicBlock *BB, const TargetData *TD) {
       WeakVH BIHandle(BI);
       ReplaceAndSimplifyAllUses(Inst, V, TD);
       MadeChange = true;
-      if (BIHandle == 0)
+      if (BIHandle != BI)
         BI = BB->begin();
       continue;
     }
@@ -354,12 +354,13 @@ void llvm::RemovePredecessorAndSimplify(BasicBlock *BB, BasicBlock *Pred,
     // value into all of its uses.
     assert(PNV != PN && "hasConstantValue broken");
     
+    Value *OldPhiIt = PhiIt;
     ReplaceAndSimplifyAllUses(PN, PNV, TD);
     
     // If recursive simplification ended up deleting the next PHI node we would
     // iterate to, then our iterator is invalid, restart scanning from the top
     // of the block.
-    if (PhiIt == 0) PhiIt = &BB->front();
+    if (PhiIt != OldPhiIt) PhiIt = &BB->front();
   }
 }
 
@@ -432,9 +433,11 @@ static bool CanPropagatePredecessorsForPHIs(BasicBlock *BB, BasicBlock *Succ) {
   // Use that list to make another list of common predecessors of BB and Succ
   BlockSet CommonPreds;
   for (pred_iterator PI = pred_begin(Succ), PE = pred_end(Succ);
-        PI != PE; ++PI)
-    if (BBPreds.count(*PI))
-      CommonPreds.insert(*PI);
+       PI != PE; ++PI) {
+    BasicBlock *P = *PI;
+    if (BBPreds.count(P))
+      CommonPreds.insert(P);
+  }
 
   // Shortcut, if there are no common predecessors, merging is always safe
   if (CommonPreds.empty())
@@ -487,6 +490,9 @@ static bool CanPropagatePredecessorsForPHIs(BasicBlock *BB, BasicBlock *Succ) {
 /// rewriting all the predecessors to branch to the successor block and return
 /// true.  If we can't transform, return false.
 bool llvm::TryToSimplifyUncondBranchFromEmptyBlock(BasicBlock *BB) {
+  assert(BB != &BB->getParent()->getEntryBlock() &&
+         "TryToSimplifyUncondBranchFromEmptyBlock called on entry block!");
+
   // We can't eliminate infinite loops.
   BasicBlock *Succ = cast<BranchInst>(BB->getTerminator())->getSuccessor(0);
   if (BB == Succ) return false;

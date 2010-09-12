@@ -493,6 +493,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(private);
   KEYWORD(linker_private);
   KEYWORD(linker_private_weak);
+  KEYWORD(linker_private_weak_def_auto);
   KEYWORD(internal);
   KEYWORD(available_externally);
   KEYWORD(linkonce);
@@ -572,7 +573,6 @@ lltok::Kind LLLexer::LexIdentifier() {
 
   KEYWORD(type);
   KEYWORD(opaque);
-  KEYWORD(union);
 
   KEYWORD(eq); KEYWORD(ne); KEYWORD(slt); KEYWORD(sgt); KEYWORD(sle);
   KEYWORD(sge); KEYWORD(ult); KEYWORD(ugt); KEYWORD(ule); KEYWORD(uge);
@@ -595,6 +595,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   TYPEKEYWORD("ppc_fp128", Type::getPPC_FP128Ty(Context));
   TYPEKEYWORD("label",     Type::getLabelTy(Context));
   TYPEKEYWORD("metadata",  Type::getMetadataTy(Context));
+  TYPEKEYWORD("x86_mmx",   Type::getX86_MMXTy(Context));
 #undef TYPEKEYWORD
 
   // Handle special forms for autoupgrading.  Drop these in LLVM 3.0.  This is

@@ -107,6 +107,10 @@ retl
 // CHECK:  encoding: [0x0f,0x42,0xd0]
         	cmovbl	%eax,%edx
 
+// CHECK: cmovbw %bx, %bx
+cmovnae	%bx,%bx
+
+
 // CHECK: cmovbel	%eax, %edx
 // CHECK:  encoding: [0x0f,0x46,0xd0]
         	cmovbel	%eax,%edx
@@ -415,3 +419,121 @@ retl
 // CHECK:  encoding: [0x61]
         	popal
 
+// CHECK: jmpl *8(%eax)
+// CHECK:   encoding: [0xff,0x60,0x08]
+	jmp	*8(%eax)
+
+// PR7465
+// CHECK: lcalll $2, $4660
+// CHECK:   encoding: [0x9a,0x34,0x12,0x00,0x00,0x02,0x00]
+lcalll $0x2, $0x1234
+
+
+// rdar://8061602
+L1:
+  jcxz L1
+// CHECK: jcxz L1
+// CHECK:   encoding: [0x67,0xe3,A]
+  jecxz L1
+// CHECK: jecxz L1
+// CHECK:   encoding: [0xe3,A]
+
+// rdar://8403974
+iret
+// CHECK: iretl
+// CHECK: encoding: [0xcf]
+iretw
+// CHECK: iretw
+// CHECK: encoding: [0x66,0xcf]
+iretl
+// CHECK: iretl
+// CHECK: encoding: [0xcf]
+
+// rdar://8403907
+sysret
+// CHECK: sysretl
+// CHECK: encoding: [0x0f,0x07]
+sysretl
+// CHECK: sysretl
+// CHECK: encoding: [0x0f,0x07]
+
+// rdar://8018260
+testl	%ecx, -24(%ebp)
+// CHECK: testl	-24(%ebp), %ecx
+testl	-24(%ebp), %ecx
+// CHECK: testl	-24(%ebp), %ecx
+
+
+// rdar://8407242
+push %cs
+// CHECK: pushl	%cs
+// CHECK: encoding: [0x0e]
+push %ds
+// CHECK: pushl	%ds
+// CHECK: encoding: [0x1e]
+push %ss
+// CHECK: pushl	%ss
+// CHECK: encoding: [0x16]
+push %es
+// CHECK: pushl	%es
+// CHECK: encoding: [0x06]
+push %fs
+// CHECK: pushl	%fs
+// CHECK: encoding: [0x0f,0xa0]
+push %gs
+// CHECK: pushl	%gs
+// CHECK: encoding: [0x0f,0xa8]
+
+pushw %cs
+// CHECK: pushw	%cs
+// CHECK: encoding: [0x66,0x0e]
+pushw %ds
+// CHECK: pushw	%ds
+// CHECK: encoding: [0x66,0x1e]
+pushw %ss
+// CHECK: pushw	%ss
+// CHECK: encoding: [0x66,0x16]
+pushw %es
+// CHECK: pushw	%es
+// CHECK: encoding: [0x66,0x06]
+pushw %fs
+// CHECK: pushw	%fs
+// CHECK: encoding: [0x66,0x0f,0xa0]
+pushw %gs
+// CHECK: pushw	%gs
+// CHECK: encoding: [0x66,0x0f,0xa8]
+
+pop %ss
+// CHECK: popl	%ss
+// CHECK: encoding: [0x17]
+pop %ds
+// CHECK: popl	%ds
+// CHECK: encoding: [0x1f]
+pop %es
+// CHECK: popl	%es
+// CHECK: encoding: [0x07]
+
+// rdar://8408129
+pushfd
+// CHECK: pushfl
+popfd
+// CHECK: popfl
+pushfl
+// CHECK: pushfl
+popfl
+// CHECK: popfl
+
+
+// rdar://8416805
+	setc	%bl
+	setnae	%bl
+	setnb	%bl
+	setnc	%bl
+	setna	%bl
+	setnbe	%bl
+	setpe	%bl
+	setpo	%bl
+	setnge	%bl
+	setnl	%bl
+	setng	%bl
+	setnle	%bl

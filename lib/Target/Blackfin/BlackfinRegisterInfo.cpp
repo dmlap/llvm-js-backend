@@ -75,25 +75,6 @@ BlackfinRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   return Reserved;
 }
 
-const TargetRegisterClass*
-BlackfinRegisterInfo::getPhysicalRegisterRegClass(unsigned reg, EVT VT) const {
-  assert(isPhysicalRegister(reg) && "reg must be a physical register");
-
-  // Pick the smallest register class of the right type that contains
-  // this physreg.
-  const TargetRegisterClass* BestRC = 0;
-  for (regclass_iterator I = regclass_begin(), E = regclass_end();
-       I != E; ++I) {
-    const TargetRegisterClass* RC = *I;
-    if ((VT == MVT::Other || RC->hasType(VT)) && RC->contains(reg) &&
-        (!BestRC || RC->getNumRegs() < BestRC->getNumRegs()))
-      BestRC = RC;
-  }
-
-  assert(BestRC && "Couldn't find the register class");
-  return BestRC;
-}
-
 // hasFP - Return true if the specified function should have a dedicated frame
 // pointer register.  This is true if the function has variable sized allocas or
 // if frame pointer elimination is disabled.
@@ -209,10 +190,9 @@ static unsigned findScratchRegister(MachineBasicBlock::iterator II,
   return Reg;
 }
 
-unsigned
+void
 BlackfinRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
-                                          int SPAdj, FrameIndexValue *Value,
-                                          RegScavenger *RS) const {
+                                          int SPAdj, RegScavenger *RS) const {
   MachineInstr &MI = *II;
   MachineBasicBlock &MBB = *MI.getParent();
   MachineFunction &MF = *MBB.getParent();
@@ -249,20 +229,20 @@ BlackfinRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
       MI.setDesc(TII.get(isStore
                          ? BF::STORE32p_uimm6m4
                          : BF::LOAD32p_uimm6m4));
-      return 0;
+      return;
     }
     if (BaseReg == BF::FP && isUInt<7>(-Offset)) {
       MI.setDesc(TII.get(isStore
                          ? BF::STORE32fp_nimm7m4
                          : BF::LOAD32fp_nimm7m4));
       MI.getOperand(FIPos+1).setImm(-Offset);
-      return 0;
+      return;
     }
     if (isInt<18>(Offset)) {
       MI.setDesc(TII.get(isStore
                          ? BF::STORE32p_imm18m4
                          : BF::LOAD32p_imm18m4));
-      return 0;
+      return;
     }
     // Use RegScavenger to calculate proper offset...
     MI.dump();
@@ -347,7 +327,6 @@ BlackfinRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     llvm_unreachable("Cannot eliminate frame index");
     break;
   }
-  return 0;
 }
 
 void BlackfinRegisterInfo::
@@ -361,10 +340,6 @@ processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
                                                        RC->getAlignment(),
                                                        false));
   }
-}
-
-void BlackfinRegisterInfo::
-processFunctionBeforeFrameFinalized(MachineFunction &MF) const {
 }
 
 // Emit a prologue that sets up a stack frame.

@@ -67,7 +67,7 @@ namespace {
     virtual bool runOnSCC(CallGraphSCC &SCC);
     static char ID; // Pass identification, replacement for typeid
     explicit ArgPromotion(unsigned maxElements = 3)
-      : CallGraphSCCPass(&ID), maxElements(maxElements) {}
+      : CallGraphSCCPass(ID), maxElements(maxElements) {}
 
     /// A vector used to hold the indices of a single GEP instruction
     typedef std::vector<uint64_t> IndicesVector;
@@ -84,8 +84,8 @@ namespace {
 }
 
 char ArgPromotion::ID = 0;
-static RegisterPass<ArgPromotion>
-X("argpromotion", "Promote 'by reference' arguments to scalars");
+INITIALIZE_PASS(ArgPromotion, "argpromotion",
+                "Promote 'by reference' arguments to scalars", false, false);
 
 Pass *llvm::createArgumentPromotionPass(unsigned maxElements) {
   return new ArgPromotion(maxElements);
@@ -208,8 +208,8 @@ static bool AllCalleesPassInValidPointerForArgument(Argument *Arg) {
   // have direct callees.
   for (Value::use_iterator UI = Callee->use_begin(), E = Callee->use_end();
        UI != E; ++UI) {
-    CallSite CS = CallSite::get(*UI);
-    assert(CS.getInstruction() && "Should only have direct calls!");
+    CallSite CS(*UI);
+    assert(CS && "Should only have direct calls!");
 
     if (!IsAlwaysValidPointer(CS.getArgument(ArgNo)))
       return false;
@@ -360,19 +360,20 @@ bool ArgPromotion::isSafeToPromoteArgument(Argument *Arg, bool isByVal) const {
   IndicesVector Operands;
   for (Value::use_iterator UI = Arg->use_begin(), E = Arg->use_end();
        UI != E; ++UI) {
+    User *U = *UI;
     Operands.clear();
-    if (LoadInst *LI = dyn_cast<LoadInst>(*UI)) {
+    if (LoadInst *LI = dyn_cast<LoadInst>(U)) {
       if (LI->isVolatile()) return false;  // Don't hack volatile loads
       Loads.push_back(LI);
       // Direct loads are equivalent to a GEP with a zero index and then a load.
       Operands.push_back(0);
-    } else if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(*UI)) {
+    } else if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(U)) {
       if (GEP->use_empty()) {
         // Dead GEP's cause trouble later.  Just remove them if we run into
         // them.
         getAnalysis<AliasAnalysis>().deleteValue(GEP);
         GEP->eraseFromParent();
-        // TODO: This runs the above loop over and over again for dead GEPS
+        // TODO: This runs the above loop over and over again for dead GEPs
         // Couldn't we just do increment the UI iterator earlier and erase the
         // use?
         return isSafeToPromoteArgument(Arg, isByVal);
@@ -452,12 +453,14 @@ bool ArgPromotion::isSafeToPromoteArgument(Argument *Arg, bool isByVal) const {
     // Now check every path from the entry block to the load for transparency.
     // To do this, we perform a depth first search on the inverse CFG from the
     // loading block.
-    for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI)
+    for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI) {
+      BasicBlock *P = *PI;
       for (idf_ext_iterator<BasicBlock*, SmallPtrSet<BasicBlock*, 16> >
-             I = idf_ext_begin(*PI, TranspBlocks),
-             E = idf_ext_end(*PI, TranspBlocks); I != E; ++I)
+             I = idf_ext_begin(P, TranspBlocks),
+             E = idf_ext_end(P, TranspBlocks); I != E; ++I)
         if (AA.canBasicBlockModify(**I, Arg, LoadSize))
           return false;
+    }
   }
 
   // If the path from the entry of the function to each load is free of
@@ -616,14 +619,13 @@ CallGraphNode *ArgPromotion::DoPromotion(Function *F,
   
   // Get a new callgraph node for NF.
   CallGraphNode *NF_CGN = CG.getOrInsertFunction(NF);
-  
 
   // Loop over all of the callers of the function, transforming the call sites
   // to pass in the loaded pointers.
   //
   SmallVector<Value*, 16> Args;
   while (!F->use_empty()) {
-    CallSite CS = CallSite::get(F->use_back());
+    CallSite CS(F->use_back());
     assert(CS.getCalledFunction() == F);
     Instruction *Call = CS.getInstruction();
     const AttrListPtr &CallPAL = CS.getAttributes();

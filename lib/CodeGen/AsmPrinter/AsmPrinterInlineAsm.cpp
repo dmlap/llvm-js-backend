@@ -22,7 +22,6 @@
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
-#include "llvm/MC/MCParser/AsmParser.h"
 #include "llvm/Target/TargetAsmParser.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetRegistry.h"
@@ -53,17 +52,6 @@ void AsmPrinter::EmitInlineAsm(StringRef Str, unsigned LocCookie) const {
   }
   
   SourceMgr SrcMgr;
-
-  // Ensure the buffer is newline terminated.
-  char *TmpString = 0;
-  if (Str.back() != '\n') {
-    TmpString = new char[Str.size() + 2];
-    memcpy(TmpString, Str.data(), Str.size());
-    TmpString[Str.size()] = '\n';
-    TmpString[Str.size() + 1] = 0;
-    isNullTerminated = true;
-    Str = TmpString;
-  }
   
   // If the current LLVMContext has an inline asm handler, set it in SourceMgr.
   LLVMContext &LLVMCtx = MMI->getModule()->getContext();
@@ -83,21 +71,20 @@ void AsmPrinter::EmitInlineAsm(StringRef Str, unsigned LocCookie) const {
   // Tell SrcMgr about this buffer, it takes ownership of the buffer.
   SrcMgr.AddNewSourceBuffer(Buffer, SMLoc());
   
-  AsmParser Parser(TM.getTarget(), SrcMgr, OutContext, OutStreamer, *MAI);
-  OwningPtr<TargetAsmParser> TAP(TM.getTarget().createAsmParser(Parser));
+  OwningPtr<MCAsmParser> Parser(createMCAsmParser(TM.getTarget(), SrcMgr,
+                                                  OutContext, OutStreamer,
+                                                  *MAI));
+  OwningPtr<TargetAsmParser> TAP(TM.getTarget().createAsmParser(*Parser, TM));
   if (!TAP)
     report_fatal_error("Inline asm not supported by this streamer because"
                        " we don't have an asm parser for this target\n");
-  Parser.setTargetParser(*TAP.get());
+  Parser->setTargetParser(*TAP.get());
 
   // Don't implicitly switch to the text section before the asm.
-  int Res = Parser.Run(/*NoInitialTextSection*/ true,
-                       /*NoFinalize*/ true);
+  int Res = Parser->Run(/*NoInitialTextSection*/ true,
+                        /*NoFinalize*/ true);
   if (Res && !HasDiagHandler)
     report_fatal_error("Error parsing inline asm\n");
-
-  if (TmpString)
-    delete[] TmpString;
 }
 
 

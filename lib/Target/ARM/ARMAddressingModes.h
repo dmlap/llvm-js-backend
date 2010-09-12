@@ -458,6 +458,7 @@ namespace ARM_AM {
   //    IB - Increment before
   //    DA - Decrement after
   //    DB - Decrement before
+  // For VFP instructions, only the IA and DB modes are valid.
 
   static inline AMSubMode getAM4SubMode(unsigned Mode) {
     return (AMSubMode)(Mode & 0x7);
@@ -477,14 +478,6 @@ namespace ARM_AM {
   //
   // The first operand is always a Reg.  The second operand encodes the
   // operation in bit 8 and the immediate in bits 0-7.
-  //
-  // This is also used for FP load/store multiple ops. The second operand
-  // encodes the number of registers (or 2 times the number of registers
-  // for DPR ops) in bits 0-7. In addition, bits 8-10 encode one of the
-  // following two sub-modes:
-  //
-  //    IA - Increment after
-  //    DB - Decrement before
 
   /// getAM5Opc - This function encodes the addrmode5 opc field.
   static inline unsigned getAM5Opc(AddrOpc Opc, unsigned char Offset) {
@@ -498,17 +491,6 @@ namespace ARM_AM {
     return ((AM5Opc >> 8) & 1) ? sub : add;
   }
 
-  /// getAM5Opc - This function encodes the addrmode5 opc field for VLDM and
-  /// VSTM instructions.
-  static inline unsigned getAM5Opc(AMSubMode SubMode, unsigned char Offset) {
-    assert((SubMode == ia || SubMode == db) &&
-           "Illegal addressing mode 5 sub-mode!");
-    return ((int)SubMode << 8) | Offset;
-  }
-  static inline AMSubMode getAM5SubMode(unsigned AM5Opc) {
-    return (AMSubMode)((AM5Opc >> 8) & 0x7);
-  }
-
   //===--------------------------------------------------------------------===//
   // Addressing Mode #6
   //===--------------------------------------------------------------------===//
@@ -519,7 +501,70 @@ namespace ARM_AM {
   //
   // This is stored in two operands [regaddr, align].  The first is the
   // address register.  The second operand is the value of the alignment
-  // specifier to use or zero if no explicit alignment.
+  // specifier in bytes or zero if no explicit alignment.
+  // Valid alignments depend on the specific instruction.
+
+  //===--------------------------------------------------------------------===//
+  // NEON Modified Immediates
+  //===--------------------------------------------------------------------===//
+  //
+  // Several NEON instructions (e.g., VMOV) take a "modified immediate"
+  // vector operand, where a small immediate encoded in the instruction
+  // specifies a full NEON vector value.  These modified immediates are
+  // represented here as encoded integers.  The low 8 bits hold the immediate
+  // value; bit 12 holds the "Op" field of the instruction, and bits 11-8 hold
+  // the "Cmode" field of the instruction.  The interfaces below treat the
+  // Op and Cmode values as a single 5-bit value.
+
+  static inline unsigned createNEONModImm(unsigned OpCmode, unsigned Val) {
+    return (OpCmode << 8) | Val;
+  }
+  static inline unsigned getNEONModImmOpCmode(unsigned ModImm) {
+    return (ModImm >> 8) & 0x1f;
+  }
+  static inline unsigned getNEONModImmVal(unsigned ModImm) {
+    return ModImm & 0xff;
+  }
+
+  /// decodeNEONModImm - Decode a NEON modified immediate value into the
+  /// element value and the element size in bits.  (If the element size is
+  /// smaller than the vector, it is splatted into all the elements.)
+  static inline uint64_t decodeNEONModImm(unsigned ModImm, unsigned &EltBits) {
+    unsigned OpCmode = getNEONModImmOpCmode(ModImm);
+    unsigned Imm8 = getNEONModImmVal(ModImm);
+    uint64_t Val = 0;
+
+    if (OpCmode == 0xe) {
+      // 8-bit vector elements
+      Val = Imm8;
+      EltBits = 8;
+    } else if ((OpCmode & 0xc) == 0x8) {
+      // 16-bit vector elements
+      unsigned ByteNum = (OpCmode & 0x6) >> 1;
+      Val = Imm8 << (8 * ByteNum);
+      EltBits = 16;
+    } else if ((OpCmode & 0x8) == 0) {
+      // 32-bit vector elements, zero with one byte set
+      unsigned ByteNum = (OpCmode & 0x6) >> 1;
+      Val = Imm8 << (8 * ByteNum);
+      EltBits = 32;
+    } else if ((OpCmode & 0xe) == 0xc) {
+      // 32-bit vector elements, one byte with low bits set
+      unsigned ByteNum = 1 + (OpCmode & 0x1);
+      Val = (Imm8 << (8 * ByteNum)) | (0xffff >> (8 * (2 - ByteNum)));
+      EltBits = 32;
+    } else if (OpCmode == 0x1e) {
+      // 64-bit vector elements
+      for (unsigned ByteNum = 0; ByteNum < 8; ++ByteNum) {
+        if ((ModImm >> ByteNum) & 1)
+          Val |= (uint64_t)0xff << (8 * ByteNum);
+      }
+      EltBits = 64;
+    } else {
+      assert(false && "Unsupported NEON immediate");
+    }
+    return Val;
+  }
 
 } // end namespace ARM_AM
 } // end namespace llvm

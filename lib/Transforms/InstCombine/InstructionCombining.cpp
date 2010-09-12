@@ -60,8 +60,8 @@ STATISTIC(NumSunkInst , "Number of instructions sunk");
 
 
 char InstCombiner::ID = 0;
-static RegisterPass<InstCombiner>
-X("instcombine", "Combine redundant instructions");
+INITIALIZE_PASS(InstCombiner, "instcombine",
+                "Combine redundant instructions", false, false);
 
 void InstCombiner::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addPreservedID(LCSSAID);
@@ -715,9 +715,10 @@ Instruction *InstCombiner::visitGetElementPtrInst(GetElementPtrInst &GEP) {
 static bool IsOnlyNullComparedAndFreed(const Value &V) {
   for (Value::const_use_iterator UI = V.use_begin(), UE = V.use_end();
        UI != UE; ++UI) {
-    if (isFreeCall(*UI))
+    const User *U = *UI;
+    if (isFreeCall(U))
       continue;
-    if (const ICmpInst *ICI = dyn_cast<ICmpInst>(*UI))
+    if (const ICmpInst *ICI = dyn_cast<ICmpInst>(U))
       if (ICI->isEquality() && isa<ConstantPointerNull>(ICI->getOperand(1)))
         continue;
     return false;

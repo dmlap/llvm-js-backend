@@ -246,22 +246,25 @@ protected:
     typename GraphT::NodeType* NewBBSucc = *GraphT::child_begin(NewBB);
 
     std::vector<typename GraphT::NodeType*> PredBlocks;
-    for (typename GraphTraits<Inverse<N> >::ChildIteratorType PI =
-         GraphTraits<Inverse<N> >::child_begin(NewBB),
-         PE = GraphTraits<Inverse<N> >::child_end(NewBB); PI != PE; ++PI)
+    typedef GraphTraits<Inverse<N> > InvTraits;
+    for (typename InvTraits::ChildIteratorType PI =
+         InvTraits::child_begin(NewBB),
+         PE = InvTraits::child_end(NewBB); PI != PE; ++PI)
       PredBlocks.push_back(*PI);
 
-    assert(!PredBlocks.empty() && "No predblocks??");
+    assert(!PredBlocks.empty() && "No predblocks?");
 
     bool NewBBDominatesNewBBSucc = true;
-    for (typename GraphTraits<Inverse<N> >::ChildIteratorType PI =
-         GraphTraits<Inverse<N> >::child_begin(NewBBSucc),
-         E = GraphTraits<Inverse<N> >::child_end(NewBBSucc); PI != E; ++PI)
-      if (*PI != NewBB && !DT.dominates(NewBBSucc, *PI) &&
-          DT.isReachableFromEntry(*PI)) {
+    for (typename InvTraits::ChildIteratorType PI =
+         InvTraits::child_begin(NewBBSucc),
+         E = InvTraits::child_end(NewBBSucc); PI != E; ++PI) {
+      typename InvTraits::NodeType *ND = *PI;
+      if (ND != NewBB && !DT.dominates(NewBBSucc, ND) &&
+          DT.isReachableFromEntry(ND)) {
         NewBBDominatesNewBBSucc = false;
         break;
       }
+    }
 
     // Find NewBB's immediate dominator and create new dominator tree node for
     // NewBB.
@@ -506,7 +509,7 @@ public:
   }
 
   /// eraseNode - Removes a node from the dominator tree. Block must not
-  /// domiante any other blocks. Removes node from its immediate dominator's
+  /// dominate any other blocks. Removes node from its immediate dominator's
   /// children list. Deletes dominator node associated with basic block BB.
   void eraseNode(NodeT *BB) {
     DomTreeNodeBase<NodeT> *Node = getNode(BB);
@@ -699,7 +702,7 @@ public:
   static char ID; // Pass ID, replacement for typeid
   DominatorTreeBase<BasicBlock>* DT;
 
-  DominatorTree() : FunctionPass(&ID) {
+  DominatorTree() : FunctionPass(ID) {
     DT = new DominatorTreeBase<BasicBlock>(false);
   }
 
@@ -804,7 +807,7 @@ public:
   }
 
   /// eraseNode - Removes a node from the dominator tree. Block must not
-  /// domiante any other blocks. Removes node from its immediate dominator's
+  /// dominate any other blocks. Removes node from its immediate dominator's
   /// children list. Deletes dominator node associated with basic block BB.
   inline void eraseNode(BasicBlock *BB) {
     DT->eraseNode(BB);
@@ -887,7 +890,7 @@ protected:
   const bool IsPostDominators;
 
 public:
-  DominanceFrontierBase(void *ID, bool isPostDom)
+  DominanceFrontierBase(char &ID, bool isPostDom)
     : FunctionPass(ID), IsPostDominators(isPostDom) {}
 
   /// getRoots - Return the root blocks of the current CFG.  This may include
@@ -992,6 +995,9 @@ public:
   /// print - Convert to human readable form
   ///
   virtual void print(raw_ostream &OS, const Module* = 0) const;
+
+  /// dump - Dump the dominance frontier to dbgs().
+  void dump() const;
 };
 
 
@@ -1003,7 +1009,7 @@ class DominanceFrontier : public DominanceFrontierBase {
 public:
   static char ID; // Pass ID, replacement for typeid
   DominanceFrontier() :
-    DominanceFrontierBase(&ID, false) {}
+    DominanceFrontierBase(ID, false) {}
 
   BasicBlock *getRoot() const {
     assert(Roots.size() == 1 && "Should always have entry node!");

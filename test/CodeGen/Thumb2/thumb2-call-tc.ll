@@ -1,5 +1,6 @@
 ; RUN: llc < %s -mtriple=thumbv7-apple-darwin -mattr=+thumb2 | FileCheck %s -check-prefix=DARWIN
 ; RUN: llc < %s -mtriple=thumbv7-linux -mattr=+thumb2 | FileCheck %s -check-prefix=LINUX
+; XFAIL: *
 
 @t = weak global i32 ()* null           ; <i32 ()**> [#uses=1]
 
@@ -23,5 +24,15 @@ define void @h() {
 ; LINUX: bx r0 @ TAILCALL
         %tmp = load i32 ()** @t         ; <i32 ()*> [#uses=1]
         %tmp.upgrd.2 = tail call i32 %tmp( )            ; <i32> [#uses=0]
+        ret void
+}
+
+define void @j() {
+; DARWIN: j:
+; DARWIN: b.w _f  @ TAILCALL
+
+; LINUX: j:
+; LINUX: b.w f  @ TAILCALL
+        tail call void @f()
         ret void
 }

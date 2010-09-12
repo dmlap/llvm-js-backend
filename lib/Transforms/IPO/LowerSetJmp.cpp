@@ -109,7 +109,7 @@ namespace {
     bool IsTransformableFunction(StringRef Name);
   public:
     static char ID; // Pass identification, replacement for typeid
-    LowerSetJmp() : ModulePass(&ID) {}
+    LowerSetJmp() : ModulePass(ID) {}
 
     void visitCallInst(CallInst& CI);
     void visitInvokeInst(InvokeInst& II);
@@ -122,7 +122,7 @@ namespace {
 } // end anonymous namespace
 
 char LowerSetJmp::ID = 0;
-static RegisterPass<LowerSetJmp> X("lowersetjmp", "Lower Set Jump");
+INITIALIZE_PASS(LowerSetJmp, "lowersetjmp", "Lower Set Jump", false, false);
 
 // run - Run the transformation on the program. We grab the function
 // prototypes for longjmp and setjmp. If they are used in the program,
@@ -406,12 +406,14 @@ void LowerSetJmp::TransformSetJmpCall(CallInst* Inst)
     // Loop over all of the uses of instruction.  If any of them are after the
     // call, "spill" the value to the stack.
     for (Value::use_iterator UI = II->use_begin(), E = II->use_end();
-         UI != E; ++UI)
-      if (cast<Instruction>(*UI)->getParent() != ABlock ||
-          InstrsAfterCall.count(cast<Instruction>(*UI))) {
+         UI != E; ++UI) {
+      User *U = *UI;
+      if (cast<Instruction>(U)->getParent() != ABlock ||
+          InstrsAfterCall.count(cast<Instruction>(U))) {
         DemoteRegToStack(*II);
         break;
       }
+    }
   InstrsAfterCall.clear();
 
   // Change the setjmp call into a branch statement. We'll remove the

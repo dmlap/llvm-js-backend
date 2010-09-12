@@ -348,13 +348,13 @@ public:
   SDValue getTargetConstantFP(const ConstantFP &Val, EVT VT) {
     return getConstantFP(Val, VT, true);
   }
-  SDValue getGlobalAddress(const GlobalValue *GV, EVT VT,
+  SDValue getGlobalAddress(const GlobalValue *GV, DebugLoc DL, EVT VT,
                            int64_t offset = 0, bool isTargetGA = false,
                            unsigned char TargetFlags = 0);
-  SDValue getTargetGlobalAddress(const GlobalValue *GV, EVT VT,
+  SDValue getTargetGlobalAddress(const GlobalValue *GV, DebugLoc DL, EVT VT,
                                  int64_t offset = 0,
                                  unsigned char TargetFlags = 0) {
-    return getGlobalAddress(GV, VT, offset, true, TargetFlags);
+    return getGlobalAddress(GV, DL, VT, offset, true, TargetFlags);
   }
   SDValue getFrameIndex(int FI, EVT VT, bool isTarget = false);
   SDValue getTargetFrameIndex(int FI, EVT VT) {
@@ -582,7 +582,7 @@ public:
   /// getVAArg - VAArg produces a result and token chain, and takes a pointer
   /// and a source value as input.
   SDValue getVAArg(EVT VT, DebugLoc dl, SDValue Chain, SDValue Ptr,
-                   SDValue SV, unsigned Align = 0);
+                   SDValue SV, unsigned Align);
 
   /// getAtomic - Gets a node for an atomic op, produces result and chain and
   /// takes 3 operands
@@ -632,18 +632,20 @@ public:
   SDValue getLoad(EVT VT, DebugLoc dl, SDValue Chain, SDValue Ptr,
                   const Value *SV, int SVOffset, bool isVolatile,
                   bool isNonTemporal, unsigned Alignment);
-  SDValue getExtLoad(ISD::LoadExtType ExtType, DebugLoc dl, EVT VT,
+  SDValue getExtLoad(ISD::LoadExtType ExtType, EVT VT, DebugLoc dl,
                      SDValue Chain, SDValue Ptr, const Value *SV,
                      int SVOffset, EVT MemVT, bool isVolatile,
                      bool isNonTemporal, unsigned Alignment);
   SDValue getIndexedLoad(SDValue OrigLoad, DebugLoc dl, SDValue Base,
-                           SDValue Offset, ISD::MemIndexedMode AM);
-  SDValue getLoad(ISD::MemIndexedMode AM, DebugLoc dl, ISD::LoadExtType ExtType,
-                  EVT VT, SDValue Chain, SDValue Ptr, SDValue Offset,
+                         SDValue Offset, ISD::MemIndexedMode AM);
+  SDValue getLoad(ISD::MemIndexedMode AM, ISD::LoadExtType ExtType,
+                  EVT VT, DebugLoc dl,
+                  SDValue Chain, SDValue Ptr, SDValue Offset,
                   const Value *SV, int SVOffset, EVT MemVT,
                   bool isVolatile, bool isNonTemporal, unsigned Alignment);
-  SDValue getLoad(ISD::MemIndexedMode AM, DebugLoc dl, ISD::LoadExtType ExtType,
-                  EVT VT, SDValue Chain, SDValue Ptr, SDValue Offset,
+  SDValue getLoad(ISD::MemIndexedMode AM, ISD::LoadExtType ExtType,
+                  EVT VT, DebugLoc dl,
+                  SDValue Chain, SDValue Ptr, SDValue Offset,
                   EVT MemVT, MachineMemOperand *MMO);
 
   /// getStore - Helper function to build ISD::STORE nodes.
@@ -974,10 +976,6 @@ public:
   /// isVerifiedDebugInfoDesc - Returns true if the specified SDValue has
   /// been verified as a debug information descriptor.
   bool isVerifiedDebugInfoDesc(SDValue Op) const;
-
-  /// getShuffleScalarElt - Returns the scalar element that will make up the ith
-  /// element of the result of the vector shuffle.
-  SDValue getShuffleScalarElt(const ShuffleVectorSDNode *N, unsigned Idx);
 
   /// UnrollVectorOp - Utility function used by legalize and lowering to
   /// "unroll" a vector operation by splitting out the scalars and operating

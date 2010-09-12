@@ -153,6 +153,7 @@ readExponent(StringRef::iterator begin, StringRef::iterator end)
     value += absExponent * 10;
     if (absExponent >= overlargeExponent) {
       absExponent = overlargeExponent;
+      p = end;  /* outwit assert below */
       break;
     }
     absExponent = value;
@@ -761,7 +762,7 @@ APFloat::APFloat(const fltSemantics &ourSemantics,
     makeNaN();
 }
 
-APFloat::APFloat(const fltSemantics &ourSemantics, const StringRef& text)
+APFloat::APFloat(const fltSemantics &ourSemantics, StringRef text)
 {
   assertArithmeticOK(ourSemantics);
   initialize(&ourSemantics);
@@ -2185,8 +2186,7 @@ APFloat::convertFromZeroExtendedInteger(const integerPart *parts,
 }
 
 APFloat::opStatus
-APFloat::convertFromHexadecimalString(const StringRef &s,
-                                      roundingMode rounding_mode)
+APFloat::convertFromHexadecimalString(StringRef s, roundingMode rounding_mode)
 {
   lostFraction lost_fraction = lfExactlyZero;
   integerPart *significand;
@@ -2361,7 +2361,7 @@ APFloat::roundSignificandWithExponent(const integerPart *decSigParts,
 }
 
 APFloat::opStatus
-APFloat::convertFromDecimalString(const StringRef &str, roundingMode rounding_mode)
+APFloat::convertFromDecimalString(StringRef str, roundingMode rounding_mode)
 {
   decimalInfo D;
   opStatus fs;
@@ -2471,7 +2471,7 @@ APFloat::convertFromDecimalString(const StringRef &str, roundingMode rounding_mo
 }
 
 APFloat::opStatus
-APFloat::convertFromString(const StringRef &str, roundingMode rounding_mode)
+APFloat::convertFromString(StringRef str, roundingMode rounding_mode)
 {
   assertArithmeticOK(*semantics);
   assert(!str.empty() && "Invalid string length");

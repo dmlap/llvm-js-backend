@@ -221,9 +221,13 @@ def tADDrPCi : T1I<(outs tGPR:$dst), (ins t_imm_s4:$rhs), IIC_iALUi,
                T1Encoding<{1,0,1,0,0,?}>; // A6.2 & A8.6.10
 
 // ADD rd, sp, #imm8
+// This is rematerializable, which is particularly useful for taking the
+// address of locals.
+let isReMaterializable = 1 in {
 def tADDrSPi : T1I<(outs tGPR:$dst), (ins GPR:$sp, t_imm_s4:$rhs), IIC_iALUi,
                   "add\t$dst, $sp, $rhs", []>,
                T1Encoding<{1,0,1,0,1,?}>; // A6.2 & A8.6.8
+}
 
 // ADD sp, sp, #imm7
 def tADDspi : TIt<(outs GPR:$dst), (ins GPR:$lhs, t_imm_s4:$rhs), IIC_iALUi,
@@ -250,19 +254,6 @@ def tADDspr : TIt<(outs GPR:$dst), (ins GPR:$lhs, GPR:$rhs), IIC_iALUr,
   let Inst{7} = 1;
   let Inst{2-0} = 0b101;
 }
-
-// Pseudo instruction that will expand into a tSUBspi + a copy.
-let usesCustomInserter = 1 in { // Expanded after instruction selection.
-def tSUBspi_ : PseudoInst<(outs GPR:$dst), (ins GPR:$lhs, t_imm_s4:$rhs),
-               NoItinerary, "${:comment} sub\t$dst, $rhs", []>;
-
-def tADDspr_ : PseudoInst<(outs GPR:$dst), (ins GPR:$lhs, GPR:$rhs),
-               NoItinerary, "${:comment} add\t$dst, $rhs", []>;
-
-let Defs = [CPSR] in
-def tANDsp : PseudoInst<(outs tGPR:$dst), (ins tGPR:$lhs, tGPR:$rhs),
-             NoItinerary, "${:comment} and\t$dst, $rhs", []>;
-} // usesCustomInserter
 
 //===----------------------------------------------------------------------===//
 //  Control Flow Instructions.
@@ -291,7 +282,8 @@ let isBranch = 1, isTerminator = 1, isBarrier = 1, isIndirectBranch = 1 in {
 // FIXME: remove when we have a way to marking a MI with these properties.
 let isReturn = 1, isTerminator = 1, isBarrier = 1, mayLoad = 1,
     hasExtraDefRegAllocReq = 1 in
-def tPOP_RET : T1I<(outs), (ins pred:$p, reglist:$dsts, variable_ops), IIC_Br,
+def tPOP_RET : T1I<(outs), (ins pred:$p, reglist:$dsts, variable_ops),
+                   IIC_iLoadmBr,
                    "pop${p}\t$dsts", []>,
                T1Misc<{1,1,0,?,?,?,?}>;
 
@@ -378,7 +370,7 @@ let isBranch = 1, isTerminator = 1 in {
 
   def tBR_JTr : T1JTI<(outs),
                       (ins tGPR:$target, jtblock_operand:$jt, i32imm:$id),
-                      IIC_Br, "mov\tpc, $target\n\t.align\t2\n$jt",
+                      IIC_Br, "mov\tpc, $target\n\t.align\t2$jt",
                       [(ARMbrjt tGPR:$target, tjumptable:$jt, imm:$id)]>,
                 Encoding16 {
     let Inst{15-7} = 0b010001101;
@@ -544,7 +536,7 @@ def tSpill : T1pIs<(outs), (ins tGPR:$src, t_addrmode_sp:$addr), IIC_iStorei,
 //  Load / store multiple Instructions.
 //
 
-// These requires base address to be written back or one of the loaded regs.
+// These require base address to be written back or one of the loaded regs.
 let mayLoad = 1, neverHasSideEffects = 1, hasExtraDefRegAllocReq = 1 in {
 def tLDM : T1I<(outs),
                (ins addrmode4:$addr, pred:$p, reglist:$dsts, variable_ops),
@@ -569,12 +561,12 @@ def tSTM_UPD : T1It<(outs tGPR:$wb),
            T1Encoding<{1,1,0,0,0,?}>; // A6.2 & A8.6.189
 
 let mayLoad = 1, Uses = [SP], Defs = [SP], hasExtraDefRegAllocReq = 1 in
-def tPOP : T1I<(outs), (ins pred:$p, reglist:$dsts, variable_ops), IIC_Br,
+def tPOP : T1I<(outs), (ins pred:$p, reglist:$dsts, variable_ops), IIC_iLoadmBr,
                "pop${p}\t$dsts", []>,
            T1Misc<{1,1,0,?,?,?,?}>;
 
 let mayStore = 1, Uses = [SP], Defs = [SP], hasExtraSrcRegAllocReq = 1 in
-def tPUSH : T1I<(outs), (ins pred:$p, reglist:$srcs, variable_ops), IIC_Br,
+def tPUSH : T1I<(outs), (ins pred:$p, reglist:$srcs, variable_ops), IIC_iStorem,
                 "push${p}\t$srcs", []>,
             T1Misc<{0,1,0,?,?,?,?}>;
 

@@ -18,6 +18,7 @@
 #include "llvm/Constants.h"
 #include "llvm/DerivedTypes.h"
 #include "llvm/Function.h"
+#include "llvm/GlobalAlias.h"
 #include "llvm/GlobalVariable.h"
 #include "llvm/Instructions.h"
 #include "llvm/IntrinsicInst.h"
@@ -30,6 +31,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/GetElementPtrTypeIterator.h"
 #include <algorithm>
 using namespace llvm;
 
@@ -137,8 +139,8 @@ namespace {
   ///
   struct NoAA : public ImmutablePass, public AliasAnalysis {
     static char ID; // Class identification, replacement for typeinfo
-    NoAA() : ImmutablePass(&ID) {}
-    explicit NoAA(void *PID) : ImmutablePass(PID) { }
+    NoAA() : ImmutablePass(ID) {}
+    explicit NoAA(char &PID) : ImmutablePass(PID) { }
 
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
     }
@@ -152,28 +154,41 @@ namespace {
       return MayAlias;
     }
 
-    virtual void getArgumentAccesses(Function *F, CallSite CS,
-                                     std::vector<PointerAccessInfo> &Info) {
-      llvm_unreachable("This method may not be called on this function!");
+    virtual ModRefBehavior getModRefBehavior(ImmutableCallSite CS) {
+      return UnknownModRefBehavior;
+    }
+    virtual ModRefBehavior getModRefBehavior(const Function *F) {
+      return UnknownModRefBehavior;
     }
 
     virtual bool pointsToConstantMemory(const Value *P) { return false; }
-    virtual ModRefResult getModRefInfo(CallSite CS, Value *P, unsigned Size) {
+    virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
+                                       const Value *P, unsigned Size) {
       return ModRef;
     }
-    virtual ModRefResult getModRefInfo(CallSite CS1, CallSite CS2) {
+    virtual ModRefResult getModRefInfo(ImmutableCallSite CS1,
+                                       ImmutableCallSite CS2) {
       return ModRef;
+    }
+
+    virtual DependenceResult getDependence(const Instruction *First,
+                                           const Value *FirstPHITranslatedAddr,
+                                           DependenceQueryFlags FirstFlags,
+                                           const Instruction *Second,
+                                           const Value *SecondPHITranslatedAddr,
+                                           DependenceQueryFlags SecondFlags) {
+      return Unknown;
     }
 
     virtual void deleteValue(Value *V) {}
     virtual void copyValue(Value *From, Value *To) {}
     
     /// getAdjustedAnalysisPointer - This method is used when a pass implements
-    /// an analysis interface through multiple inheritance.  If needed, it should
-    /// override this to adjust the this pointer as needed for the specified pass
-    /// info.
-    virtual void *getAdjustedAnalysisPointer(const PassInfo *PI) {
-      if (PI->isPassID(&AliasAnalysis::ID))
+    /// an analysis interface through multiple inheritance.  If needed, it
+    /// should override this to adjust the this pointer as needed for the
+    /// specified pass info.
+    virtual void *getAdjustedAnalysisPointer(const void *ID) {
+      if (ID == &AliasAnalysis::ID)
         return (AliasAnalysis*)this;
       return this;
     }
@@ -182,18 +197,283 @@ namespace {
 
 // Register this pass...
 char NoAA::ID = 0;
-static RegisterPass<NoAA>
-U("no-aa", "No Alias Analysis (always returns 'may' alias)", true, true);
-
-// Declare that we implement the AliasAnalysis interface
-static RegisterAnalysisGroup<AliasAnalysis> V(U);
+INITIALIZE_AG_PASS(NoAA, AliasAnalysis, "no-aa",
+                   "No Alias Analysis (always returns 'may' alias)",
+                   true, true, false);
 
 ImmutablePass *llvm::createNoAAPass() { return new NoAA(); }
+
+//===----------------------------------------------------------------------===//
+// GetElementPtr Instruction Decomposition and Analysis
+//===----------------------------------------------------------------------===//
+
+namespace {
+  enum ExtensionKind {
+    EK_NotExtended,
+    EK_SignExt,
+    EK_ZeroExt
+  };
+  
+  struct VariableGEPIndex {
+    const Value *V;
+    ExtensionKind Extension;
+    int64_t Scale;
+  };
+}
+
+
+/// GetLinearExpression - Analyze the specified value as a linear expression:
+/// "A*V + B", where A and B are constant integers.  Return the scale and offset
+/// values as APInts and return V as a Value*, and return whether we looked
+/// through any sign or zero extends.  The incoming Value is known to have
+/// IntegerType and it may already be sign or zero extended.
+///
+/// Note that this looks through extends, so the high bits may not be
+/// represented in the result.
+static Value *GetLinearExpression(Value *V, APInt &Scale, APInt &Offset,
+                                  ExtensionKind &Extension,
+                                  const TargetData &TD, unsigned Depth) {
+  assert(V->getType()->isIntegerTy() && "Not an integer value");
+
+  // Limit our recursion depth.
+  if (Depth == 6) {
+    Scale = 1;
+    Offset = 0;
+    return V;
+  }
+  
+  if (BinaryOperator *BOp = dyn_cast<BinaryOperator>(V)) {
+    if (ConstantInt *RHSC = dyn_cast<ConstantInt>(BOp->getOperand(1))) {
+      switch (BOp->getOpcode()) {
+      default: break;
+      case Instruction::Or:
+        // X|C == X+C if all the bits in C are unset in X.  Otherwise we can't
+        // analyze it.
+        if (!MaskedValueIsZero(BOp->getOperand(0), RHSC->getValue(), &TD))
+          break;
+        // FALL THROUGH.
+      case Instruction::Add:
+        V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, Extension,
+                                TD, Depth+1);
+        Offset += RHSC->getValue();
+        return V;
+      case Instruction::Mul:
+        V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, Extension,
+                                TD, Depth+1);
+        Offset *= RHSC->getValue();
+        Scale *= RHSC->getValue();
+        return V;
+      case Instruction::Shl:
+        V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, Extension,
+                                TD, Depth+1);
+        Offset <<= RHSC->getValue().getLimitedValue();
+        Scale <<= RHSC->getValue().getLimitedValue();
+        return V;
+      }
+    }
+  }
+  
+  // Since GEP indices are sign extended anyway, we don't care about the high
+  // bits of a sign or zero extended value - just scales and offsets.  The
+  // extensions have to be consistent though.
+  if ((isa<SExtInst>(V) && Extension != EK_ZeroExt) ||
+      (isa<ZExtInst>(V) && Extension != EK_SignExt)) {
+    Value *CastOp = cast<CastInst>(V)->getOperand(0);
+    unsigned OldWidth = Scale.getBitWidth();
+    unsigned SmallWidth = CastOp->getType()->getPrimitiveSizeInBits();
+    Scale.trunc(SmallWidth);
+    Offset.trunc(SmallWidth);
+    Extension = isa<SExtInst>(V) ? EK_SignExt : EK_ZeroExt;
+
+    Value *Result = GetLinearExpression(CastOp, Scale, Offset, Extension,
+                                        TD, Depth+1);
+    Scale.zext(OldWidth);
+    Offset.zext(OldWidth);
+    
+    return Result;
+  }
+  
+  Scale = 1;
+  Offset = 0;
+  return V;
+}
+
+/// DecomposeGEPExpression - If V is a symbolic pointer expression, decompose it
+/// into a base pointer with a constant offset and a number of scaled symbolic
+/// offsets.
+///
+/// The scaled symbolic offsets (represented by pairs of a Value* and a scale in
+/// the VarIndices vector) are Value*'s that are known to be scaled by the
+/// specified amount, but which may have other unrepresented high bits. As such,
+/// the gep cannot necessarily be reconstructed from its decomposed form.
+///
+/// When TargetData is around, this function is capable of analyzing everything
+/// that Value::getUnderlyingObject() can look through.  When not, it just looks
+/// through pointer casts.
+///
+static const Value *
+DecomposeGEPExpression(const Value *V, int64_t &BaseOffs,
+                       SmallVectorImpl<VariableGEPIndex> &VarIndices,
+                       const TargetData *TD) {
+  // Limit recursion depth to limit compile time in crazy cases.
+  unsigned MaxLookup = 6;
+  
+  BaseOffs = 0;
+  do {
+    // See if this is a bitcast or GEP.
+    const Operator *Op = dyn_cast<Operator>(V);
+    if (Op == 0) {
+      // The only non-operator case we can handle are GlobalAliases.
+      if (const GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
+        if (!GA->mayBeOverridden()) {
+          V = GA->getAliasee();
+          continue;
+        }
+      }
+      return V;
+    }
+    
+    if (Op->getOpcode() == Instruction::BitCast) {
+      V = Op->getOperand(0);
+      continue;
+    }
+    
+    const GEPOperator *GEPOp = dyn_cast<GEPOperator>(Op);
+    if (GEPOp == 0)
+      return V;
+    
+    // Don't attempt to analyze GEPs over unsized objects.
+    if (!cast<PointerType>(GEPOp->getOperand(0)->getType())
+        ->getElementType()->isSized())
+      return V;
+    
+    // If we are lacking TargetData information, we can't compute the offets of
+    // elements computed by GEPs.  However, we can handle bitcast equivalent
+    // GEPs.
+    if (TD == 0) {
+      if (!GEPOp->hasAllZeroIndices())
+        return V;
+      V = GEPOp->getOperand(0);
+      continue;
+    }
+    
+    // Walk the indices of the GEP, accumulating them into BaseOff/VarIndices.
+    gep_type_iterator GTI = gep_type_begin(GEPOp);
+    for (User::const_op_iterator I = GEPOp->op_begin()+1,
+         E = GEPOp->op_end(); I != E; ++I) {
+      Value *Index = *I;
+      // Compute the (potentially symbolic) offset in bytes for this index.
+      if (const StructType *STy = dyn_cast<StructType>(*GTI++)) {
+        // For a struct, add the member offset.
+        unsigned FieldNo = cast<ConstantInt>(Index)->getZExtValue();
+        if (FieldNo == 0) continue;
+        
+        BaseOffs += TD->getStructLayout(STy)->getElementOffset(FieldNo);
+        continue;
+      }
+      
+      // For an array/pointer, add the element offset, explicitly scaled.
+      if (ConstantInt *CIdx = dyn_cast<ConstantInt>(Index)) {
+        if (CIdx->isZero()) continue;
+        BaseOffs += TD->getTypeAllocSize(*GTI)*CIdx->getSExtValue();
+        continue;
+      }
+      
+      uint64_t Scale = TD->getTypeAllocSize(*GTI);
+      ExtensionKind Extension = EK_NotExtended;
+      
+      // If the integer type is smaller than the pointer size, it is implicitly
+      // sign extended to pointer size.
+      unsigned Width = cast<IntegerType>(Index->getType())->getBitWidth();
+      if (TD->getPointerSizeInBits() > Width)
+        Extension = EK_SignExt;
+      
+      // Use GetLinearExpression to decompose the index into a C1*V+C2 form.
+      APInt IndexScale(Width, 0), IndexOffset(Width, 0);
+      Index = GetLinearExpression(Index, IndexScale, IndexOffset, Extension,
+                                  *TD, 0);
+      
+      // The GEP index scale ("Scale") scales C1*V+C2, yielding (C1*V+C2)*Scale.
+      // This gives us an aggregate computation of (C1*Scale)*V + C2*Scale.
+      BaseOffs += IndexOffset.getZExtValue()*Scale;
+      Scale *= IndexScale.getZExtValue();
+      
+      
+      // If we already had an occurrance of this index variable, merge this
+      // scale into it.  For example, we want to handle:
+      //   A[x][x] -> x*16 + x*4 -> x*20
+      // This also ensures that 'x' only appears in the index list once.
+      for (unsigned i = 0, e = VarIndices.size(); i != e; ++i) {
+        if (VarIndices[i].V == Index &&
+            VarIndices[i].Extension == Extension) {
+          Scale += VarIndices[i].Scale;
+          VarIndices.erase(VarIndices.begin()+i);
+          break;
+        }
+      }
+      
+      // Make sure that we have a scale that makes sense for this target's
+      // pointer size.
+      if (unsigned ShiftBits = 64-TD->getPointerSizeInBits()) {
+        Scale <<= ShiftBits;
+        Scale >>= ShiftBits;
+      }
+      
+      if (Scale) {
+        VariableGEPIndex Entry = {Index, Extension, Scale};
+        VarIndices.push_back(Entry);
+      }
+    }
+    
+    // Analyze the base pointer next.
+    V = GEPOp->getOperand(0);
+  } while (--MaxLookup);
+  
+  // If the chain of expressions is too deep, just return early.
+  return V;
+}
+
+/// GetIndexDifference - Dest and Src are the variable indices from two
+/// decomposed GetElementPtr instructions GEP1 and GEP2 which have common base
+/// pointers.  Subtract the GEP2 indices from GEP1 to find the symbolic
+/// difference between the two pointers. 
+static void GetIndexDifference(SmallVectorImpl<VariableGEPIndex> &Dest,
+                               const SmallVectorImpl<VariableGEPIndex> &Src) {
+  if (Src.empty()) return;
+
+  for (unsigned i = 0, e = Src.size(); i != e; ++i) {
+    const Value *V = Src[i].V;
+    ExtensionKind Extension = Src[i].Extension;
+    int64_t Scale = Src[i].Scale;
+    
+    // Find V in Dest.  This is N^2, but pointer indices almost never have more
+    // than a few variable indexes.
+    for (unsigned j = 0, e = Dest.size(); j != e; ++j) {
+      if (Dest[j].V != V || Dest[j].Extension != Extension) continue;
+      
+      // If we found it, subtract off Scale V's from the entry in Dest.  If it
+      // goes to zero, remove the entry.
+      if (Dest[j].Scale != Scale)
+        Dest[j].Scale -= Scale;
+      else
+        Dest.erase(Dest.begin()+j);
+      Scale = 0;
+      break;
+    }
+    
+    // If we didn't consume this entry, add it to the end of the Dest list.
+    if (Scale) {
+      VariableGEPIndex Entry = { V, Extension, -Scale };
+      Dest.push_back(Entry);
+    }
+  }
+}
 
 //===----------------------------------------------------------------------===//
 // BasicAliasAnalysis Pass
 //===----------------------------------------------------------------------===//
 
+#ifndef NDEBUG
 static const Function *getParent(const Value *V) {
   if (const Instruction *inst = dyn_cast<Instruction>(V))
     return inst->getParent()->getParent();
@@ -204,15 +484,6 @@ static const Function *getParent(const Value *V) {
   return NULL;
 }
 
-static bool sameParent(const Value *O1, const Value *O2) {
-
-  const Function *F1 = getParent(O1);
-  const Function *F2 = getParent(O2);
-
-  return F1 && F1 == F2;
-}
-
-#ifdef XDEBUG
 static bool notDifferentParent(const Value *O1, const Value *O2) {
 
   const Function *F1 = getParent(O1);
@@ -227,43 +498,53 @@ namespace {
   /// Because it doesn't chain to a previous alias analysis (like -no-aa), it
   /// derives from the NoAA class.
   struct BasicAliasAnalysis : public NoAA {
-    /// Interprocedural - Flag for "interprocedural" mode, where we must
-    /// support queries of values which live in different functions.
-    bool Interprocedural;
-
     static char ID; // Class identification, replacement for typeinfo
-    BasicAliasAnalysis()
-      : NoAA(&ID), Interprocedural(false) {}
-    BasicAliasAnalysis(void *PID, bool interprocedural)
-      : NoAA(PID), Interprocedural(interprocedural) {}
+    BasicAliasAnalysis() : NoAA(ID) {}
 
-    AliasResult alias(const Value *V1, unsigned V1Size,
-                      const Value *V2, unsigned V2Size) {
+    virtual AliasResult alias(const Value *V1, unsigned V1Size,
+                              const Value *V2, unsigned V2Size) {
       assert(Visited.empty() && "Visited must be cleared after use!");
-#ifdef XDEBUG
-      assert((Interprocedural || notDifferentParent(V1, V2)) &&
-             "BasicAliasAnalysis (-basicaa) doesn't support interprocedural "
-             "queries; use InterproceduralAliasAnalysis "
-             "(-interprocedural-basic-aa) instead.");
-#endif
+      assert(notDifferentParent(V1, V2) &&
+             "BasicAliasAnalysis doesn't support interprocedural queries.");
       AliasResult Alias = aliasCheck(V1, V1Size, V2, V2Size);
       Visited.clear();
       return Alias;
     }
 
-    ModRefResult getModRefInfo(CallSite CS, Value *P, unsigned Size);
-    ModRefResult getModRefInfo(CallSite CS1, CallSite CS2);
+    virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
+                                       const Value *P, unsigned Size);
+
+    virtual ModRefResult getModRefInfo(ImmutableCallSite CS1,
+                                       ImmutableCallSite CS2) {
+      // The AliasAnalysis base class has some smarts, lets use them.
+      return AliasAnalysis::getModRefInfo(CS1, CS2);
+    }
 
     /// pointsToConstantMemory - Chase pointers until we find a (constant
     /// global) or not.
-    bool pointsToConstantMemory(const Value *P);
+    virtual bool pointsToConstantMemory(const Value *P);
+
+    /// getModRefBehavior - Return the behavior when calling the given
+    /// call site.
+    virtual ModRefBehavior getModRefBehavior(ImmutableCallSite CS);
+
+    /// getModRefBehavior - Return the behavior when calling the given function.
+    /// For use when the call site is not known.
+    virtual ModRefBehavior getModRefBehavior(const Function *F);
+
+    virtual DependenceResult getDependence(const Instruction *First,
+                                           const Value *FirstPHITranslatedAddr,
+                                           DependenceQueryFlags FirstFlags,
+                                           const Instruction *Second,
+                                           const Value *SecondPHITranslatedAddr,
+                                           DependenceQueryFlags SecondFlags);
 
     /// getAdjustedAnalysisPointer - This method is used when a pass implements
-    /// an analysis interface through multiple inheritance.  If needed, it should
-    /// override this to adjust the this pointer as needed for the specified pass
-    /// info.
-    virtual void *getAdjustedAnalysisPointer(const PassInfo *PI) {
-      if (PI->isPassID(&AliasAnalysis::ID))
+    /// an analysis interface through multiple inheritance.  If needed, it
+    /// should override this to adjust the this pointer as needed for the
+    /// specified pass info.
+    virtual void *getAdjustedAnalysisPointer(const void *ID) {
+      if (ID == &AliasAnalysis::ID)
         return (AliasAnalysis*)this;
       return this;
     }
@@ -294,11 +575,9 @@ namespace {
 
 // Register this pass...
 char BasicAliasAnalysis::ID = 0;
-static RegisterPass<BasicAliasAnalysis>
-X("basicaa", "Basic Alias Analysis (default AA impl)", false, true);
-
-// Declare that we implement the AliasAnalysis interface
-static RegisterAnalysisGroup<AliasAnalysis, true> Y(X);
+INITIALIZE_AG_PASS(BasicAliasAnalysis, AliasAnalysis, "basicaa",
+                   "Basic Alias Analysis (default AA impl)",
+                   false, true, true);
 
 ImmutablePass *llvm::createBasicAliasAnalysisPass() {
   return new BasicAliasAnalysis();
@@ -314,16 +593,53 @@ bool BasicAliasAnalysis::pointsToConstantMemory(const Value *P) {
     // global to be marked constant in some modules and non-constant in others.
     // GV may even be a declaration, not a definition.
     return GV->isConstant();
-  return false;
+
+  return NoAA::pointsToConstantMemory(P);
 }
 
+/// getModRefBehavior - Return the behavior when calling the given call site.
+AliasAnalysis::ModRefBehavior
+BasicAliasAnalysis::getModRefBehavior(ImmutableCallSite CS) {
+  if (CS.doesNotAccessMemory())
+    // Can't do better than this.
+    return DoesNotAccessMemory;
+
+  ModRefBehavior Min = UnknownModRefBehavior;
+
+  // If the callsite knows it only reads memory, don't return worse
+  // than that.
+  if (CS.onlyReadsMemory())
+    Min = OnlyReadsMemory;
+
+  // The AliasAnalysis base class has some smarts, lets use them.
+  return std::min(AliasAnalysis::getModRefBehavior(CS), Min);
+}
+
+/// getModRefBehavior - Return the behavior when calling the given function.
+/// For use when the call site is not known.
+AliasAnalysis::ModRefBehavior
+BasicAliasAnalysis::getModRefBehavior(const Function *F) {
+  if (F->doesNotAccessMemory())
+    // Can't do better than this.
+    return DoesNotAccessMemory;
+  if (F->onlyReadsMemory())
+    return OnlyReadsMemory;
+  if (unsigned id = F->getIntrinsicID())
+    return getIntrinsicModRefBehavior(id);
+
+  return NoAA::getModRefBehavior(F);
+}
 
 /// getModRefInfo - Check to see if the specified callsite can clobber the
 /// specified memory object.  Since we only look at local properties of this
 /// function, we really can't say much about this query.  We do, however, use
 /// simple "address taken" analysis on local objects.
 AliasAnalysis::ModRefResult
-BasicAliasAnalysis::getModRefInfo(CallSite CS, Value *P, unsigned Size) {
+BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
+                                  const Value *P, unsigned Size) {
+  assert(notDifferentParent(CS.getInstruction(), P) &&
+         "AliasAnalysis query involving multiple functions!");
+
   const Value *Object = P->getUnderlyingObject();
   
   // If this is a tail call and P points to a stack location, we know that
@@ -332,24 +648,18 @@ BasicAliasAnalysis::getModRefInfo(CallSite CS, Value *P, unsigned Size) {
   // the current function not to the current function, and a tail callee
   // may reference them.
   if (isa<AllocaInst>(Object))
-    if (CallInst *CI = dyn_cast<CallInst>(CS.getInstruction()))
+    if (const CallInst *CI = dyn_cast<CallInst>(CS.getInstruction()))
       if (CI->isTailCall())
         return NoModRef;
-  
-  // If we can identify an object and it's known to be within the
-  // same function as the call, we can ignore interprocedural concerns.
-  bool EffectivelyInterprocedural =
-    Interprocedural && !sameParent(Object, CS.getInstruction());
   
   // If the pointer is to a locally allocated object that does not escape,
   // then the call can not mod/ref the pointer unless the call takes the pointer
   // as an argument, and itself doesn't capture it.
   if (!isa<Constant>(Object) && CS.getInstruction() != Object &&
-      !EffectivelyInterprocedural &&
       isNonEscapingLocalObject(Object)) {
     bool PassedAsArg = false;
     unsigned ArgNo = 0;
-    for (CallSite::arg_iterator CI = CS.arg_begin(), CE = CS.arg_end();
+    for (ImmutableCallSite::arg_iterator CI = CS.arg_begin(), CE = CS.arg_end();
          CI != CE; ++CI, ++ArgNo) {
       // Only look at the no-capture pointer arguments.
       if (!(*CI)->getType()->isPointerTy() ||
@@ -360,7 +670,7 @@ BasicAliasAnalysis::getModRefInfo(CallSite CS, Value *P, unsigned Size) {
       // is impossible to alias the pointer we're checking.  If not, we have to
       // assume that the call could touch the pointer, even though it doesn't
       // escape.
-      if (!isNoAlias(cast<Value>(CI), ~0U, P, ~0U)) {
+      if (!isNoAlias(cast<Value>(CI), UnknownSize, P, UnknownSize)) {
         PassedAsArg = true;
         break;
       }
@@ -371,125 +681,85 @@ BasicAliasAnalysis::getModRefInfo(CallSite CS, Value *P, unsigned Size) {
   }
 
   // Finally, handle specific knowledge of intrinsics.
-  IntrinsicInst *II = dyn_cast<IntrinsicInst>(CS.getInstruction());
-  if (II == 0)
-    return AliasAnalysis::getModRefInfo(CS, P, Size);
-
-  switch (II->getIntrinsicID()) {
-  default: break;
-  case Intrinsic::memcpy:
-  case Intrinsic::memmove: {
-    unsigned Len = ~0U;
-    if (ConstantInt *LenCI = dyn_cast<ConstantInt>(II->getArgOperand(2)))
-      Len = LenCI->getZExtValue();
-    Value *Dest = II->getArgOperand(0);
-    Value *Src = II->getArgOperand(1);
-    if (isNoAlias(Dest, Len, P, Size)) {
-      if (isNoAlias(Src, Len, P, Size))
-        return NoModRef;
-      return Ref;
-    }
-    break;
-  }
-  case Intrinsic::memset:
-    // Since memset is 'accesses arguments' only, the AliasAnalysis base class
-    // will handle it for the variable length case.
-    if (ConstantInt *LenCI = dyn_cast<ConstantInt>(II->getArgOperand(2))) {
-      unsigned Len = LenCI->getZExtValue();
+  const IntrinsicInst *II = dyn_cast<IntrinsicInst>(CS.getInstruction());
+  if (II != 0)
+    switch (II->getIntrinsicID()) {
+    default: break;
+    case Intrinsic::memcpy:
+    case Intrinsic::memmove: {
+      unsigned Len = UnknownSize;
+      if (ConstantInt *LenCI = dyn_cast<ConstantInt>(II->getArgOperand(2)))
+        Len = LenCI->getZExtValue();
       Value *Dest = II->getArgOperand(0);
-      if (isNoAlias(Dest, Len, P, Size))
-        return NoModRef;
+      Value *Src = II->getArgOperand(1);
+      if (isNoAlias(Dest, Len, P, Size)) {
+        if (isNoAlias(Src, Len, P, Size))
+          return NoModRef;
+        return Ref;
+      }
+      break;
     }
-    break;
-  case Intrinsic::atomic_cmp_swap:
-  case Intrinsic::atomic_swap:
-  case Intrinsic::atomic_load_add:
-  case Intrinsic::atomic_load_sub:
-  case Intrinsic::atomic_load_and:
-  case Intrinsic::atomic_load_nand:
-  case Intrinsic::atomic_load_or:
-  case Intrinsic::atomic_load_xor:
-  case Intrinsic::atomic_load_max:
-  case Intrinsic::atomic_load_min:
-  case Intrinsic::atomic_load_umax:
-  case Intrinsic::atomic_load_umin:
-    if (TD) {
-      Value *Op1 = II->getArgOperand(0);
-      unsigned Op1Size = TD->getTypeStoreSize(Op1->getType());
-      if (isNoAlias(Op1, Op1Size, P, Size))
+    case Intrinsic::memset:
+      // Since memset is 'accesses arguments' only, the AliasAnalysis base class
+      // will handle it for the variable length case.
+      if (ConstantInt *LenCI = dyn_cast<ConstantInt>(II->getArgOperand(2))) {
+        unsigned Len = LenCI->getZExtValue();
+        Value *Dest = II->getArgOperand(0);
+        if (isNoAlias(Dest, Len, P, Size))
+          return NoModRef;
+      }
+      break;
+    case Intrinsic::atomic_cmp_swap:
+    case Intrinsic::atomic_swap:
+    case Intrinsic::atomic_load_add:
+    case Intrinsic::atomic_load_sub:
+    case Intrinsic::atomic_load_and:
+    case Intrinsic::atomic_load_nand:
+    case Intrinsic::atomic_load_or:
+    case Intrinsic::atomic_load_xor:
+    case Intrinsic::atomic_load_max:
+    case Intrinsic::atomic_load_min:
+    case Intrinsic::atomic_load_umax:
+    case Intrinsic::atomic_load_umin:
+      if (TD) {
+        Value *Op1 = II->getArgOperand(0);
+        unsigned Op1Size = TD->getTypeStoreSize(Op1->getType());
+        if (isNoAlias(Op1, Op1Size, P, Size))
+          return NoModRef;
+      }
+      break;
+    case Intrinsic::lifetime_start:
+    case Intrinsic::lifetime_end:
+    case Intrinsic::invariant_start: {
+      unsigned PtrSize =
+        cast<ConstantInt>(II->getArgOperand(0))->getZExtValue();
+      if (isNoAlias(II->getArgOperand(1), PtrSize, P, Size))
         return NoModRef;
+      break;
     }
-    break;
-  case Intrinsic::lifetime_start:
-  case Intrinsic::lifetime_end:
-  case Intrinsic::invariant_start: {
-    unsigned PtrSize = cast<ConstantInt>(II->getArgOperand(0))->getZExtValue();
-    if (isNoAlias(II->getArgOperand(1), PtrSize, P, Size))
-      return NoModRef;
-    break;
-  }
-  case Intrinsic::invariant_end: {
-    unsigned PtrSize = cast<ConstantInt>(II->getArgOperand(1))->getZExtValue();
-    if (isNoAlias(II->getArgOperand(2), PtrSize, P, Size))
-      return NoModRef;
-    break;
-  }
-  }
+    case Intrinsic::invariant_end: {
+      unsigned PtrSize =
+        cast<ConstantInt>(II->getArgOperand(1))->getZExtValue();
+      if (isNoAlias(II->getArgOperand(2), PtrSize, P, Size))
+        return NoModRef;
+      break;
+    }
+    }
 
   // The AliasAnalysis base class has some smarts, lets use them.
   return AliasAnalysis::getModRefInfo(CS, P, Size);
 }
 
-
-AliasAnalysis::ModRefResult 
-BasicAliasAnalysis::getModRefInfo(CallSite CS1, CallSite CS2) {
-  // If CS1 or CS2 are readnone, they don't interact.
-  ModRefBehavior CS1B = AliasAnalysis::getModRefBehavior(CS1);
-  if (CS1B == DoesNotAccessMemory) return NoModRef;
-  
-  ModRefBehavior CS2B = AliasAnalysis::getModRefBehavior(CS2);
-  if (CS2B == DoesNotAccessMemory) return NoModRef;
-  
-  // If they both only read from memory, just return ref.
-  if (CS1B == OnlyReadsMemory && CS2B == OnlyReadsMemory)
-    return Ref;
-  
-  // Otherwise, fall back to NoAA (mod+ref).
-  return NoAA::getModRefInfo(CS1, CS2);
-}
-
-/// GetIndiceDifference - Dest and Src are the variable indices from two
-/// decomposed GetElementPtr instructions GEP1 and GEP2 which have common base
-/// pointers.  Subtract the GEP2 indices from GEP1 to find the symbolic
-/// difference between the two pointers. 
-static void GetIndiceDifference(
-                      SmallVectorImpl<std::pair<const Value*, int64_t> > &Dest,
-                const SmallVectorImpl<std::pair<const Value*, int64_t> > &Src) {
-  if (Src.empty()) return;
-
-  for (unsigned i = 0, e = Src.size(); i != e; ++i) {
-    const Value *V = Src[i].first;
-    int64_t Scale = Src[i].second;
-    
-    // Find V in Dest.  This is N^2, but pointer indices almost never have more
-    // than a few variable indexes.
-    for (unsigned j = 0, e = Dest.size(); j != e; ++j) {
-      if (Dest[j].first != V) continue;
-      
-      // If we found it, subtract off Scale V's from the entry in Dest.  If it
-      // goes to zero, remove the entry.
-      if (Dest[j].second != Scale)
-        Dest[j].second -= Scale;
-      else
-        Dest.erase(Dest.begin()+j);
-      Scale = 0;
-      break;
-    }
-    
-    // If we didn't consume this entry, add it to the end of the Dest list.
-    if (Scale)
-      Dest.push_back(std::make_pair(V, -Scale));
-  }
+AliasAnalysis::DependenceResult
+BasicAliasAnalysis::getDependence(const Instruction *First,
+                                  const Value *FirstPHITranslatedAddr,
+                                  DependenceQueryFlags FirstFlags,
+                                  const Instruction *Second,
+                                  const Value *SecondPHITranslatedAddr,
+                                  DependenceQueryFlags SecondFlags) {
+  // We don't have anything special to say yet.
+  return getDependenceViaModRefInfo(First, FirstPHITranslatedAddr, FirstFlags,
+                                    Second, SecondPHITranslatedAddr, SecondFlags);
 }
 
 /// aliasGEP - Provide a bunch of ad-hoc rules to disambiguate a GEP instruction
@@ -510,13 +780,14 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, unsigned V1Size,
     return MayAlias;
 
   int64_t GEP1BaseOffset;
-  SmallVector<std::pair<const Value*, int64_t>, 4> GEP1VariableIndices;
+  SmallVector<VariableGEPIndex, 4> GEP1VariableIndices;
 
   // If we have two gep instructions with must-alias'ing base pointers, figure
   // out if the indexes to the GEP tell us anything about the derived pointer.
   if (const GEPOperator *GEP2 = dyn_cast<GEPOperator>(V2)) {
     // Do the base pointers alias?
-    AliasResult BaseAlias = aliasCheck(UnderlyingV1, ~0U, UnderlyingV2, ~0U);
+    AliasResult BaseAlias = aliasCheck(UnderlyingV1, UnknownSize,
+                                       UnderlyingV2, UnknownSize);
     
     // If we get a No or May, then return it immediately, no amount of analysis
     // will improve this situation.
@@ -529,7 +800,7 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, unsigned V1Size,
       DecomposeGEPExpression(GEP1, GEP1BaseOffset, GEP1VariableIndices, TD);
     
     int64_t GEP2BaseOffset;
-    SmallVector<std::pair<const Value*, int64_t>, 4> GEP2VariableIndices;
+    SmallVector<VariableGEPIndex, 4> GEP2VariableIndices;
     const Value *GEP2BasePtr =
       DecomposeGEPExpression(GEP2, GEP2BaseOffset, GEP2VariableIndices, TD);
     
@@ -545,7 +816,7 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, unsigned V1Size,
     // Subtract the GEP2 pointer from the GEP1 pointer to find out their
     // symbolic difference.
     GEP1BaseOffset -= GEP2BaseOffset;
-    GetIndiceDifference(GEP1VariableIndices, GEP2VariableIndices);
+    GetIndexDifference(GEP1VariableIndices, GEP2VariableIndices);
     
   } else {
     // Check to see if these two pointers are related by the getelementptr
@@ -553,10 +824,10 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, unsigned V1Size,
     // pointer, we know they cannot alias.
 
     // If both accesses are unknown size, we can't do anything useful here.
-    if (V1Size == ~0U && V2Size == ~0U)
+    if (V1Size == UnknownSize && V2Size == UnknownSize)
       return MayAlias;
 
-    AliasResult R = aliasCheck(UnderlyingV1, ~0U, V2, V2Size);
+    AliasResult R = aliasCheck(UnderlyingV1, UnknownSize, V2, V2Size);
     if (R != MustAlias)
       // If V2 may alias GEP base pointer, conservatively returns MayAlias.
       // If V2 is known not to alias GEP base pointer, then the two values
@@ -600,8 +871,8 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, unsigned V1Size,
   // provides an offset of 4 bytes (assuming a <= 4 byte access).
   for (unsigned i = 0, e = GEP1VariableIndices.size();
        i != e && GEP1BaseOffset;++i)
-    if (int64_t RemovedOffset = GEP1BaseOffset/GEP1VariableIndices[i].second)
-      GEP1BaseOffset -= RemovedOffset*GEP1VariableIndices[i].second;
+    if (int64_t RemovedOffset = GEP1BaseOffset/GEP1VariableIndices[i].Scale)
+      GEP1BaseOffset -= RemovedOffset*GEP1VariableIndices[i].Scale;
   
   // If our known offset is bigger than the access size, we know we don't have
   // an alias.
@@ -765,62 +1036,49 @@ BasicAliasAnalysis::aliasCheck(const Value *V1, unsigned V1Size,
     if (CPN->getType()->getAddressSpace() == 0)
       return NoAlias;
 
-  // If we can identify two objects and they're known to be within the
-  // same function, we can ignore interprocedural concerns.
-  bool EffectivelyInterprocedural =
-    Interprocedural && !sameParent(O1, O2);
-
   if (O1 != O2) {
     // If V1/V2 point to two different objects we know that we have no alias.
-    if (isIdentifiedObject(O1, EffectivelyInterprocedural) &&
-        isIdentifiedObject(O2, EffectivelyInterprocedural))
+    if (isIdentifiedObject(O1) && isIdentifiedObject(O2))
       return NoAlias;
 
     // Constant pointers can't alias with non-const isIdentifiedObject objects.
-    if ((isa<Constant>(O1) &&
-         isIdentifiedObject(O2, EffectivelyInterprocedural) &&
-         !isa<Constant>(O2)) ||
-        (isa<Constant>(O2) &&
-         isIdentifiedObject(O1, EffectivelyInterprocedural) &&
-         !isa<Constant>(O1)))
+    if ((isa<Constant>(O1) && isIdentifiedObject(O2) && !isa<Constant>(O2)) ||
+        (isa<Constant>(O2) && isIdentifiedObject(O1) && !isa<Constant>(O1)))
       return NoAlias;
 
     // Arguments can't alias with local allocations or noalias calls
     // in the same function.
-    if (!EffectivelyInterprocedural &&
-        ((isa<Argument>(O1) && (isa<AllocaInst>(O2) || isNoAliasCall(O2))) ||
+    if (((isa<Argument>(O1) && (isa<AllocaInst>(O2) || isNoAliasCall(O2))) ||
          (isa<Argument>(O2) && (isa<AllocaInst>(O1) || isNoAliasCall(O1)))))
       return NoAlias;
 
     // Most objects can't alias null.
-    if ((isa<ConstantPointerNull>(V2) && isKnownNonNull(O1)) ||
-        (isa<ConstantPointerNull>(V1) && isKnownNonNull(O2)))
-      return NoAlias;
-  }
-  
-  // If the size of one access is larger than the entire object on the other
-  // side, then we know such behavior is undefined and can assume no alias.
-  if (TD)
-    if ((V1Size != ~0U && isObjectSmallerThan(O2, V1Size, *TD)) ||
-        (V2Size != ~0U && isObjectSmallerThan(O1, V2Size, *TD)))
+    if ((isa<ConstantPointerNull>(O2) && isKnownNonNull(O1)) ||
+        (isa<ConstantPointerNull>(O1) && isKnownNonNull(O2)))
       return NoAlias;
   
-  // If one pointer is the result of a call/invoke or load and the other is a
-  // non-escaping local object within the same function, then we know the
-  // object couldn't escape to a point where the call could return it.
-  //
-  // Note that if the pointers are in different functions, there are a
-  // variety of complications. A call with a nocapture argument may still
-  // temporary store the nocapture argument's value in a temporary memory
-  // location if that memory location doesn't escape. Or it may pass a
-  // nocapture value to other functions as long as they don't capture it.
-  if (O1 != O2 && !EffectivelyInterprocedural) {
+    // If one pointer is the result of a call/invoke or load and the other is a
+    // non-escaping local object within the same function, then we know the
+    // object couldn't escape to a point where the call could return it.
+    //
+    // Note that if the pointers are in different functions, there are a
+    // variety of complications. A call with a nocapture argument may still
+    // temporary store the nocapture argument's value in a temporary memory
+    // location if that memory location doesn't escape. Or it may pass a
+    // nocapture value to other functions as long as they don't capture it.
     if (isEscapeSource(O1) && isNonEscapingLocalObject(O2))
       return NoAlias;
     if (isEscapeSource(O2) && isNonEscapingLocalObject(O1))
       return NoAlias;
   }
 
+  // If the size of one access is larger than the entire object on the other
+  // side, then we know such behavior is undefined and can assume no alias.
+  if (TD)
+    if ((V1Size != UnknownSize && isObjectSmallerThan(O2, V1Size, *TD)) ||
+        (V2Size != UnknownSize && isObjectSmallerThan(O1, V2Size, *TD)))
+      return NoAlias;
+  
   // FIXME: This isn't aggressively handling alias(GEP, PHI) for example: if the
   // GEP can't simplify, we don't even look at the PHI cases.
   if (!isa<GEPOperator>(V1) && isa<GEPOperator>(V2)) {
@@ -845,38 +1103,8 @@ BasicAliasAnalysis::aliasCheck(const Value *V1, unsigned V1Size,
   if (const SelectInst *S1 = dyn_cast<SelectInst>(V1))
     return aliasSelect(S1, V1Size, V2, V2Size);
 
-  return MayAlias;
+  return NoAA::alias(V1, V1Size, V2, V2Size);
 }
 
 // Make sure that anything that uses AliasAnalysis pulls in this file.
 DEFINING_FILE_FOR(BasicAliasAnalysis)
-
-//===----------------------------------------------------------------------===//
-// InterproceduralBasicAliasAnalysis Pass
-//===----------------------------------------------------------------------===//
-
-namespace {
-  /// InterproceduralBasicAliasAnalysis - This is similar to basicaa, except
-  /// that it properly supports queries to values which live in different
-  /// functions.
-  ///
-  /// Note that we don't currently take this to the extreme, analyzing all
-  /// call sites of a function to answer a query about an Argument.
-  ///
-  struct InterproceduralBasicAliasAnalysis : public BasicAliasAnalysis {
-    static char ID; // Class identification, replacement for typeinfo
-    InterproceduralBasicAliasAnalysis() : BasicAliasAnalysis(&ID, true) {}
-  };
-}
-
-// Register this pass...
-char InterproceduralBasicAliasAnalysis::ID = 0;
-static RegisterPass<InterproceduralBasicAliasAnalysis>
-W("interprocedural-basic-aa", "Interprocedural Basic Alias Analysis", false, true);
-
-// Declare that we implement the AliasAnalysis interface
-static RegisterAnalysisGroup<AliasAnalysis> Z(W);
-
-ImmutablePass *llvm::createInterproceduralBasicAliasAnalysisPass() {
-  return new InterproceduralBasicAliasAnalysis();
-}

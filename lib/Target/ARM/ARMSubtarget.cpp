@@ -30,22 +30,28 @@ UseMOVT("arm-use-movt",
 ARMSubtarget::ARMSubtarget(const std::string &TT, const std::string &FS,
                            bool isT)
   : ARMArchVersion(V4)
+  , ARMProcFamily(Others)
   , ARMFPUType(None)
   , UseNEONForSinglePrecisionFP(false)
   , SlowVMLx(false)
+  , SlowFPBrcc(false)
   , IsThumb(isT)
   , ThumbMode(Thumb1)
+  , NoARM(false)
   , PostRAScheduler(false)
   , IsR9Reserved(ReserveR9)
   , UseMovt(UseMOVT)
   , HasFP16(false)
   , HasHardwareDivide(false)
   , HasT2ExtractPack(false)
+  , HasDataBarrier(false)
+  , Pref32BitThumb(false)
+  , FPOnlySP(false)
   , stackAlignment(4)
   , CPUString("generic")
   , TargetType(isELF) // Default to ELF unless otherwise specified.
   , TargetABI(ARM_ABI_APCS) {
-  // default to soft float ABI
+  // Default to soft float ABI
   if (FloatABIType == FloatABI::Default)
     FloatABIType = FloatABI::Soft;
 

@@ -28,6 +28,7 @@
 #include "llvm/Instructions.h"
 #include "llvm/IntrinsicInst.h"
 #include "llvm/LLVMContext.h"
+#include "llvm/Module.h"
 #include "llvm/Pass.h"
 #include "llvm/Analysis/Dominators.h"
 #include "llvm/Target/TargetData.h"
@@ -51,7 +52,7 @@ STATISTIC(NumGlobals,   "Number of allocas copied from constant global");
 namespace {
   struct SROA : public FunctionPass {
     static char ID; // Pass identification, replacement for typeid
-    explicit SROA(signed T = -1) : FunctionPass(&ID) {
+    explicit SROA(signed T = -1) : FunctionPass(ID) {
       if (T == -1)
         SRThreshold = 128;
       else
@@ -114,8 +115,7 @@ namespace {
     void DoScalarReplacement(AllocaInst *AI, 
                              std::vector<AllocaInst*> &WorkList);
     void DeleteDeadInstructions();
-    AllocaInst *AddNewAlloca(Function &F, const Type *Ty, AllocaInst *Base);
-    
+   
     void RewriteForScalarRepl(Instruction *I, AllocaInst *AI, uint64_t Offset,
                               SmallVector<AllocaInst*, 32> &NewElts);
     void RewriteBitCast(BitCastInst *BC, AllocaInst *AI, uint64_t Offset,
@@ -135,7 +135,8 @@ namespace {
 }
 
 char SROA::ID = 0;
-static RegisterPass<SROA> X("scalarrepl", "Scalar Replacement of Aggregates");
+INITIALIZE_PASS(SROA, "scalarrepl",
+                "Scalar Replacement of Aggregates", false, false);
 
 // Public interface to the ScalarReplAggregates pass
 FunctionPass *llvm::createScalarReplAggregatesPass(signed int Threshold) { 
@@ -193,6 +194,27 @@ private:
 };
 } // end anonymous namespace.
 
+
+/// IsVerbotenVectorType - Return true if this is a vector type ScalarRepl isn't
+/// allowed to form.  We do this to avoid MMX types, which is a complete hack,
+/// but is required until the backend is fixed.
+static bool IsVerbotenVectorType(const VectorType *VTy, const Instruction *I) {
+  StringRef Triple(I->getParent()->getParent()->getParent()->getTargetTriple());
+  if (!Triple.startswith("i386") &&
+      !Triple.startswith("x86_64"))
+    return false;
+  
+  // Reject all the MMX vector types.
+  switch (VTy->getNumElements()) {
+  default: return false;
+  case 1: return VTy->getElementType()->isIntegerTy(64);
+  case 2: return VTy->getElementType()->isIntegerTy(32);
+  case 4: return VTy->getElementType()->isIntegerTy(16);
+  case 8: return VTy->getElementType()->isIntegerTy(8);
+  }
+}
+
+
 /// TryConvert - Analyze the specified alloca, and if it is safe to do so,
 /// rewrite it to be a new alloca which is mem2reg'able.  This returns the new
 /// alloca if possible or null if not.
@@ -209,7 +231,8 @@ AllocaInst *ConvertToScalarInfo::TryConvert(AllocaInst *AI) {
   // we just get a lot of insert/extracts.  If at least one vector is
   // involved, then we probably really do have a union of vector/array.
   const Type *NewTy;
-  if (VectorTy && VectorTy->isVectorTy() && HadAVector) {
+  if (VectorTy && VectorTy->isVectorTy() && HadAVector &&
+      !IsVerbotenVectorType(cast<VectorType>(VectorTy), AI)) {
     DEBUG(dbgs() << "CONVERT TO VECTOR: " << *AI << "\n  TYPE = "
           << *VectorTy << '\n');
     NewTy = VectorTy;  // Use the vector type.
@@ -969,7 +992,7 @@ void SROA::isSafeForScalarRepl(Instruction *I, AllocaInst *AI, uint64_t Offset,
       ConstantInt *Length = dyn_cast<ConstantInt>(MI->getLength());
       if (Length)
         isSafeMemAccess(AI, Offset, Length->getZExtValue(), 0,
-                        UI.getOperandNo() == CallInst::ArgOffset, Info);
+                        UI.getOperandNo() == 0, Info);
       else
         MarkUnsafe(Info);
     } else if (LoadInst *LI = dyn_cast<LoadInst>(User)) {
@@ -1272,6 +1295,8 @@ void SROA::RewriteMemIntrinUserOfAlloca(MemIntrinsic *MI, Instruction *Inst,
   // If there is an other pointer, we want to convert it to the same pointer
   // type as AI has, so we can GEP through it safely.
   if (OtherPtr) {
+    unsigned AddrSpace =
+      cast<PointerType>(OtherPtr->getType())->getAddressSpace();
 
     // Remove bitcasts and all-zero GEPs from OtherPtr.  This is an
     // optimization, but it's also required to detect the corner case where
@@ -1279,20 +1304,8 @@ void SROA::RewriteMemIntrinUserOfAlloca(MemIntrinsic *MI, Instruction *Inst,
     // OtherPtr may be a bitcast or GEP that currently being rewritten.  (This
     // function is only called for mem intrinsics that access the whole
     // aggregate, so non-zero GEPs are not an issue here.)
-    while (1) {
-      if (BitCastInst *BC = dyn_cast<BitCastInst>(OtherPtr)) {
-        OtherPtr = BC->getOperand(0);
-        continue;
-      }
-      if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(OtherPtr)) {
-        // All zero GEPs are effectively bitcasts.
-        if (GEP->hasAllZeroIndices()) {
-          OtherPtr = GEP->getOperand(0);
-          continue;
-        }
-      }
-      break;
-    }
+    OtherPtr = OtherPtr->stripPointerCasts();
+    
     // Copying the alloca to itself is a no-op: just delete it.
     if (OtherPtr == AI || OtherPtr == NewElts[0]) {
       // This code will run twice for a no-op memcpy -- once for each operand.
@@ -1304,15 +1317,13 @@ void SROA::RewriteMemIntrinUserOfAlloca(MemIntrinsic *MI, Instruction *Inst,
       return;
     }
     
-    if (ConstantExpr *BCE = dyn_cast<ConstantExpr>(OtherPtr))
-      if (BCE->getOpcode() == Instruction::BitCast)
-        OtherPtr = BCE->getOperand(0);
-    
     // If the pointer is not the right type, insert a bitcast to the right
     // type.
-    if (OtherPtr->getType() != AI->getType())
-      OtherPtr = new BitCastInst(OtherPtr, AI->getType(), OtherPtr->getName(),
-                                 MI);
+    const Type *NewTy =
+      PointerType::get(AI->getType()->getElementType(), AddrSpace);
+    
+    if (OtherPtr->getType() != NewTy)
+      OtherPtr = new BitCastInst(OtherPtr, NewTy, OtherPtr->getName(), MI);
   }
   
   // Process each element of the aggregate.
@@ -1674,6 +1685,12 @@ void SROA::RewriteLoadUserOfWholeAlloca(LoadInst *LI, AllocaInst *AI,
 /// HasPadding - Return true if the specified type has any structure or
 /// alignment padding, false otherwise.
 static bool HasPadding(const Type *Ty, const TargetData &TD) {
+  if (const ArrayType *ATy = dyn_cast<ArrayType>(Ty))
+    return HasPadding(ATy->getElementType(), TD);
+  
+  if (const VectorType *VTy = dyn_cast<VectorType>(Ty))
+    return HasPadding(VTy->getElementType(), TD);
+  
   if (const StructType *STy = dyn_cast<StructType>(Ty)) {
     const StructLayout *SL = TD.getStructLayout(STy);
     unsigned PrevFieldBitOffset = 0;
@@ -1703,12 +1720,8 @@ static bool HasPadding(const Type *Ty, const TargetData &TD) {
       if (PrevFieldEnd < SL->getSizeInBits())
         return true;
     }
-
-  } else if (const ArrayType *ATy = dyn_cast<ArrayType>(Ty)) {
-    return HasPadding(ATy->getElementType(), TD);
-  } else if (const VectorType *VTy = dyn_cast<VectorType>(Ty)) {
-    return HasPadding(VTy->getElementType(), TD);
   }
+  
   return TD.getTypeSizeInBits(Ty) != TD.getTypeAllocSizeInBits(Ty);
 }
 
@@ -1799,7 +1812,7 @@ static bool isOnlyCopiedFromConstantGlobal(Value *V, MemTransferInst *&TheCopy,
     if (isOffset) return false;
 
     // If the memintrinsic isn't using the alloca as the dest, reject it.
-    if (UI.getOperandNo() != CallInst::ArgOffset) return false;
+    if (UI.getOperandNo() != 0) return false;
     
     // If the source of the memcpy/move is not a constant global, reject it.
     if (!PointsToConstantGlobal(MI->getSource()))

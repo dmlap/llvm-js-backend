@@ -1,4 +1,6 @@
-// RUN: llvm-mc -triple x86_64-unknown-unknown %s | FileCheck %s
+// RUN: llvm-mc -triple x86_64-unknown-unknown %s > %t 2> %t.err
+// RUN: FileCheck < %t %s
+// RUN: FileCheck --check-prefix=CHECK-STDERR < %t.err %s
 
 // CHECK: subb %al, %al
         subb %al, %al
@@ -56,7 +58,7 @@
         subl %eax, %ebx
         
 // FIXME: Check that this matches the correct instruction.
-// CHECK: call *%rax
+// CHECK: callq *%rax
         call *%rax
 
 // FIXME: Check that this matches the correct instruction.
@@ -151,3 +153,50 @@ fadd %st(7)
 // CHECK: int3
 INT3
 
+
+// Allow scale factor without index register.
+// CHECK: movaps	%xmm3, (%esi)
+// CHECK-STDERR: warning: scale factor without index register is ignored
+movaps %xmm3, (%esi, 2)
+
+// CHECK: imull $12, %eax, %eax
+imul $12, %eax
+
+// CHECK: imull %ecx, %eax
+imull %ecx, %eax
+
+
+// rdar://8208481
+// CHECK: outb	%al, $161
+outb	%al, $161
+// CHECK: outw	%ax, $128
+outw	%ax, $128
+// CHECK: inb	$161, %al
+inb	$161, %al
+
+// rdar://8017621
+// CHECK: pushq	$1
+push $1
+
+// rdar://8017530
+// CHECK: sldtw	4
+sldt	4
+
+// rdar://8208499
+// CHECK: cmovnew	%bx, %ax
+cmovnz %bx, %ax
+// CHECK: cmovneq	%rbx, %rax
+cmovnzq %rbx, %rax
+
+
+// rdar://8407928
+// CHECK: inb	$127, %al
+// CHECK: inw	%dx, %ax
+// CHECK: outb	%al, $127
+// CHECK: outw	%ax, %dx
+// CHECK: inl	%dx, %eax
+inb	$0x7f
+inw	%dx
+outb	$0x7f
+outw	%dx
+inl	%dx

@@ -49,15 +49,10 @@ public:
   ///
   virtual const TargetRegisterInfo &getRegisterInfo() const { return RI; }
 
-  bool copyRegToReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
-                    unsigned DestReg, unsigned SrcReg,
-                    const TargetRegisterClass *DestRC,
-                    const TargetRegisterClass *SrcRC,
-                    DebugLoc DL) const;
-
-  bool isMoveInstr(const MachineInstr& MI,
-                   unsigned &SrcReg, unsigned &DstReg,
-                   unsigned &SrcSubIdx, unsigned &DstSubIdx) const;
+  void copyPhysReg(MachineBasicBlock &MBB,
+                   MachineBasicBlock::iterator I, DebugLoc DL,
+                   unsigned DestReg, unsigned SrcReg,
+                   bool KillSrc) const;
 
   virtual void storeRegToStackSlot(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator MI,

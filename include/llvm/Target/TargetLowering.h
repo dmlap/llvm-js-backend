@@ -24,6 +24,7 @@
 
 #include "llvm/CallingConv.h"
 #include "llvm/InlineAsm.h"
+#include "llvm/Attributes.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/CodeGen/RuntimeLibcalls.h"
 #include "llvm/ADT/APFloat.h"
@@ -32,6 +33,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/DebugLoc.h"
+#include "llvm/Target/TargetCallingConv.h"
 #include "llvm/Target/TargetMachine.h"
 #include <climits>
 #include <map>
@@ -42,6 +44,7 @@ namespace llvm {
   class CallInst;
   class Function;
   class FastISel;
+  class FunctionLoweringInfo;
   class MachineBasicBlock;
   class MachineFunction;
   class MachineFrameInfo;
@@ -165,6 +168,32 @@ public:
     return RC;
   }
 
+  /// getRepRegClassFor - Return the 'representative' register class for the
+  /// specified value type. The 'representative' register class is the largest
+  /// legal super-reg register class for the register class of the value type.
+  /// For example, on i386 the rep register class for i8, i16, and i32 are GR32;
+  /// while the rep register class is GR64 on x86_64.
+  virtual const TargetRegisterClass *getRepRegClassFor(EVT VT) const {
+    assert(VT.isSimple() && "getRepRegClassFor called on illegal type!");
+    const TargetRegisterClass *RC = RepRegClassForVT[VT.getSimpleVT().SimpleTy];
+    return RC;
+  }
+
+  /// getRepRegClassCostFor - Return the cost of the 'representative' register
+  /// class for the specified value type.
+  virtual uint8_t getRepRegClassCostFor(EVT VT) const {
+    assert(VT.isSimple() && "getRepRegClassCostFor called on illegal type!");
+    return RepRegClassCostForVT[VT.getSimpleVT().SimpleTy];
+  }
+
+  /// getRegPressureLimit - Return the register pressure "high water mark" for
+  /// the specific register class. The scheduler is in high register pressure
+  /// mode (for the specific register class) if it goes over the limit.
+  virtual unsigned getRegPressureLimit(const TargetRegisterClass *RC,
+                                       MachineFunction &MF) const {
+    return 0;
+  }
+
   /// isTypeLegal - Return true if the target has native support for the
   /// specified value type.  This means that it has a register that directly
   /// holds it without promotions or expansions.
@@ -185,24 +214,53 @@ public:
     /// ValueTypeActions - For each value type, keep a LegalizeAction enum
     /// that indicates how instruction selection should deal with the type.
     uint8_t ValueTypeActions[MVT::LAST_VALUETYPE];
+    
+    LegalizeAction getExtendedTypeAction(EVT VT) const {
+      // Handle non-vector integers.
+      if (!VT.isVector()) {
+        assert(VT.isInteger() && "Unsupported extended type!");
+        unsigned BitSize = VT.getSizeInBits();
+        // First promote to a power-of-two size, then expand if necessary.
+        if (BitSize < 8 || !isPowerOf2_32(BitSize))
+          return Promote;
+        return Expand;
+      }
+      
+      // If this is a type smaller than a legal vector type, promote to that
+      // type, e.g. <2 x float> -> <4 x float>.
+      if (VT.getVectorElementType().isSimple() &&
+          VT.getVectorNumElements() != 1) {
+        MVT EltType = VT.getVectorElementType().getSimpleVT();
+        unsigned NumElts = VT.getVectorNumElements();
+        while (1) {
+          // Round up to the nearest power of 2.
+          NumElts = (unsigned)NextPowerOf2(NumElts);
+          
+          MVT LargerVector = MVT::getVectorVT(EltType, NumElts);
+          if (LargerVector == MVT()) break;
+          
+          // If this the larger type is legal, promote to it.
+          if (getTypeAction(LargerVector) == Legal) return Promote;
+        }
+      }
+      
+      return VT.isPow2VectorType() ? Expand : Promote;
+    }      
   public:
     ValueTypeActionImpl() {
       std::fill(ValueTypeActions, array_endof(ValueTypeActions), 0);
     }
-    LegalizeAction getTypeAction(LLVMContext &Context, EVT VT) const {
-      if (VT.isExtended()) {
-        if (VT.isVector()) {
-          return VT.isPow2VectorType() ? Expand : Promote;
-        }
-        if (VT.isInteger())
-          // First promote to a power-of-two size, then expand if necessary.
-          return VT == VT.getRoundIntegerType(Context) ? Expand : Promote;
-        assert(0 && "Unsupported extended type!");
-        return Legal;
-      }
-      unsigned I = VT.getSimpleVT().SimpleTy;
-      return (LegalizeAction)ValueTypeActions[I];
+    
+    LegalizeAction getTypeAction(EVT VT) const {
+      if (!VT.isExtended())
+        return getTypeAction(VT.getSimpleVT());
+      return getExtendedTypeAction(VT);
     }
+    
+    LegalizeAction getTypeAction(MVT VT) const {
+      return (LegalizeAction)ValueTypeActions[VT.SimpleTy];
+    }
+    
     void setTypeAction(EVT VT, LegalizeAction Action) {
       unsigned I = VT.getSimpleVT().SimpleTy;
       ValueTypeActions[I] = Action;
@@ -217,10 +275,13 @@ public:
   /// it is already legal (return 'Legal') or we need to promote it to a larger
   /// type (return 'Promote'), or we need to expand it into multiple registers
   /// of smaller integer type (return 'Expand').  'Custom' is not an option.
-  LegalizeAction getTypeAction(LLVMContext &Context, EVT VT) const {
-    return ValueTypeActions.getTypeAction(Context, VT);
+  LegalizeAction getTypeAction(EVT VT) const {
+    return ValueTypeActions.getTypeAction(VT);
   }
-
+  LegalizeAction getTypeAction(MVT VT) const {
+    return ValueTypeActions.getTypeAction(VT);
+  }
+  
   /// getTypeToTransformTo - For types supported by the target, this is an
   /// identity function.  For types that must be promoted to larger types, this
   /// returns the larger type to promote to.  For integer types that are larger
@@ -232,7 +293,7 @@ public:
       assert((unsigned)VT.getSimpleVT().SimpleTy <
              array_lengthof(TransformToType));
       EVT NVT = TransformToType[VT.getSimpleVT().SimpleTy];
-      assert(getTypeAction(Context, NVT) != Promote &&
+      assert(getTypeAction(NVT) != Promote &&
              "Promote may not follow Expand or Promote");
       return NVT;
     }
@@ -247,17 +308,16 @@ public:
           EltVT : EVT::getVectorVT(Context, EltVT, NumElts / 2);
       }
       // Promote to a power of two size, avoiding multi-step promotion.
-      return getTypeAction(Context, NVT) == Promote ?
+      return getTypeAction(NVT) == Promote ?
         getTypeToTransformTo(Context, NVT) : NVT;
     } else if (VT.isInteger()) {
       EVT NVT = VT.getRoundIntegerType(Context);
-      if (NVT == VT)
-        // Size is a power of two - expand to half the size.
+      if (NVT == VT)      // Size is a power of two - expand to half the size.
         return EVT::getIntegerVT(Context, VT.getSizeInBits() / 2);
-      else
-        // Promote to a power of two size, avoiding multi-step promotion.
-        return getTypeAction(Context, NVT) == Promote ?
-          getTypeToTransformTo(Context, NVT) : NVT;
+      
+      // Promote to a power of two size, avoiding multi-step promotion.
+      return getTypeAction(NVT) == Promote ?
+        getTypeToTransformTo(Context, NVT) : NVT;
     }
     assert(0 && "Unsupported extended type!");
     return MVT(MVT::Other); // Not reached
@@ -270,7 +330,7 @@ public:
   EVT getTypeToExpandTo(LLVMContext &Context, EVT VT) const {
     assert(!VT.isVector());
     while (true) {
-      switch (getTypeAction(Context, VT)) {
+      switch (getTypeAction(VT)) {
       case Legal:
         return VT;
       case Expand:
@@ -683,6 +743,12 @@ public:
     return JumpBufAlignment;
   }
 
+  /// getMinStackArgumentAlignment - return the minimum stack alignment of an
+  /// argument.
+  unsigned getMinStackArgumentAlignment() const {
+    return MinStackArgumentAlignment;
+  }
+
   /// getPrefLoopAlignment - return the preferred loop alignment.
   ///
   unsigned getPrefLoopAlignment() const {
@@ -748,6 +814,20 @@ public:
 
   /// getFunctionAlignment - Return the Log2 alignment of this function.
   virtual unsigned getFunctionAlignment(const Function *) const = 0;
+
+  /// getStackCookieLocation - Return true if the target stores stack
+  /// protector cookies at a fixed offset in some non-standard address
+  /// space, and populates the address space and offset as
+  /// appropriate.
+  virtual bool getStackCookieLocation(unsigned &AddressSpace, unsigned &Offset) const {
+    return false;
+  }
+
+  /// getMaximalGlobalOffset - Returns the maximal possible offset which can be
+  /// used for loads / stores from the global.
+  virtual unsigned getMaximalGlobalOffset() const {
+    return 0;
+  }
 
   //===--------------------------------------------------------------------===//
   // TargetLowering Optimization Methods
@@ -964,6 +1044,11 @@ protected:
     Synthesizable[VT.getSimpleVT().SimpleTy] = isSynthesizable;
   }
 
+  /// findRepresentativeClass - Return the largest legal super-reg register class
+  /// of the register class for the specified type and its associated "cost".
+  virtual std::pair<const TargetRegisterClass*, uint8_t>
+  findRepresentativeClass(EVT VT) const;
+
   /// computeRegisterProperties - Once all of the register classes are added,
   /// this allows us to compute derived properties we expose.
   void computeRegisterProperties();
@@ -1071,6 +1156,12 @@ protected:
     PrefLoopAlignment = Align;
   }
 
+  /// setMinStackArgumentAlignment - Set the minimum stack alignment of an
+  /// argument.
+  void setMinStackArgumentAlignment(unsigned Align) {
+    MinStackArgumentAlignment = Align;
+  }
+
   /// setShouldFoldAtomicFences - Set if the target's implementation of the
   /// atomic operation intrinsics includes locking. Default is false.
   void setShouldFoldAtomicFences(bool fold) {
@@ -1136,6 +1227,7 @@ public:
     LowerCall(SDValue Chain, SDValue Callee,
               CallingConv::ID CallConv, bool isVarArg, bool &isTailCall,
               const SmallVectorImpl<ISD::OutputArg> &Outs,
+              const SmallVectorImpl<SDValue> &OutVals,
               const SmallVectorImpl<ISD::InputArg> &Ins,
               DebugLoc dl, SelectionDAG &DAG,
               SmallVectorImpl<SDValue> &InVals) const {
@@ -1148,9 +1240,8 @@ public:
   /// registers.  If false is returned, an sret-demotion is performed.
   ///
   virtual bool CanLowerReturn(CallingConv::ID CallConv, bool isVarArg,
-               const SmallVectorImpl<EVT> &OutTys,
-               const SmallVectorImpl<ISD::ArgFlagsTy> &ArgsFlags,
-               SelectionDAG &DAG) const
+               const SmallVectorImpl<ISD::OutputArg> &Outs,
+               LLVMContext &Context) const
   {
     // Return true by default to get preexisting behavior.
     return true;
@@ -1164,6 +1255,7 @@ public:
   virtual SDValue
     LowerReturn(SDValue Chain, CallingConv::ID CallConv, bool isVarArg,
                 const SmallVectorImpl<ISD::OutputArg> &Outs,
+                const SmallVectorImpl<SDValue> &OutVals,
                 DebugLoc dl, SelectionDAG &DAG) const {
     assert(0 && "Not Implemented");
     return SDValue();    // this is here to silence compiler errors
@@ -1212,16 +1304,7 @@ public:
 
   /// createFastISel - This method returns a target specific FastISel object,
   /// or null if the target does not support "fast" ISel.
-  virtual FastISel *
-  createFastISel(MachineFunction &,
-                 DenseMap<const Value *, unsigned> &,
-                 DenseMap<const BasicBlock *, MachineBasicBlock *> &,
-                 DenseMap<const AllocaInst *, int> &,
-                 std::vector<std::pair<MachineInstr*, unsigned> > &
-#ifndef NDEBUG
-                 , SmallSet<const Instruction *, 8> &CatchInfoLost
-#endif
-                 ) const {
+  virtual FastISel *createFastISel(FunctionLoweringInfo &funcInfo) const {
     return 0;
   }
 
@@ -1512,6 +1595,11 @@ private:
   /// buffers
   unsigned JumpBufAlignment;
 
+  /// MinStackArgumentAlignment - The minimum alignment that any argument
+  /// on the stack needs to have.
+  ///
+  unsigned MinStackArgumentAlignment;
+
   /// PrefLoopAlignment - The perferred loop alignment.
   ///
   unsigned PrefLoopAlignment;
@@ -1541,6 +1629,19 @@ private:
   TargetRegisterClass *RegClassForVT[MVT::LAST_VALUETYPE];
   unsigned char NumRegistersForVT[MVT::LAST_VALUETYPE];
   EVT RegisterTypeForVT[MVT::LAST_VALUETYPE];
+
+  /// RepRegClassForVT - This indicates the "representative" register class to
+  /// use for each ValueType the target supports natively. This information is
+  /// used by the scheduler to track register pressure. By default, the
+  /// representative register class is the largest legal super-reg register
+  /// class of the register class of the specified type. e.g. On x86, i8, i16,
+  /// and i32's representative class would be GR32.
+  const TargetRegisterClass *RepRegClassForVT[MVT::LAST_VALUETYPE];
+
+  /// RepRegClassCostForVT - This indicates the "cost" of the "representative"
+  /// register class for each ValueType. The cost is used by the scheduler to
+  /// approximate register pressure.
+  uint8_t RepRegClassCostForVT[MVT::LAST_VALUETYPE];
 
   /// Synthesizable indicates whether it is OK for the compiler to create new
   /// operations using this type.  All Legal types are Synthesizable except
@@ -1652,7 +1753,25 @@ protected:
   /// This field specifies whether the target can benefit from code placement
   /// optimization.
   bool benefitFromCodePlacementOpt;
+
+private:
+  /// isLegalRC - Return true if the value types that can be represented by the
+  /// specified register class are all legal.
+  bool isLegalRC(const TargetRegisterClass *RC) const;
+
+  /// hasLegalSuperRegRegClasses - Return true if the specified register class
+  /// has one or more super-reg register classes that are legal.
+  bool hasLegalSuperRegRegClasses(const TargetRegisterClass *RC) const;
 };
+
+/// GetReturnInfo - Given an LLVM IR type and return type attributes,
+/// compute the return value EVTs and flags, and optionally also
+/// the offsets, if the return value is being lowered to memory.
+void GetReturnInfo(const Type* ReturnType, Attributes attr,
+                   SmallVectorImpl<ISD::OutputArg> &Outs,
+                   const TargetLowering &TLI,
+                   SmallVectorImpl<uint64_t> *Offsets = 0);
+
 } // end llvm namespace
 
 #endif

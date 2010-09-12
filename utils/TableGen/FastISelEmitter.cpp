@@ -54,6 +54,7 @@ struct OperandsSignature {
   bool initialize(TreePatternNode *InstPatNode,
                   const CodeGenTarget &Target,
                   MVT::SimpleValueType VT) {
+
     if (!InstPatNode->isLeaf()) {
       if (InstPatNode->getOperator()->getName() == "imm") {
         Operands.push_back("i");
@@ -69,6 +70,7 @@ struct OperandsSignature {
     
     for (unsigned i = 0, e = InstPatNode->getNumChildren(); i != e; ++i) {
       TreePatternNode *Op = InstPatNode->getChild(i);
+      
       // For now, filter out any operand with a predicate.
       // For now, filter out any operand with multiple values.
       if (!Op->getPredicateFns().empty() ||
@@ -105,13 +107,15 @@ struct OperandsSignature {
         RC = Target.getRegisterClassForRegister(OpLeafRec);
       else
         return false;
-      // For now, require the register operands' register classes to all
-      // be the same.
+        
+      // For now, this needs to be a register class of some sort.
       if (!RC)
         return false;
-      // For now, all the operands must have the same register class.
+
+      // For now, all the operands must have the same register class or be
+      // a strict subclass of the destination.
       if (DstRC) {
-        if (DstRC != RC)
+        if (DstRC != RC && !DstRC->hasSubClass(RC))
           return false;
       } else
         DstRC = RC;
@@ -208,7 +212,8 @@ class FastISelMap {
   typedef std::map<MVT::SimpleValueType, PredMap> RetPredMap;
   typedef std::map<MVT::SimpleValueType, RetPredMap> TypeRetPredMap;
   typedef std::map<std::string, TypeRetPredMap> OpcodeTypeRetPredMap;
-  typedef std::map<OperandsSignature, OpcodeTypeRetPredMap> OperandsOpcodeTypeRetPredMap;
+  typedef std::map<OperandsSignature, OpcodeTypeRetPredMap> 
+            OperandsOpcodeTypeRetPredMap;
 
   OperandsOpcodeTypeRetPredMap SimplePatterns;
 
@@ -260,7 +265,7 @@ void FastISelMap::CollectPatterns(CodeGenDAGPatterns &CGP) {
     CodeGenInstruction &II = CGP.getTargetInfo().getInstruction(Op);
     if (II.OperandList.empty())
       continue;
-
+      
     // For now, ignore multi-instruction patterns.
     bool MultiInsts = false;
     for (unsigned i = 0, e = Dst->getNumChildren(); i != e; ++i) {
@@ -287,6 +292,10 @@ void FastISelMap::CollectPatterns(CodeGenDAGPatterns &CGP) {
       if (!DstRC)
         continue;
     } else {
+      // If this isn't a leaf, then continue since the register classes are
+      // a bit too complicated for now.
+      if (!Dst->getChild(1)->isLeaf()) continue;
+      
       DefInit *SR = dynamic_cast<DefInit*>(Dst->getChild(1)->getLeafValue());
       if (SR)
         SubRegNo = getQualifiedName(SR->getDef());
@@ -371,7 +380,8 @@ void FastISelMap::CollectPatterns(CodeGenDAGPatterns &CGP) {
       SubRegNo,
       PhysRegInputs
     };
-    assert(!SimplePatterns[Operands][OpcodeName][VT][RetVT].count(PredicateCheck) &&
+    assert(!SimplePatterns[Operands][OpcodeName][VT][RetVT]
+            .count(PredicateCheck) &&
            "Duplicate pattern!");
     SimplePatterns[Operands][OpcodeName][VT][RetVT][PredicateCheck] = Memo;
   }
@@ -432,11 +442,9 @@ void FastISelMap::PrintFunctionDefinitions(raw_ostream &OS) {
               
               for (unsigned i = 0; i < Memo.PhysRegs->size(); ++i) {
                 if ((*Memo.PhysRegs)[i] != "")
-                  OS << "  TII.copyRegToReg(*MBB, MBB->end(), "
-                     << (*Memo.PhysRegs)[i] << ", Op" << i << ", "
-                     << "TM.getRegisterInfo()->getPhysicalRegisterRegClass("
-                     << (*Memo.PhysRegs)[i] << "), "
-                     << "MRI.getRegClass(Op" << i << "), DL);\n";
+                  OS << "  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DL, "
+                     << "TII.get(TargetOpcode::COPY), "
+                     << (*Memo.PhysRegs)[i] << ").addReg(Op" << i << ");\n";
               }
               
               OS << "  return FastEmitInst_";
@@ -524,14 +532,12 @@ void FastISelMap::PrintFunctionDefinitions(raw_ostream &OS) {
               HasPred = true;
             }
             
-             for (unsigned i = 0; i < Memo.PhysRegs->size(); ++i) {
-                if ((*Memo.PhysRegs)[i] != "")
-                  OS << "  TII.copyRegToReg(*MBB, MBB->end(), "
-                     << (*Memo.PhysRegs)[i] << ", Op" << i << ", "
-                     << "TM.getRegisterInfo()->getPhysicalRegisterRegClass("
-                     << (*Memo.PhysRegs)[i] << "), "
-                     << "MRI.getRegClass(Op" << i << "), DL);\n";
-              }
+            for (unsigned i = 0; i < Memo.PhysRegs->size(); ++i) {
+              if ((*Memo.PhysRegs)[i] != "")
+                OS << "  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DL, "
+                   << "TII.get(TargetOpcode::COPY), "
+                   << (*Memo.PhysRegs)[i] << ").addReg(Op" << i << ");\n";
+            }
             
             OS << "  return FastEmitInst_";
             

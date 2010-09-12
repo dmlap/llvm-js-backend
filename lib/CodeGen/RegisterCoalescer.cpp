@@ -49,19 +49,13 @@ bool CoalescerPair::isMoveInstr(const MachineInstr *MI,
     DstSub = MI->getOperand(0).getSubReg();
     Src = MI->getOperand(1).getReg();
     SrcSub = MI->getOperand(1).getSubReg();
-  } else if (MI->isExtractSubreg()) {
-    Dst = MI->getOperand(0).getReg();
-    DstSub = MI->getOperand(0).getSubReg();
-    Src = MI->getOperand(1).getReg();
-    SrcSub = compose(MI->getOperand(1).getSubReg(), MI->getOperand(2).getImm());
-  } else if (MI->isInsertSubreg() || MI->isSubregToReg()) {
+  } else if (MI->isSubregToReg()) {
     Dst = MI->getOperand(0).getReg();
     DstSub = compose(MI->getOperand(0).getSubReg(), MI->getOperand(3).getImm());
     Src = MI->getOperand(2).getReg();
     SrcSub = MI->getOperand(2).getSubReg();
-  } else if (!tii_.isMoveInstr(*MI, Src, Dst, SrcSub, DstSub)) {
+  } else
     return false;
-  }
   return true;
 }
 
@@ -83,7 +77,6 @@ bool CoalescerPair::setRegisters(const MachineInstr *MI) {
     std::swap(SrcSub, DstSub);
     flipped_ = true;
   }
-  origDstReg_ = Dst;
 
   const MachineRegisterInfo &MRI = MI->getParent()->getParent()->getRegInfo();
 

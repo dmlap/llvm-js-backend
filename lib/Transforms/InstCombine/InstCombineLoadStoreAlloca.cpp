@@ -146,10 +146,14 @@ Instruction *InstCombiner::visitLoadInst(LoadInst &LI) {
   if (TD) {
     unsigned KnownAlign =
       GetOrEnforceKnownAlignment(Op, TD->getPrefTypeAlignment(LI.getType()));
-    if (KnownAlign >
-        (LI.getAlignment() == 0 ? TD->getABITypeAlignment(LI.getType()) :
-                                  LI.getAlignment()))
+    unsigned LoadAlign = LI.getAlignment();
+    unsigned EffectiveLoadAlign = LoadAlign != 0 ? LoadAlign :
+      TD->getABITypeAlignment(LI.getType());
+
+    if (KnownAlign > EffectiveLoadAlign)
       LI.setAlignment(KnownAlign);
+    else if (LoadAlign == 0)
+      LI.setAlignment(EffectiveLoadAlign);
   }
 
   // load (cast X) --> cast (load X) iff safe.
@@ -365,10 +369,11 @@ DbgDeclareInst *InstCombiner::hasOneUsePlusDeclare(Value *V) {
     return 0;
   for (Value::use_iterator UI = V->use_begin(), E = V->use_end();
        UI != E; ++UI) {
-    if (DbgDeclareInst *DI = dyn_cast<DbgDeclareInst>(UI))
+    User *U = *UI;
+    if (DbgDeclareInst *DI = dyn_cast<DbgDeclareInst>(U))
       return DI;
-    if (isa<BitCastInst>(UI) && UI->hasOneUse()) {
-      if (DbgDeclareInst *DI = dyn_cast<DbgDeclareInst>(UI->use_begin()))
+    if (isa<BitCastInst>(U) && U->hasOneUse()) {
+      if (DbgDeclareInst *DI = dyn_cast<DbgDeclareInst>(*U->use_begin()))
         return DI;
       }
   }
@@ -410,10 +415,14 @@ Instruction *InstCombiner::visitStoreInst(StoreInst &SI) {
   if (TD) {
     unsigned KnownAlign =
       GetOrEnforceKnownAlignment(Ptr, TD->getPrefTypeAlignment(Val->getType()));
-    if (KnownAlign >
-        (SI.getAlignment() == 0 ? TD->getABITypeAlignment(Val->getType()) :
-                                  SI.getAlignment()))
+    unsigned StoreAlign = SI.getAlignment();
+    unsigned EffectiveStoreAlign = StoreAlign != 0 ? StoreAlign :
+      TD->getABITypeAlignment(Val->getType());
+
+    if (KnownAlign > EffectiveStoreAlign)
       SI.setAlignment(KnownAlign);
+    else if (StoreAlign == 0)
+      SI.setAlignment(EffectiveStoreAlign);
   }
 
   // Do really simple DSE, to catch cases where there are several consecutive
@@ -524,17 +533,20 @@ bool InstCombiner::SimplifyStoreAtEndOfBlock(StoreInst &SI) {
   // Determine whether Dest has exactly two predecessors and, if so, compute
   // the other predecessor.
   pred_iterator PI = pred_begin(DestBB);
+  BasicBlock *P = *PI;
   BasicBlock *OtherBB = 0;
-  if (*PI != StoreBB)
-    OtherBB = *PI;
-  ++PI;
-  if (PI == pred_end(DestBB))
+
+  if (P != StoreBB)
+    OtherBB = P;
+
+  if (++PI == pred_end(DestBB))
     return false;
   
-  if (*PI != StoreBB) {
+  P = *PI;
+  if (P != StoreBB) {
     if (OtherBB)
       return false;
-    OtherBB = *PI;
+    OtherBB = P;
   }
   if (++PI != pred_end(DestBB))
     return false;

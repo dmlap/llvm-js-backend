@@ -76,6 +76,7 @@
 #include "AsmMatcherEmitter.h"
 #include "CodeGenTarget.h"
 #include "Record.h"
+#include "StringMatcher.h"
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
@@ -199,6 +200,14 @@ static void TokenizeAsmString(StringRef AsmString,
       break;
     }
 
+    case '.':
+      if (InTok) {
+        Tokens.push_back(AsmString.slice(Prev, i));
+      }
+      Prev = i;
+      InTok = true;
+      break;
+
     default:
       InTok = true;
     }
@@ -260,9 +269,12 @@ static bool IsAssemblerInstruction(StringRef Name,
     }
 
     if (Tokens[i][0] == '$' && !OperandNames.insert(Tokens[i]).second) {
-      std::string Err = "'" + Name.str() + "': " +
-        "invalid assembler instruction; tied operand '" + Tokens[i].str() + "'";
-      throw TGError(CGI.TheDef->getLoc(), Err);
+      DEBUG({
+          errs() << "warning: '" << Name << "': "
+                 << "ignoring instruction with tied operand '"
+                 << Tokens[i].str() << "'\n";
+        });
+      return false;
     }
   }
 
@@ -270,6 +282,8 @@ static bool IsAssemblerInstruction(StringRef Name,
 }
 
 namespace {
+
+struct SubtargetFeatureInfo;
 
 /// ClassInfo - Helper class for storing the information about a particular
 /// class of operands which can be matched.
@@ -407,9 +421,9 @@ public:
     default:
       // This class preceeds the RHS if it is a proper subset of the RHS.
       if (isSubsetOf(RHS))
-	return true;
+        return true;
       if (RHS.isSubsetOf(*this))
-	return false;
+        return false;
 
       // Otherwise, order by name to ensure we have a total ordering.
       return ValueName < RHS.ValueName;
@@ -444,6 +458,9 @@ struct InstructionInfo {
   /// Operands - The operands that this instruction matches.
   SmallVector<Operand, 4> Operands;
 
+  /// Predicates - The required subtarget features to match this instruction.
+  SmallVector<SubtargetFeatureInfo*, 4> RequiredFeatures;
+
   /// ConversionFnKind - The enum value which is passed to the generated
   /// ConvertToMCInst to convert parsed operands into an MCInst for this
   /// function.
@@ -451,6 +468,10 @@ struct InstructionInfo {
 
   /// operator< - Compare two instructions.
   bool operator<(const InstructionInfo &RHS) const {
+    // The primary comparator is the instruction mnemonic.
+    if (Tokens[0] != RHS.Tokens[0])
+      return Tokens[0] < RHS.Tokens[0];
+    
     if (Operands.size() != RHS.Operands.size())
       return Operands.size() < RHS.Operands.size();
 
@@ -505,6 +526,19 @@ public:
   void dump();
 };
 
+/// SubtargetFeatureInfo - Helper class for storing information on a subtarget
+/// feature which participates in instruction matching.
+struct SubtargetFeatureInfo {
+  /// \brief The predicate record for this feature.
+  Record *TheDef;
+
+  /// \brief An unique index assigned to represent this feature.
+  unsigned Index;
+
+  /// \brief The name of the enumerated constant identifying this feature.
+  std::string EnumName;
+};
+
 class AsmMatcherInfo {
 public:
   /// The tablegen AsmParser record.
@@ -525,6 +559,9 @@ public:
   /// Map of Register records to their class information.
   std::map<Record*, ClassInfo*> RegisterClasses;
 
+  /// Map of Predicate records to their subtarget information.
+  std::map<Record*, SubtargetFeatureInfo*> SubtargetFeatures;
+
 private:
   /// Map of token to class information which has already been constructed.
   std::map<std::string, ClassInfo*> TokenClasses;
@@ -542,6 +579,23 @@ private:
   /// getOperandClass - Lookup or create the class for the given operand.
   ClassInfo *getOperandClass(StringRef Token,
                              const CodeGenInstruction::OperandInfo &OI);
+
+  /// getSubtargetFeature - Lookup or create the subtarget feature info for the
+  /// given operand.
+  SubtargetFeatureInfo *getSubtargetFeature(Record *Def) {
+    assert(Def->isSubClassOf("Predicate") && "Invalid predicate type!");
+
+    SubtargetFeatureInfo *&Entry = SubtargetFeatures[Def];
+    if (!Entry) {
+      Entry = new SubtargetFeatureInfo;
+      Entry->TheDef = Def;
+      Entry->Index = SubtargetFeatures.size() - 1;
+      Entry->EnumName = "Feature_" + Def->getName();
+      assert(Entry->Index < 32 && "Too many subtarget features!");
+    }
+
+    return Entry;
+  }
 
   /// BuildRegisterClasses - Build the ClassInfo* instances for register
   /// classes.
@@ -903,7 +957,31 @@ void AsmMatcherInfo::BuildInfo(CodeGenTarget &Target) {
         }
       }
     }
-    
+
+    // Compute the require features.
+    ListInit *Predicates = CGI.TheDef->getValueAsListInit("Predicates");
+    for (unsigned i = 0, e = Predicates->getSize(); i != e; ++i) {
+      if (DefInit *Pred = dynamic_cast<DefInit*>(Predicates->getElement(i))) {
+        // Ignore OptForSize and OptForSpeed, they aren't really requirements,
+        // rather they are hints to isel.
+        //
+        // FIXME: Find better way to model this.
+        if (Pred->getDef()->getName() == "OptForSize" ||
+            Pred->getDef()->getName() == "OptForSpeed")
+          continue;
+
+        // FIXME: Total hack; for now, we just limit ourselves to In32BitMode
+        // and In64BitMode, because we aren't going to have the right feature
+        // masks for SSE and friends. We need to decide what we are going to do
+        // about CPU subtypes to implement this the right way.
+        if (Pred->getDef()->getName() != "In32BitMode" &&
+            Pred->getDef()->getName() != "In64BitMode")
+          continue;
+
+        II->RequiredFeatures.push_back(getSubtargetFeature(Pred->getDef()));
+      }
+    }
+
     Instructions.push_back(II.take());
   }
 
@@ -917,8 +995,16 @@ void AsmMatcherInfo::BuildInfo(CodeGenTarget &Target) {
   for (std::vector<InstructionInfo*>::iterator it = Instructions.begin(),
          ie = Instructions.end(); it != ie; ++it) {
     InstructionInfo *II = *it;
-
-    for (unsigned i = 0, e = II->Tokens.size(); i != e; ++i) {
+    
+    // The first token of the instruction is the mnemonic, which must be a
+    // simple string.
+    assert(!II->Tokens.empty() && "Instruction has no tokens?");
+    StringRef Mnemonic = II->Tokens[0];
+    assert(Mnemonic[0] != '$' &&
+           (RegisterPrefix.empty() || !Mnemonic.startswith(RegisterPrefix)));
+    
+    // Parse the tokens after the mnemonic.
+    for (unsigned i = 1, e = II->Tokens.size(); i != e; ++i) {
       StringRef Token = II->Tokens[i];
 
       // Check for singleton registers.
@@ -1147,7 +1233,7 @@ static void EmitConvertToMCInst(CodeGenTarget &Target,
 
       CvtOS << "    ((" << TargetOperandClass << "*)Operands["
          << MIOperandList[i].second 
-         << "])->" << Op.Class->RenderMethod 
+         << "+1])->" << Op.Class->RenderMethod 
          << "(Inst, " << Op.OperandInfo->MINumOperands << ");\n";
       CurIndex += Op.OperandInfo->MINumOperands;
     }
@@ -1324,133 +1410,6 @@ static void EmitIsSubclass(CodeGenTarget &Target,
   OS << "}\n\n";
 }
 
-typedef std::pair<std::string, std::string> StringPair;
-
-/// FindFirstNonCommonLetter - Find the first character in the keys of the
-/// string pairs that is not shared across the whole set of strings.  All
-/// strings are assumed to have the same length.
-static unsigned 
-FindFirstNonCommonLetter(const std::vector<const StringPair*> &Matches) {
-  assert(!Matches.empty());
-  for (unsigned i = 0, e = Matches[0]->first.size(); i != e; ++i) {
-    // Check to see if letter i is the same across the set.
-    char Letter = Matches[0]->first[i];
-    
-    for (unsigned str = 0, e = Matches.size(); str != e; ++str)
-      if (Matches[str]->first[i] != Letter)
-        return i;
-  }
-  
-  return Matches[0]->first.size();
-}
-
-/// EmitStringMatcherForChar - Given a set of strings that are known to be the
-/// same length and whose characters leading up to CharNo are the same, emit
-/// code to verify that CharNo and later are the same.
-///
-/// \return - True if control can leave the emitted code fragment.
-static bool EmitStringMatcherForChar(const std::string &StrVariableName,
-                                  const std::vector<const StringPair*> &Matches,
-                                     unsigned CharNo, unsigned IndentCount,
-                                     raw_ostream &OS) {
-  assert(!Matches.empty() && "Must have at least one string to match!");
-  std::string Indent(IndentCount*2+4, ' ');
-
-  // If we have verified that the entire string matches, we're done: output the
-  // matching code.
-  if (CharNo == Matches[0]->first.size()) {
-    assert(Matches.size() == 1 && "Had duplicate keys to match on");
-    
-    // FIXME: If Matches[0].first has embeded \n, this will be bad.
-    OS << Indent << Matches[0]->second << "\t // \"" << Matches[0]->first
-       << "\"\n";
-    return false;
-  }
-  
-  // Bucket the matches by the character we are comparing.
-  std::map<char, std::vector<const StringPair*> > MatchesByLetter;
-  
-  for (unsigned i = 0, e = Matches.size(); i != e; ++i)
-    MatchesByLetter[Matches[i]->first[CharNo]].push_back(Matches[i]);
-  
-
-  // If we have exactly one bucket to match, see how many characters are common
-  // across the whole set and match all of them at once.
-  if (MatchesByLetter.size() == 1) {
-    unsigned FirstNonCommonLetter = FindFirstNonCommonLetter(Matches);
-    unsigned NumChars = FirstNonCommonLetter-CharNo;
-    
-    // Emit code to break out if the prefix doesn't match.
-    if (NumChars == 1) {
-      // Do the comparison with if (Str[1] != 'f')
-      // FIXME: Need to escape general characters.
-      OS << Indent << "if (" << StrVariableName << "[" << CharNo << "] != '"
-         << Matches[0]->first[CharNo] << "')\n";
-      OS << Indent << "  break;\n";
-    } else {
-      // Do the comparison with if (Str.substr(1,3) != "foo").    
-      // FIXME: Need to escape general strings.
-      OS << Indent << "if (" << StrVariableName << ".substr(" << CharNo << ","
-         << NumChars << ") != \"";
-      OS << Matches[0]->first.substr(CharNo, NumChars) << "\")\n";
-      OS << Indent << "  break;\n";
-    }
-    
-    return EmitStringMatcherForChar(StrVariableName, Matches, 
-                                    FirstNonCommonLetter, IndentCount, OS);
-  }
-  
-  // Otherwise, we have multiple possible things, emit a switch on the
-  // character.
-  OS << Indent << "switch (" << StrVariableName << "[" << CharNo << "]) {\n";
-  OS << Indent << "default: break;\n";
-  
-  for (std::map<char, std::vector<const StringPair*> >::iterator LI = 
-       MatchesByLetter.begin(), E = MatchesByLetter.end(); LI != E; ++LI) {
-    // TODO: escape hard stuff (like \n) if we ever care about it.
-    OS << Indent << "case '" << LI->first << "':\t // "
-       << LI->second.size() << " strings to match.\n";
-    if (EmitStringMatcherForChar(StrVariableName, LI->second, CharNo+1,
-                                 IndentCount+1, OS))
-      OS << Indent << "  break;\n";
-  }
-  
-  OS << Indent << "}\n";
-  return true;
-}
-
-
-/// EmitStringMatcher - Given a list of strings and code to execute when they
-/// match, output a simple switch tree to classify the input string.
-/// 
-/// If a match is found, the code in Vals[i].second is executed; control must
-/// not exit this code fragment.  If nothing matches, execution falls through.
-///
-/// \param StrVariableName - The name of the variable to test.
-static void EmitStringMatcher(const std::string &StrVariableName,
-                              const std::vector<StringPair> &Matches,
-                              raw_ostream &OS) {
-  // First level categorization: group strings by length.
-  std::map<unsigned, std::vector<const StringPair*> > MatchesByLength;
-  
-  for (unsigned i = 0, e = Matches.size(); i != e; ++i)
-    MatchesByLength[Matches[i].first.size()].push_back(&Matches[i]);
-  
-  // Output a switch statement on length and categorize the elements within each
-  // bin.
-  OS << "  switch (" << StrVariableName << ".size()) {\n";
-  OS << "  default: break;\n";
-  
-  for (std::map<unsigned, std::vector<const StringPair*> >::iterator LI =
-       MatchesByLength.begin(), E = MatchesByLength.end(); LI != E; ++LI) {
-    OS << "  case " << LI->first << ":\t // " << LI->second.size()
-       << " strings to match.\n";
-    if (EmitStringMatcherForChar(StrVariableName, LI->second, 0, 0, OS))
-      OS << "    break;\n";
-  }
-  
-  OS << "  }\n";
-}
 
 
 /// EmitMatchTokenString - Emit the function to match a token string to the
@@ -1459,18 +1418,19 @@ static void EmitMatchTokenString(CodeGenTarget &Target,
                                  std::vector<ClassInfo*> &Infos,
                                  raw_ostream &OS) {
   // Construct the match list.
-  std::vector<StringPair> Matches;
+  std::vector<StringMatcher::StringPair> Matches;
   for (std::vector<ClassInfo*>::iterator it = Infos.begin(), 
          ie = Infos.end(); it != ie; ++it) {
     ClassInfo &CI = **it;
 
     if (CI.Kind == ClassInfo::Token)
-      Matches.push_back(StringPair(CI.ValueName, "return " + CI.Name + ";"));
+      Matches.push_back(StringMatcher::StringPair(CI.ValueName,
+                                                  "return " + CI.Name + ";"));
   }
 
   OS << "static MatchClassKind MatchTokenString(StringRef Name) {\n";
 
-  EmitStringMatcher("Name", Matches, OS);
+  StringMatcher("Name", Matches, OS).Emit();
 
   OS << "  return InvalidMatchClass;\n";
   OS << "}\n\n";
@@ -1481,21 +1441,64 @@ static void EmitMatchTokenString(CodeGenTarget &Target,
 static void EmitMatchRegisterName(CodeGenTarget &Target, Record *AsmParser,
                                   raw_ostream &OS) {
   // Construct the match list.
-  std::vector<StringPair> Matches;
+  std::vector<StringMatcher::StringPair> Matches;
   for (unsigned i = 0, e = Target.getRegisters().size(); i != e; ++i) {
     const CodeGenRegister &Reg = Target.getRegisters()[i];
     if (Reg.TheDef->getValueAsString("AsmName").empty())
       continue;
 
-    Matches.push_back(StringPair(Reg.TheDef->getValueAsString("AsmName"),
-                                 "return " + utostr(i + 1) + ";"));
+    Matches.push_back(StringMatcher::StringPair(
+                                        Reg.TheDef->getValueAsString("AsmName"),
+                                        "return " + utostr(i + 1) + ";"));
   }
   
   OS << "static unsigned MatchRegisterName(StringRef Name) {\n";
 
-  EmitStringMatcher("Name", Matches, OS);
+  StringMatcher("Name", Matches, OS).Emit();
   
   OS << "  return 0;\n";
+  OS << "}\n\n";
+}
+
+/// EmitSubtargetFeatureFlagEnumeration - Emit the subtarget feature flag
+/// definitions.
+static void EmitSubtargetFeatureFlagEnumeration(CodeGenTarget &Target,
+                                                AsmMatcherInfo &Info,
+                                                raw_ostream &OS) {
+  OS << "// Flags for subtarget features that participate in "
+     << "instruction matching.\n";
+  OS << "enum SubtargetFeatureFlag {\n";
+  for (std::map<Record*, SubtargetFeatureInfo*>::const_iterator
+         it = Info.SubtargetFeatures.begin(),
+         ie = Info.SubtargetFeatures.end(); it != ie; ++it) {
+    SubtargetFeatureInfo &SFI = *it->second;
+    OS << "  " << SFI.EnumName << " = (1 << " << SFI.Index << "),\n";
+  }
+  OS << "  Feature_None = 0\n";
+  OS << "};\n\n";
+}
+
+/// EmitComputeAvailableFeatures - Emit the function to compute the list of
+/// available features given a subtarget.
+static void EmitComputeAvailableFeatures(CodeGenTarget &Target,
+                                         AsmMatcherInfo &Info,
+                                         raw_ostream &OS) {
+  std::string ClassName =
+    Info.AsmParser->getValueAsString("AsmParserClassName");
+
+  OS << "unsigned " << Target.getName() << ClassName << "::\n"
+     << "ComputeAvailableFeatures(const " << Target.getName()
+     << "Subtarget *Subtarget) const {\n";
+  OS << "  unsigned Features = 0;\n";
+  for (std::map<Record*, SubtargetFeatureInfo*>::const_iterator
+         it = Info.SubtargetFeatures.begin(),
+         ie = Info.SubtargetFeatures.end(); it != ie; ++it) {
+    SubtargetFeatureInfo &SFI = *it->second;
+    OS << "  if (" << SFI.TheDef->getValueAsString("CondString")
+       << ")\n";
+    OS << "    Features |= " << SFI.EnumName << ";\n";
+  }
+  OS << "  return Features;\n";
   OS << "}\n\n";
 }
 
@@ -1522,38 +1525,64 @@ void AsmMatcherEmitter::run(raw_ostream &OS) {
     });
 
   // Check for ambiguous instructions.
-  unsigned NumAmbiguous = 0;
-  for (unsigned i = 0, e = Info.Instructions.size(); i != e; ++i) {
-    for (unsigned j = i + 1; j != e; ++j) {
-      InstructionInfo &A = *Info.Instructions[i];
-      InstructionInfo &B = *Info.Instructions[j];
-    
-      if (A.CouldMatchAmiguouslyWith(B)) {
-        DEBUG_WITH_TYPE("ambiguous_instrs", {
-            errs() << "warning: ambiguous instruction match:\n";
-            A.dump();
-            errs() << "\nis incomparable with:\n";
-            B.dump();
-            errs() << "\n\n";
-          });
-        ++NumAmbiguous;
+  DEBUG_WITH_TYPE("ambiguous_instrs", {
+    unsigned NumAmbiguous = 0;
+    for (unsigned i = 0, e = Info.Instructions.size(); i != e; ++i) {
+      for (unsigned j = i + 1; j != e; ++j) {
+        InstructionInfo &A = *Info.Instructions[i];
+        InstructionInfo &B = *Info.Instructions[j];
+      
+        if (A.CouldMatchAmiguouslyWith(B)) {
+          errs() << "warning: ambiguous instruction match:\n";
+          A.dump();
+          errs() << "\nis incomparable with:\n";
+          B.dump();
+          errs() << "\n\n";
+          ++NumAmbiguous;
+        }
       }
     }
-  }
-  if (NumAmbiguous)
-    DEBUG_WITH_TYPE("ambiguous_instrs", {
-        errs() << "warning: " << NumAmbiguous 
-               << " ambiguous instructions!\n";
-      });
+    if (NumAmbiguous)
+      errs() << "warning: " << NumAmbiguous 
+             << " ambiguous instructions!\n";
+  });
 
   // Write the output.
 
   EmitSourceFileHeader("Assembly Matcher Source Fragment", OS);
 
+  // Information for the class declaration.
+  OS << "\n#ifdef GET_ASSEMBLER_HEADER\n";
+  OS << "#undef GET_ASSEMBLER_HEADER\n";
+  OS << "  // This should be included into the middle of the declaration of \n";
+  OS << "  // your subclasses implementation of TargetAsmParser.\n";
+  OS << "  unsigned ComputeAvailableFeatures(const " <<
+           Target.getName() << "Subtarget *Subtarget) const;\n";
+  OS << "  enum MatchResultTy {\n";
+  OS << "    Match_Success, Match_MnemonicFail, Match_InvalidOperand,\n";
+  OS << "    Match_MissingFeature\n";
+  OS << "  };\n";
+  OS << "  MatchResultTy MatchInstructionImpl(const SmallVectorImpl<MCParsedAsmOperand*>"
+     << " &Operands, MCInst &Inst, unsigned &ErrorInfo);\n\n";
+  OS << "#endif // GET_ASSEMBLER_HEADER_INFO\n\n";
+
+  
+  
+  
+  OS << "\n#ifdef GET_REGISTER_MATCHER\n";
+  OS << "#undef GET_REGISTER_MATCHER\n\n";
+
+  // Emit the subtarget feature enumeration.
+  EmitSubtargetFeatureFlagEnumeration(Target, Info, OS);
+
   // Emit the function to match a register name to number.
   EmitMatchRegisterName(Target, AsmParser, OS);
+
+  OS << "#endif // GET_REGISTER_MATCHER\n\n";
   
-  OS << "#ifndef REGISTERS_ONLY\n\n";
+
+  OS << "\n#ifdef GET_MATCHER_IMPLEMENTATION\n";
+  OS << "#undef GET_MATCHER_IMPLEMENTATION\n\n";
 
   // Generate the unified function to convert operands into an MCInst.
   EmitConvertToMCInst(Target, Info.Instructions, OS);
@@ -1570,22 +1599,17 @@ void AsmMatcherEmitter::run(raw_ostream &OS) {
   // Emit the subclass predicate routine.
   EmitIsSubclass(Target, Info.Classes, OS);
 
-  // Finally, build the match function.
+  // Emit the available features compute function.
+  EmitComputeAvailableFeatures(Target, Info, OS);
+
 
   size_t MaxNumOperands = 0;
   for (std::vector<InstructionInfo*>::const_iterator it =
          Info.Instructions.begin(), ie = Info.Instructions.end();
        it != ie; ++it)
     MaxNumOperands = std::max(MaxNumOperands, (*it)->Operands.size());
-
-  const std::string &MatchName =
-    AsmParser->getValueAsString("MatchInstructionName");
-  OS << "bool " << Target.getName() << ClassName << "::\n"
-     << MatchName
-     << "(const SmallVectorImpl<MCParsedAsmOperand*> &Operands,\n";
-  OS.indent(MatchName.size() + 1);
-  OS << "MCInst &Inst) {\n";
-
+  
+  
   // Emit the static match table; unused classes get initalized to 0 which is
   // guaranteed to be InvalidMatchClass.
   //
@@ -1596,60 +1620,150 @@ void AsmMatcherEmitter::run(raw_ostream &OS) {
   // order the match kinds appropriately (putting mnemonics last), then we
   // should only end up using a few bits for each class, especially the ones
   // following the mnemonic.
-  OS << "  static const struct MatchEntry {\n";
+  OS << "namespace {\n";
+  OS << "  struct MatchEntry {\n";
   OS << "    unsigned Opcode;\n";
+  OS << "    const char *Mnemonic;\n";
   OS << "    ConversionKind ConvertFn;\n";
   OS << "    MatchClassKind Classes[" << MaxNumOperands << "];\n";
-  OS << "  } MatchTable[" << Info.Instructions.size() << "] = {\n";
-
+  OS << "    unsigned RequiredFeatures;\n";
+  OS << "  };\n\n";
+  
+  OS << "// Predicate for searching for an opcode.\n";
+  OS << "  struct LessOpcode {\n";
+  OS << "    bool operator()(const MatchEntry &LHS, StringRef RHS) {\n";
+  OS << "      return StringRef(LHS.Mnemonic) < RHS;\n";
+  OS << "    }\n";
+  OS << "    bool operator()(StringRef LHS, const MatchEntry &RHS) {\n";
+  OS << "      return LHS < StringRef(RHS.Mnemonic);\n";
+  OS << "    }\n";
+  OS << "    bool operator()(const MatchEntry &LHS, const MatchEntry &RHS) {\n";
+  OS << "      return StringRef(LHS.Mnemonic) < StringRef(RHS.Mnemonic);\n";
+  OS << "    }\n";
+  OS << "  };\n";
+  
+  OS << "} // end anonymous namespace.\n\n";
+  
+  OS << "static const MatchEntry MatchTable["
+     << Info.Instructions.size() << "] = {\n";
+  
   for (std::vector<InstructionInfo*>::const_iterator it =
-         Info.Instructions.begin(), ie = Info.Instructions.end();
+       Info.Instructions.begin(), ie = Info.Instructions.end();
        it != ie; ++it) {
     InstructionInfo &II = **it;
-
-    OS << "    { " << Target.getName() << "::" << II.InstrName
-       << ", " << II.ConversionFnKind << ", { ";
+    
+    OS << "  { " << Target.getName() << "::" << II.InstrName
+    << ", \"" << II.Tokens[0] << "\""
+    << ", " << II.ConversionFnKind << ", { ";
     for (unsigned i = 0, e = II.Operands.size(); i != e; ++i) {
       InstructionInfo::Operand &Op = II.Operands[i];
       
       if (i) OS << ", ";
       OS << Op.Class->Name;
     }
-    OS << " } },\n";
+    OS << " }, ";
+    
+    // Write the required features mask.
+    if (!II.RequiredFeatures.empty()) {
+      for (unsigned i = 0, e = II.RequiredFeatures.size(); i != e; ++i) {
+        if (i) OS << "|";
+        OS << II.RequiredFeatures[i]->EnumName;
+      }
+    } else
+      OS << "0";
+    
+    OS << "},\n";
   }
+  
+  OS << "};\n\n";
 
-  OS << "  };\n\n";
+  // Finally, build the match function.
+  OS << Target.getName() << ClassName << "::MatchResultTy "
+     << Target.getName() << ClassName << "::\n"
+     << "MatchInstructionImpl(const SmallVectorImpl<MCParsedAsmOperand*>"
+     << " &Operands,\n";
+  OS << "                     MCInst &Inst, unsigned &ErrorInfo) {\n";
+
+  // Emit code to get the available features.
+  OS << "  // Get the current feature set.\n";
+  OS << "  unsigned AvailableFeatures = getAvailableFeatures();\n\n";
 
   // Emit code to compute the class list for this operand vector.
   OS << "  // Eliminate obvious mismatches.\n";
-  OS << "  if (Operands.size() > " << MaxNumOperands << ")\n";
-  OS << "    return true;\n\n";
+  OS << "  if (Operands.size() > " << (MaxNumOperands+1) << ") {\n";
+  OS << "    ErrorInfo = " << (MaxNumOperands+1) << ";\n";
+  OS << "    return Match_InvalidOperand;\n";
+  OS << "  }\n\n";
 
   OS << "  // Compute the class list for this operand vector.\n";
   OS << "  MatchClassKind Classes[" << MaxNumOperands << "];\n";
-  OS << "  for (unsigned i = 0, e = Operands.size(); i != e; ++i) {\n";
-  OS << "    Classes[i] = ClassifyOperand(Operands[i]);\n\n";
+  OS << "  for (unsigned i = 1, e = Operands.size(); i != e; ++i) {\n";
+  OS << "    Classes[i-1] = ClassifyOperand(Operands[i]);\n\n";
 
   OS << "    // Check for invalid operands before matching.\n";
-  OS << "    if (Classes[i] == InvalidMatchClass)\n";
-  OS << "      return true;\n";
+  OS << "    if (Classes[i-1] == InvalidMatchClass) {\n";
+  OS << "      ErrorInfo = i;\n";
+  OS << "      return Match_InvalidOperand;\n";
+  OS << "    }\n";
   OS << "  }\n\n";
 
   OS << "  // Mark unused classes.\n";
-  OS << "  for (unsigned i = Operands.size(), e = " << MaxNumOperands << "; "
+  OS << "  for (unsigned i = Operands.size()-1, e = " << MaxNumOperands << "; "
      << "i != e; ++i)\n";
   OS << "    Classes[i] = InvalidMatchClass;\n\n";
 
+  OS << "  // Get the instruction mnemonic, which is the first token.\n";
+  OS << "  StringRef Mnemonic = ((" << Target.getName()
+     << "Operand*)Operands[0])->getToken();\n\n";
+
+  OS << "  // Some state to try to produce better error messages.\n";
+  OS << "  bool HadMatchOtherThanFeatures = false;\n\n";
+  OS << "  // Set ErrorInfo to the operand that mismatches if it is \n";
+  OS << "  // wrong for all instances of the instruction.\n";
+  OS << "  ErrorInfo = ~0U;\n";
+
   // Emit code to search the table.
   OS << "  // Search the table.\n";
-  OS << "  for (const MatchEntry *it = MatchTable, "
-     << "*ie = MatchTable + " << Info.Instructions.size()
-     << "; it != ie; ++it) {\n";
-  for (unsigned i = 0; i != MaxNumOperands; ++i) {
-    OS << "    if (!IsSubclass(Classes[" 
-       << i << "], it->Classes[" << i << "]))\n";
-    OS << "      continue;\n";
-  }
+  OS << "  std::pair<const MatchEntry*, const MatchEntry*> MnemonicRange =\n";
+  OS << "    std::equal_range(MatchTable, MatchTable+"
+     << Info.Instructions.size() << ", Mnemonic, LessOpcode());\n\n";
+  
+  OS << "  // Return a more specific error code if no mnemonics match.\n";
+  OS << "  if (MnemonicRange.first == MnemonicRange.second)\n";
+  OS << "    return Match_MnemonicFail;\n\n";
+  
+  OS << "  for (const MatchEntry *it = MnemonicRange.first, "
+     << "*ie = MnemonicRange.second;\n";
+  OS << "       it != ie; ++it) {\n";
+
+  OS << "    // equal_range guarantees that instruction mnemonic matches.\n";
+  OS << "    assert(Mnemonic == it->Mnemonic);\n";
+  
+  // Emit check that the subclasses match.
+  OS << "    bool OperandsValid = true;\n";
+  OS << "    for (unsigned i = 0; i != " << MaxNumOperands << "; ++i) {\n";
+  OS << "      if (IsSubclass(Classes[i], it->Classes[i]))\n";
+  OS << "        continue;\n";
+  OS << "      // If this operand is broken for all of the instances of this\n";
+  OS << "      // mnemonic, keep track of it so we can report loc info.\n";
+  OS << "      if (it == MnemonicRange.first || ErrorInfo == i+1)\n";
+  OS << "        ErrorInfo = i+1;\n";
+  OS << "      else\n";
+  OS << "        ErrorInfo = ~0U;";
+  OS << "      // Otherwise, just reject this instance of the mnemonic.\n";
+  OS << "      OperandsValid = false;\n";
+  OS << "      break;\n";
+  OS << "    }\n\n";
+  
+  OS << "    if (!OperandsValid) continue;\n";
+
+  // Emit check that the required features are available.
+  OS << "    if ((AvailableFeatures & it->RequiredFeatures) "
+     << "!= it->RequiredFeatures) {\n";
+  OS << "      HadMatchOtherThanFeatures = true;\n";
+  OS << "      continue;\n";
+  OS << "    }\n";
+  
   OS << "\n";
   OS << "    ConvertToMCInst(it->ConvertFn, Inst, it->Opcode, Operands);\n";
 
@@ -1659,11 +1773,13 @@ void AsmMatcherEmitter::run(raw_ostream &OS) {
   if (!InsnCleanupFn.empty())
     OS << "    " << InsnCleanupFn << "(Inst);\n";
 
-  OS << "    return false;\n";
+  OS << "    return Match_Success;\n";
   OS << "  }\n\n";
 
-  OS << "  return true;\n";
+  OS << "  // Okay, we had no match.  Try to return a useful error code.\n";
+  OS << "  if (HadMatchOtherThanFeatures) return Match_MissingFeature;\n";
+  OS << "  return Match_InvalidOperand;\n";
   OS << "}\n\n";
   
-  OS << "#endif // REGISTERS_ONLY\n";
+  OS << "#endif // GET_MATCHER_IMPLEMENTATION\n\n";
 }

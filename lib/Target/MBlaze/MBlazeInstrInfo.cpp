@@ -30,41 +30,6 @@ static bool isZeroImm(const MachineOperand &op) {
   return op.isImm() && op.getImm() == 0;
 }
 
-/// Return true if the instruction is a register to register move and
-/// leave the source and dest operands in the passed parameters.
-bool MBlazeInstrInfo::
-isMoveInstr(const MachineInstr &MI, unsigned &SrcReg, unsigned &DstReg,
-            unsigned &SrcSubIdx, unsigned &DstSubIdx) const {
-  SrcSubIdx = DstSubIdx = 0; // No sub-registers.
-
-  // add $dst, $src, $zero || addu $dst, $zero, $src
-  // or  $dst, $src, $zero || or   $dst, $zero, $src
-  if ((MI.getOpcode() == MBlaze::ADD) || (MI.getOpcode() == MBlaze::OR)) {
-    if (MI.getOperand(1).isReg() && MI.getOperand(1).getReg() == MBlaze::R0) {
-      DstReg = MI.getOperand(0).getReg();
-      SrcReg = MI.getOperand(2).getReg();
-      return true;
-    } else if (MI.getOperand(2).isReg() && 
-               MI.getOperand(2).getReg() == MBlaze::R0) {
-      DstReg = MI.getOperand(0).getReg();
-      SrcReg = MI.getOperand(1).getReg();
-      return true;
-    }
-  }
-
-  // addi $dst, $src, 0
-  // ori  $dst, $src, 0
-  if ((MI.getOpcode() == MBlaze::ADDI) || (MI.getOpcode() == MBlaze::ORI)) {
-    if ((MI.getOperand(1).isReg()) && (isZeroImm(MI.getOperand(2)))) {
-      DstReg = MI.getOperand(0).getReg();
-      SrcReg = MI.getOperand(1).getReg();
-      return true;
-    }
-  }
-
-  return false;
-}
-
 /// isLoadFromStackSlot - If the specified machine instruction is a direct
 /// load from a stack slot, return the virtual or physical register number of
 /// the destination along with the FrameIndex of the loaded stack slot.  If
@@ -110,15 +75,13 @@ insertNoop(MachineBasicBlock &MBB, MachineBasicBlock::iterator MI) const {
   BuildMI(MBB, MI, DL, get(MBlaze::NOP));
 }
 
-bool MBlazeInstrInfo::
-copyRegToReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
-             unsigned DestReg, unsigned SrcReg,
-             const TargetRegisterClass *DestRC,
-             const TargetRegisterClass *SrcRC,
-             DebugLoc DL) const {
+void MBlazeInstrInfo::
+copyPhysReg(MachineBasicBlock &MBB,
+            MachineBasicBlock::iterator I, DebugLoc DL,
+            unsigned DestReg, unsigned SrcReg,
+            bool KillSrc) const {
   llvm::BuildMI(MBB, I, DL, get(MBlaze::ADD), DestReg)
-      .addReg(SrcReg).addReg(MBlaze::R0);
-  return true;
+    .addReg(SrcReg, getKillRegState(KillSrc)).addReg(MBlaze::R0);
 }
 
 void MBlazeInstrInfo::
@@ -139,44 +102,6 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
   DebugLoc DL;
   BuildMI(MBB, I, DL, get(MBlaze::LWI), DestReg)
       .addImm(0).addFrameIndex(FI);
-}
-
-MachineInstr *MBlazeInstrInfo::
-foldMemoryOperandImpl(MachineFunction &MF,
-                      MachineInstr* MI,
-                      const SmallVectorImpl<unsigned> &Ops, int FI) const {
-  if (Ops.size() != 1) return NULL;
-
-  MachineInstr *NewMI = NULL;
-
-  switch (MI->getOpcode()) {
-  case MBlaze::OR:
-  case MBlaze::ADD:
-    if ((MI->getOperand(0).isReg()) &&
-        (MI->getOperand(2).isReg()) &&
-        (MI->getOperand(2).getReg() == MBlaze::R0) &&
-        (MI->getOperand(1).isReg())) {
-      if (Ops[0] == 0) {    // COPY -> STORE
-        unsigned SrcReg = MI->getOperand(1).getReg();
-        bool isKill = MI->getOperand(1).isKill();
-        bool isUndef = MI->getOperand(1).isUndef();
-        NewMI = BuildMI(MF, MI->getDebugLoc(), get(MBlaze::SW))
-          .addReg(SrcReg, getKillRegState(isKill) | getUndefRegState(isUndef))
-          .addImm(0).addFrameIndex(FI);
-      } else {              // COPY -> LOAD
-        unsigned DstReg = MI->getOperand(0).getReg();
-        bool isDead = MI->getOperand(0).isDead();
-        bool isUndef = MI->getOperand(0).isUndef();
-        NewMI = BuildMI(MF, MI->getDebugLoc(), get(MBlaze::LW))
-          .addReg(DstReg, RegState::Define | getDeadRegState(isDead) |
-                  getUndefRegState(isUndef))
-          .addImm(0).addFrameIndex(FI);
-      }
-    }
-    break;
-  }
-
-  return NewMI;
 }
 
 //===----------------------------------------------------------------------===//
@@ -210,12 +135,8 @@ unsigned MBlazeInstrInfo::getGlobalBaseReg(MachineFunction *MF) const {
   const TargetInstrInfo *TII = MF->getTarget().getInstrInfo();
 
   GlobalBaseReg = RegInfo.createVirtualRegister(MBlaze::CPURegsRegisterClass);
-  bool Ok = TII->copyRegToReg(FirstMBB, MBBI, GlobalBaseReg, MBlaze::R20,
-                              MBlaze::CPURegsRegisterClass,
-                              MBlaze::CPURegsRegisterClass,
-                              DebugLoc());
-  assert(Ok && "Couldn't assign to global base register!");
-  Ok = Ok; // Silence warning when assertions are turned off.
+  BuildMI(FirstMBB, MBBI, DebugLoc(), TII->get(TargetOpcode::COPY),
+          GlobalBaseReg).addReg(MBlaze::R20);
   RegInfo.addLiveIn(MBlaze::R20);
 
   MBlazeFI->setGlobalBaseReg(GlobalBaseReg);

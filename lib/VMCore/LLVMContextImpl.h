@@ -115,6 +115,10 @@ public:
   
 class LLVMContextImpl {
 public:
+  /// OwnedModules - The set of modules instantiated in this context, and which
+  /// will be automatically deleted if this context is deleted.
+  SmallPtrSet<Module*, 4> OwnedModules;
+  
   void *InlineAsmDiagHandler, *InlineAsmDiagContext;
   
   typedef DenseMap<DenseMapAPIntKeyInfo::KeyTy, ConstantInt*, 
@@ -144,10 +148,6 @@ public:
     ConstantStruct, true /*largekey*/> StructConstantsTy;
   StructConstantsTy StructConstants;
   
-  typedef ConstantUniqueMap<Constant*, UnionType, ConstantUnion>
-      UnionConstantsTy;
-  UnionConstantsTy UnionConstants;
-  
   typedef ConstantUniqueMap<std::vector<Constant*>, VectorType,
                             ConstantVector> VectorConstantsTy;
   VectorConstantsTy VectorConstants;
@@ -174,6 +174,7 @@ public:
   const Type X86_FP80Ty;
   const Type FP128Ty;
   const Type PPC_FP128Ty;
+  const Type X86_MMXTy;
   const IntegerType Int1Ty;
   const IntegerType Int8Ty;
   const IntegerType Int16Ty;
@@ -192,7 +193,6 @@ public:
   TypeMap<PointerValType, PointerType> PointerTypes;
   TypeMap<FunctionValType, FunctionType> FunctionTypes;
   TypeMap<StructValType, StructType> StructTypes;
-  TypeMap<UnionValType, UnionType> UnionTypes;
   TypeMap<IntegerValType, IntegerType> IntegerTypes;
 
   // Opaque types are not structurally uniqued, so don't use TypeMap.

@@ -73,7 +73,7 @@ ClassifyGlobalReference(const GlobalValue *GV, const TargetMachine &TM) const {
       if (GV->hasDefaultVisibility() &&
           (isDecl || GV->isWeakForLinker()))
         return X86II::MO_GOTPCREL;
-    } else {
+    } else if (!isTargetWin64()) {
       assert(isTargetELF() && "Unknown rip-relative target");
 
       // Extra load is needed for all externally visible.
@@ -260,9 +260,10 @@ void X86Subtarget::AutoDetectSubtargetFeatures() {
   bool IsIntel = memcmp(text.c, "GenuineIntel", 12) == 0;
   bool IsAMD   = !IsIntel && memcmp(text.c, "AuthenticAMD", 12) == 0;
 
-  HasFMA3 = IsIntel && ((ECX >> 12) & 0x1);
-  HasAVX = ((ECX >> 28) & 0x1);
-  HasAES = IsIntel && ((ECX >> 25) & 0x1);
+  HasCLMUL = IsIntel && ((ECX >> 1) & 0x1);
+  HasFMA3  = IsIntel && ((ECX >> 12) & 0x1);
+  HasAVX   = ((ECX >> 28) & 0x1);
+  HasAES   = IsIntel && ((ECX >> 25) & 0x1);
 
   if (IsIntel || IsAMD) {
     // Determine if bit test memory instructions are slow.
@@ -291,17 +292,17 @@ X86Subtarget::X86Subtarget(const std::string &TT, const std::string &FS,
   , HasSSE4A(false)
   , HasAVX(false)
   , HasAES(false)
+  , HasCLMUL(false)
   , HasFMA3(false)
   , HasFMA4(false)
   , IsBTMemSlow(false)
   , IsUAMemFast(false)
   , HasVectorUAMem(false)
-  , DarwinVers(0)
   , stackAlignment(8)
   // FIXME: this is a known good value for Yonah. How about others?
   , MaxInlineSizeThreshold(128)
-  , Is64Bit(is64Bit)
-  , TargetType(isELF) { // Default to ELF unless otherwise specified.
+  , TargetTriple(TT)
+  , Is64Bit(is64Bit) {
 
   // default to hard float ABI
   if (FloatABIType == FloatABI::Default)
@@ -331,45 +332,15 @@ X86Subtarget::X86Subtarget(const std::string &TT, const std::string &FS,
     HasCMov = true;
   }
     
-
   DEBUG(dbgs() << "Subtarget features: SSELevel " << X86SSELevel
                << ", 3DNowLevel " << X863DNowLevel
                << ", 64bit " << HasX86_64 << "\n");
   assert((!Is64Bit || HasX86_64) &&
          "64-bit code requested on a subtarget that doesn't support it!");
 
-  // Set the boolean corresponding to the current target triple, or the default
-  // if one cannot be determined, to true.
-  if (TT.length() > 5) {
-    size_t Pos;
-    if ((Pos = TT.find("-darwin")) != std::string::npos) {
-      TargetType = isDarwin;
-      
-      // Compute the darwin version number.
-      if (isdigit(TT[Pos+7]))
-        DarwinVers = atoi(&TT[Pos+7]);
-      else
-        DarwinVers = 8;  // Minimum supported darwin is Tiger.
-    } else if (TT.find("linux") != std::string::npos) {
-      // Linux doesn't imply ELF, but we don't currently support anything else.
-      TargetType = isELF;
-    } else if (TT.find("cygwin") != std::string::npos) {
-      TargetType = isCygwin;
-    } else if (TT.find("mingw") != std::string::npos) {
-      TargetType = isMingw;
-    } else if (TT.find("win32") != std::string::npos) {
-      TargetType = isWindows;
-    } else if (TT.find("windows") != std::string::npos) {
-      TargetType = isWindows;
-    } else if (TT.find("-cl") != std::string::npos) {
-      TargetType = isDarwin;
-      DarwinVers = 9;
-    }
-  }
-
   // Stack alignment is 16 bytes on Darwin (both 32 and 64 bit) and for all 64
   // bit targets.
-  if (TargetType == isDarwin || Is64Bit)
+  if (isTargetDarwin() || Is64Bit)
     stackAlignment = 16;
 
   if (StackAlignment)

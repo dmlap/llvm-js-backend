@@ -92,15 +92,6 @@ private:
                                                 AliasAnalysis *AA) const;
 
 public:
-  /// isMoveInstr - Return true if the instruction is a register to register
-  /// move and return the source and dest operands and their sub-register
-  /// indices by reference.
-  virtual bool isMoveInstr(const MachineInstr& MI,
-                           unsigned& SrcReg, unsigned& DstReg,
-                           unsigned& SrcSubIdx, unsigned& DstSubIdx) const {
-    return false;
-  }
-
   /// isCoalescableExtInstr - Return true if the instruction is a "coalescable"
   /// extension instruction. That is, it's like a copy where it's legal for the
   /// source to overlap the destination. e.g. X86::MOVSX64rr32. If this returns
@@ -113,26 +104,6 @@ public:
     return false;
   }
 
-  /// isIdentityCopy - Return true if the instruction is a copy (or
-  /// extract_subreg, insert_subreg, subreg_to_reg) where the source and
-  /// destination registers are the same.
-  bool isIdentityCopy(const MachineInstr &MI) const {
-    unsigned SrcReg, DstReg, SrcSubIdx, DstSubIdx;
-    if (isMoveInstr(MI, SrcReg, DstReg, SrcSubIdx, DstSubIdx) &&
-        SrcReg == DstReg)
-      return true;
-
-    if (MI.getOpcode() == TargetOpcode::EXTRACT_SUBREG &&
-        MI.getOperand(0).getReg() == MI.getOperand(1).getReg())
-    return true;
-
-    if ((MI.getOpcode() == TargetOpcode::INSERT_SUBREG ||
-         MI.getOpcode() == TargetOpcode::SUBREG_TO_REG) &&
-        MI.getOperand(0).getReg() == MI.getOperand(2).getReg())
-      return true;
-    return false;
-  }
-  
   /// isLoadFromStackSlot - If the specified machine instruction is a direct
   /// load from a stack slot, return the virtual or physical register number of
   /// the destination along with the FrameIndex of the loaded stack slot.  If
@@ -357,19 +328,14 @@ public:
     return false;
   }
   
-  /// copyRegToReg - Emit instructions to copy between a pair of registers. It
-  /// returns false if the target does not how to copy between the specified
-  /// registers.
-  virtual bool copyRegToReg(MachineBasicBlock &MBB,
-                            MachineBasicBlock::iterator MI,
-                            unsigned DestReg, unsigned SrcReg,
-                            const TargetRegisterClass *DestRC,
-                            const TargetRegisterClass *SrcRC,
-                            DebugLoc DL) const {
-    assert(0 && "Target didn't implement TargetInstrInfo::copyRegToReg!");
-    return false;
+  /// copyPhysReg - Emit instructions to copy a pair of physical registers.
+  virtual void copyPhysReg(MachineBasicBlock &MBB,
+                           MachineBasicBlock::iterator MI, DebugLoc DL,
+                           unsigned DestReg, unsigned SrcReg,
+                           bool KillSrc) const {
+    assert(0 && "Target didn't implement TargetInstrInfo::copyPhysReg!");
   }
-  
+
   /// storeRegToStackSlot - Store the specified register of the given register
   /// class to the specified stack frame index. The store instruction is to be
   /// added to the given machine basic block before the specified machine
@@ -380,7 +346,7 @@ public:
                                    unsigned SrcReg, bool isKill, int FrameIndex,
                                    const TargetRegisterClass *RC,
                                    const TargetRegisterInfo *TRI) const {
-    assert(0 && "Target didn't implement TargetInstrInfo::storeRegToStackSlot!");
+  assert(0 && "Target didn't implement TargetInstrInfo::storeRegToStackSlot!");
   }
 
   /// loadRegFromStackSlot - Load the specified register of the given register
@@ -392,7 +358,7 @@ public:
                                     unsigned DestReg, int FrameIndex,
                                     const TargetRegisterClass *RC,
                                     const TargetRegisterInfo *TRI) const {
-    assert(0 && "Target didn't implement TargetInstrInfo::loadRegFromStackSlot!");
+  assert(0 && "Target didn't implement TargetInstrInfo::loadRegFromStackSlot!");
   }
   
   /// spillCalleeSavedRegisters - Issues instruction(s) to spill all callee
@@ -401,7 +367,7 @@ public:
   /// storeRegToStackSlot(). Returns false otherwise.
   virtual bool spillCalleeSavedRegisters(MachineBasicBlock &MBB,
                                          MachineBasicBlock::iterator MI,
-                                         const std::vector<CalleeSavedInfo> &CSI,
+                                        const std::vector<CalleeSavedInfo> &CSI,
                                          const TargetRegisterInfo *TRI) const {
     return false;
   }
@@ -436,19 +402,17 @@ public:
   /// foldMemoryOperand - Attempt to fold a load or store of the specified stack
   /// slot into the specified machine instruction for the specified operand(s).
   /// If this is possible, a new instruction is returned with the specified
-  /// operand folded, otherwise NULL is returned. The client is responsible for
-  /// removing the old instruction and adding the new one in the instruction
-  /// stream.
-  MachineInstr* foldMemoryOperand(MachineFunction &MF,
-                                  MachineInstr* MI,
+  /// operand folded, otherwise NULL is returned.
+  /// The new instruction is inserted before MI, and the client is responsible
+  /// for removing the old instruction.
+  MachineInstr* foldMemoryOperand(MachineBasicBlock::iterator MI,
                                   const SmallVectorImpl<unsigned> &Ops,
                                   int FrameIndex) const;
 
   /// foldMemoryOperand - Same as the previous version except it allows folding
   /// of any load and store from / to any address, not just from a specific
   /// stack slot.
-  MachineInstr* foldMemoryOperand(MachineFunction &MF,
-                                  MachineInstr* MI,
+  MachineInstr* foldMemoryOperand(MachineBasicBlock::iterator MI,
                                   const SmallVectorImpl<unsigned> &Ops,
                                   MachineInstr* LoadMI) const;
 
@@ -468,7 +432,7 @@ protected:
   /// take care of adding a MachineMemOperand to the newly created instruction.
   virtual MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
                                               MachineInstr* MI,
-                                              const SmallVectorImpl<unsigned> &Ops,
+                                          const SmallVectorImpl<unsigned> &Ops,
                                               MachineInstr* LoadMI) const {
     return 0;
   }
@@ -478,9 +442,7 @@ public:
   /// folding is possible.
   virtual
   bool canFoldMemoryOperand(const MachineInstr *MI,
-                            const SmallVectorImpl<unsigned> &Ops) const {
-    return false;
-  }
+                            const SmallVectorImpl<unsigned> &Ops) const =0;
 
   /// unfoldMemoryOperand - Separate a single instruction which folded a load or
   /// a store or a load and a store into two or more instruction. If this is
@@ -514,7 +476,7 @@ public:
   /// only differences between the two addresses are the offset. It also returns
   /// the offsets by reference.
   virtual bool areLoadsFromSameBasePtr(SDNode *Load1, SDNode *Load2,
-                                       int64_t &Offset1, int64_t &Offset2) const {
+                                    int64_t &Offset1, int64_t &Offset2) const {
     return false;
   }
 
@@ -604,18 +566,6 @@ public:
                                     const MachineBasicBlock *MBB,
                                     const MachineFunction &MF) const = 0;
 
-  /// GetInstSize - Returns the size of the specified Instruction.
-  /// 
-  virtual unsigned GetInstSizeInBytes(const MachineInstr *MI) const {
-    assert(0 && "Target didn't implement TargetInstrInfo::GetInstSize!");
-    return 0;
-  }
-
-  /// GetFunctionSizeInBytes - Returns the size of the specified
-  /// MachineFunction.
-  /// 
-  virtual unsigned GetFunctionSizeInBytes(const MachineFunction &MF) const = 0;
-  
   /// Measure the specified inline asm to determine an approximation of its
   /// length.
   virtual unsigned getInlineAsmLength(const char *Str,
@@ -625,7 +575,30 @@ public:
   /// to use for this target when scheduling the machine instructions after
   /// register allocation.
   virtual ScheduleHazardRecognizer*
-  CreateTargetPostRAHazardRecognizer(const InstrItineraryData&) const = 0;
+  CreateTargetPostRAHazardRecognizer(const InstrItineraryData*) const = 0;
+
+  /// AnalyzeCompare - For a comparison instruction, return the source register
+  /// in SrcReg and the value it compares against in CmpValue. Return true if
+  /// the comparison instruction can be analyzed.
+  virtual bool AnalyzeCompare(const MachineInstr *MI,
+                              unsigned &SrcReg, int &CmpValue) const {
+    return false;
+  }
+
+  /// OptimizeCompareInstr - See if the comparison instruction can be converted
+  /// into something more efficient. E.g., on ARM most instructions can set the
+  /// flags register, obviating the need for a separate CMP. Update the iterator
+  /// *only* if a transformation took place.
+  virtual bool OptimizeCompareInstr(MachineInstr * /*CmpInstr*/,
+                                    unsigned /*SrcReg*/, int /*CmpValue*/,
+                                    MachineBasicBlock::iterator &) const {
+    return false;
+  }
+
+  /// getNumMicroOps - Return the number of u-operations the given machine
+  /// instruction will be decoded to on the target cpu.
+  virtual unsigned getNumMicroOps(const MachineInstr *MI,
+                                  const InstrItineraryData *ItinData) const;
 };
 
 /// TargetInstrInfoImpl - This is the default implementation of
@@ -643,6 +616,8 @@ public:
                                            bool NewMI = false) const;
   virtual bool findCommutedOpIndices(MachineInstr *MI, unsigned &SrcOpIdx1,
                                      unsigned &SrcOpIdx2) const;
+  virtual bool canFoldMemoryOperand(const MachineInstr *MI,
+                                    const SmallVectorImpl<unsigned> &Ops) const;
   virtual bool PredicateInstruction(MachineInstr *MI,
                             const SmallVectorImpl<MachineOperand> &Pred) const;
   virtual void reMaterialize(MachineBasicBlock &MBB,
@@ -657,10 +632,9 @@ public:
   virtual bool isSchedulingBoundary(const MachineInstr *MI,
                                     const MachineBasicBlock *MBB,
                                     const MachineFunction &MF) const;
-  virtual unsigned GetFunctionSizeInBytes(const MachineFunction &MF) const;
 
   virtual ScheduleHazardRecognizer *
-  CreateTargetPostRAHazardRecognizer(const InstrItineraryData&) const;
+  CreateTargetPostRAHazardRecognizer(const InstrItineraryData*) const;
 };
 
 } // End llvm namespace

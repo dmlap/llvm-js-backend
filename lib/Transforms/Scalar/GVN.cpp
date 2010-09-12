@@ -140,9 +140,9 @@ namespace {
       }
     }
 
-    bool operator!=(const Expression &other) const {
+    /*bool operator!=(const Expression &other) const {
       return !(*this == other);
-    }
+    }*/
   };
 
   class ValueTable {
@@ -165,7 +165,6 @@ namespace {
       Expression create_expression(CastInst* C);
       Expression create_expression(GetElementPtrInst* G);
       Expression create_expression(CallInst* C);
-      Expression create_expression(Constant* C);
       Expression create_expression(ExtractValueInst* C);
       Expression create_expression(InsertValueInst* C);
       
@@ -177,7 +176,6 @@ namespace {
       void add(Value *V, uint32_t num);
       void clear();
       void erase(Value *v);
-      unsigned size();
       void setAliasAnalysis(AliasAnalysis* A) { AA = A; }
       AliasAnalysis *getAliasAnalysis() const { return AA; }
       void setMemDep(MemoryDependenceAnalysis* M) { MD = M; }
@@ -665,7 +663,7 @@ namespace {
   public:
     static char ID; // Pass identification, replacement for typeid
     explicit GVN(bool noloads = false)
-      : FunctionPass(&ID), NoLoads(noloads), MD(0) { }
+      : FunctionPass(ID), NoLoads(noloads), MD(0) { }
 
   private:
     bool NoLoads;
@@ -716,8 +714,7 @@ FunctionPass *llvm::createGVNPass(bool NoLoads) {
   return new GVN(NoLoads);
 }
 
-static RegisterPass<GVN> X("gvn",
-                           "Global Value Numbering");
+INITIALIZE_PASS(GVN, "gvn", "Global Value Numbering", false, false);
 
 void GVN::dump(DenseMap<uint32_t, Value*>& d) {
   errs() << "{\n";
@@ -735,7 +732,7 @@ static bool isSafeReplacement(PHINode* p, Instruction *inst) {
 
   for (Instruction::use_iterator UI = p->use_begin(), E = p->use_end();
        UI != E; ++UI)
-    if (PHINode* use_phi = dyn_cast<PHINode>(UI))
+    if (PHINode* use_phi = dyn_cast<PHINode>(*UI))
       if (use_phi->getParent() == inst->getParent())
         return false;
 
@@ -1312,7 +1309,7 @@ static Value *ConstructSSAForLoadSet(LoadInst *LI,
   // Otherwise, we have to construct SSA form.
   SmallVector<PHINode*, 8> NewPHIs;
   SSAUpdater SSAUpdate(&NewPHIs);
-  SSAUpdate.Initialize(LI);
+  SSAUpdate.Initialize(LI->getType(), LI->getName());
   
   const Type *LoadTy = LI->getType();
   
@@ -2112,6 +2109,11 @@ bool GVN::performPRE(Function &F) {
           CurInst->mayReadFromMemory() || CurInst->mayHaveSideEffects() ||
           isa<DbgInfoIntrinsic>(CurInst))
         continue;
+      
+      // We don't currently value number ANY inline asm calls.
+      if (CallInst *CallI = dyn_cast<CallInst>(CurInst))
+        if (CallI->isInlineAsm())
+          continue;
 
       uint32_t ValNo = VN.lookup(CurInst);
 
@@ -2128,26 +2130,27 @@ bool GVN::performPRE(Function &F) {
 
       for (pred_iterator PI = pred_begin(CurrentBlock),
            PE = pred_end(CurrentBlock); PI != PE; ++PI) {
+        BasicBlock *P = *PI;
         // We're not interested in PRE where the block is its
         // own predecessor, or in blocks with predecessors
         // that are not reachable.
-        if (*PI == CurrentBlock) {
+        if (P == CurrentBlock) {
           NumWithout = 2;
           break;
-        } else if (!localAvail.count(*PI))  {
+        } else if (!localAvail.count(P))  {
           NumWithout = 2;
           break;
         }
 
         DenseMap<uint32_t, Value*>::iterator predV =
-                                            localAvail[*PI]->table.find(ValNo);
-        if (predV == localAvail[*PI]->table.end()) {
-          PREPred = *PI;
+                                            localAvail[P]->table.find(ValNo);
+        if (predV == localAvail[P]->table.end()) {
+          PREPred = P;
           ++NumWithout;
         } else if (predV->second == CurInst) {
           NumWithout = 2;
         } else {
-          predMap[*PI] = predV->second;
+          predMap[P] = predV->second;
           ++NumWith;
         }
       }
@@ -2213,8 +2216,10 @@ bool GVN::performPRE(Function &F) {
                                      CurInst->getName() + ".pre-phi",
                                      CurrentBlock->begin());
       for (pred_iterator PI = pred_begin(CurrentBlock),
-           PE = pred_end(CurrentBlock); PI != PE; ++PI)
-        Phi->addIncoming(predMap[*PI], *PI);
+           PE = pred_end(CurrentBlock); PI != PE; ++PI) {
+        BasicBlock *P = *PI;
+        Phi->addIncoming(predMap[P], P);
+      }
 
       VN.add(Phi, ValNo);
       localAvail[CurrentBlock]->table[ValNo] = Phi;

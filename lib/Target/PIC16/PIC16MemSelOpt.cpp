@@ -38,7 +38,7 @@ using namespace llvm;
 namespace {
   struct MemSelOpt : public MachineFunctionPass {
     static char ID;
-    MemSelOpt() : MachineFunctionPass(&ID) {}
+    MemSelOpt() : MachineFunctionPass(ID) {}
 
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
       AU.addPreservedID(MachineLoopInfoID);
@@ -117,7 +117,7 @@ bool MemSelOpt::processBasicBlock(MachineFunction &MF, MachineBasicBlock &BB) {
         DebugLoc dl = I->getDebugLoc();
         BuildMI(*MBB, I, dl, TII->get(PIC16::pagesel)).addExternalSymbol("$");
         Changed = true;
-        PageChanged = 0;	    
+        PageChanged = 0;            
       }
     }
   }

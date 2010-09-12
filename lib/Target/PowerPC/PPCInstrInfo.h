@@ -82,12 +82,6 @@ public:
   ///
   virtual const PPCRegisterInfo &getRegisterInfo() const { return RI; }
 
-  /// Return true if the instruction is a register to register move and return
-  /// the source and dest operands and their sub-register indices by reference.
-  virtual bool isMoveInstr(const MachineInstr &MI,
-                           unsigned &SrcReg, unsigned &DstReg,
-                           unsigned &SrcSubIdx, unsigned &DstSubIdx) const;
-
   unsigned isLoadFromStackSlot(const MachineInstr *MI,
                                int &FrameIndex) const;
   unsigned isStoreToStackSlot(const MachineInstr *MI,
@@ -111,12 +105,10 @@ public:
                                 MachineBasicBlock *FBB,
                                 const SmallVectorImpl<MachineOperand> &Cond,
                                 DebugLoc DL) const;
-  virtual bool copyRegToReg(MachineBasicBlock &MBB,
-                            MachineBasicBlock::iterator MI,
-                            unsigned DestReg, unsigned SrcReg,
-                            const TargetRegisterClass *DestRC,
-                            const TargetRegisterClass *SrcRC,
-                            DebugLoc DL) const;
+  virtual void copyPhysReg(MachineBasicBlock &MBB,
+                           MachineBasicBlock::iterator I, DebugLoc DL,
+                           unsigned DestReg, unsigned SrcReg,
+                           bool KillSrc) const;
   
   virtual void storeRegToStackSlot(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator MBBI,
@@ -136,23 +128,6 @@ public:
                                                  const MDNode *MDPtr,
                                                  DebugLoc DL) const;
 
-  /// foldMemoryOperand - PowerPC (like most RISC's) can only fold spills into
-  /// copy instructions, turning them into load/store instructions.
-  virtual MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                              MachineInstr* MI,
-                                              const SmallVectorImpl<unsigned> &Ops,
-                                              int FrameIndex) const;
-
-  virtual MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                              MachineInstr* MI,
-                                              const SmallVectorImpl<unsigned> &Ops,
-                                              MachineInstr* LoadMI) const {
-    return 0;
-  }
-
-  virtual bool canFoldMemoryOperand(const MachineInstr *MI,
-                                    const SmallVectorImpl<unsigned> &Ops) const;
-  
   virtual
   bool ReverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const;
   

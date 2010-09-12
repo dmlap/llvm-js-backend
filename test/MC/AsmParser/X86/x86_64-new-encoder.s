@@ -72,9 +72,9 @@ stosl
 
 
 // Not moffset forms of moves, they are x86-32 only! rdar://7947184
-movb	0, %al    // CHECK: movb 0, %al # encoding: [0x8a,0x04,0x25,A,A,A,A]
-movw	0, %ax    // CHECK: movw 0, %ax # encoding: [0x66,0x8b,0x04,0x25,A,A,A,A]
-movl	0, %eax   // CHECK: movl 0, %eax # encoding: [0x8b,0x04,0x25,A,A,A,A]
+movb	0, %al    // CHECK: movb 0, %al # encoding: [0x8a,0x04,0x25,0x00,0x00,0x00,0x00]
+movw	0, %ax    // CHECK: movw 0, %ax # encoding: [0x66,0x8b,0x04,0x25,0x00,0x00,0x00,0x00]
+movl	0, %eax   // CHECK: movl 0, %eax # encoding: [0x8b,0x04,0x25,0x00,0x00,0x00,0x00]
 
 // CHECK: pushfq	# encoding: [0x9c]
         pushf
@@ -149,4 +149,104 @@ btq $0x01,%rdx
 // rdar://7873482
 // CHECK: [0x65,0x8b,0x04,0x25,0x7c,0x00,0x00,0x00]
         movl	%gs:124, %eax
+
+// CHECK: jmpq *8(%rax)
+// CHECK:   encoding: [0xff,0x60,0x08]
+	jmp	*8(%rax)
+
+// CHECK: btq $61, -216(%rbp)
+// CHECK:   encoding: [0x48,0x0f,0xba,0xa5,0x28,0xff,0xff,0xff,0x3d]
+	btq	$61, -216(%rbp)
+
+
+// rdar://8061602
+L1:
+  jecxz L1
+// CHECK: jecxz L1
+// CHECK:   encoding: [0x67,0xe3,A]
+  jrcxz L1
+// CHECK: jrcxz L1
+// CHECK:   encoding: [0xe3,A]
+
+// PR8061
+xchgl   368(%rax),%ecx
+// CHECK: xchgl	%ecx, 368(%rax)
+xchgl   %ecx, 368(%rax)
+// CHECK: xchgl	%ecx, 368(%rax)
+
+// rdar://8407548
+xchg	0xdeadbeef(%rbx,%rcx,8),%bl
+// CHECK: xchgb	%bl, 3735928559(%rbx,%rcx,8)
+
+
+
+// PR7254
+lock  incl 1(%rsp)
+// CHECK: lock
+// CHECK: incl 1(%rsp)
+
+// rdar://8033482
+rep movsl
+// CHECK: rep
+// CHECK: encoding: [0xf3]
+// CHECK: movsl
+// CHECK: encoding: [0xa5]
+
+
+// rdar://8403974
+iret
+// CHECK: iretl
+// CHECK: encoding: [0xcf]
+iretw
+// CHECK: iretw
+// CHECK: encoding: [0x66,0xcf]
+iretl
+// CHECK: iretl
+// CHECK: encoding: [0xcf]
+iretq
+// CHECK: iretq
+// CHECK: encoding: [0x48,0xcf]
+
+// rdar://8403907
+sysret
+// CHECK: sysretl
+// CHECK: encoding: [0x0f,0x07]
+sysretl
+// CHECK: sysretl
+// CHECK: encoding: [0x0f,0x07]
+sysretq
+// CHECK: sysretq
+// CHECK: encoding: [0x48,0x0f,0x07]
+
+// rdar://8407242
+push %fs
+// CHECK: pushq	%fs
+// CHECK: encoding: [0x0f,0xa0]
+push %gs
+// CHECK: pushq	%gs
+// CHECK: encoding: [0x0f,0xa8]
+
+pushw %fs
+// CHECK: pushw	%fs
+// CHECK: encoding: [0x66,0x0f,0xa0]
+pushw %gs
+// CHECK: pushw	%gs
+// CHECK: encoding: [0x66,0x0f,0xa8]
+
+
+pop %fs
+// CHECK: popq	%fs
+// CHECK: encoding: [0x0f,0xa1]
+pop %gs
+// CHECK: popq	%gs
+// CHECK: encoding: [0x0f,0xa9]
+
+popw %fs
+// CHECK: popw	%fs
+// CHECK: encoding: [0x66,0x0f,0xa1]
+popw %gs
+// CHECK: popw	%gs
+// CHECK: encoding: [0x66,0x0f,0xa9]
+
+
 

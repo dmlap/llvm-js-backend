@@ -1,6 +1,3 @@
-set(LLVM_LINK_COMPONENTS asmparser instrumentation scalaropts ipo
-  linker bitreader bitwriter)
-
 add_llvm_tool(bugpoint
   BugDriver.cpp
   CrashDebugger.cpp
@@ -9,7 +6,16 @@ add_llvm_tool(bugpoint
   FindBugs.cpp
   Miscompilation.cpp
   OptimizerDriver.cpp
-  TestPasses.cpp
   ToolRunner.cpp
   bugpoint.cpp
+  )
+
+target_link_libraries(bugpoint
+  LLVMAsmParser
+  LLVMInstrumentation
+  LLVMScalarOpts
+  LLVMipo
+  LLVMLinker
+  LLVMBitReader
+  LLVMBitWriter
   )

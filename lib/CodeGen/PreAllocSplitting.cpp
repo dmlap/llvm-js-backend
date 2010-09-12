@@ -92,7 +92,7 @@ namespace {
   public:
     static char ID;
     PreAllocSplitting()
-      : MachineFunctionPass(&ID) {}
+      : MachineFunctionPass(ID) {}
 
     virtual bool runOnMachineFunction(MachineFunction &MF);
 
@@ -203,10 +203,11 @@ namespace {
 
 char PreAllocSplitting::ID = 0;
 
-static RegisterPass<PreAllocSplitting>
-X("pre-alloc-splitting", "Pre-Register Allocation Live Interval Splitting");
+INITIALIZE_PASS(PreAllocSplitting, "pre-alloc-splitting",
+                "Pre-Register Allocation Live Interval Splitting",
+                false, false);
 
-const PassInfo *const llvm::PreAllocSplittingID = &X;
+char &llvm::PreAllocSplittingID = PreAllocSplitting::ID;
 
 /// findSpillPoint - Find a gap as far away from the given MI that's suitable
 /// for spilling the current live interval. The index must be before any
@@ -676,11 +677,7 @@ void PreAllocSplitting::ReconstructLiveInterval(LiveInterval* LI) {
     VNInfo* NewVN = LI->getNextValue(DefIdx, 0, true, Alloc);
     
     // If the def is a move, set the copy field.
-    unsigned SrcReg, DstReg, SrcSubIdx, DstSubIdx;
-    if (TII->isMoveInstr(*DI, SrcReg, DstReg, SrcSubIdx, DstSubIdx)) {
-      if (DstReg == LI->reg)
-        NewVN->setCopy(&*DI);
-    } else if (DI->isCopyLike() && DI->getOperand(0).getReg() == LI->reg)
+    if (DI->isCopyLike() && DI->getOperand(0).getReg() == LI->reg)
       NewVN->setCopy(&*DI);
 
     NewVNs[&*DI] = NewVN;
@@ -863,12 +860,11 @@ MachineInstr* PreAllocSplitting::FoldSpill(unsigned vreg,
     SS = MFI->CreateSpillStackObject(RC->getSize(), RC->getAlignment());
   }
   
-  MachineInstr* FMI = TII->foldMemoryOperand(*MBB->getParent(),
-                                             FoldPt, Ops, SS);
+  MachineInstr* FMI = TII->foldMemoryOperand(FoldPt, Ops, SS);
   
   if (FMI) {
     LIs->ReplaceMachineInstrInMaps(FoldPt, FMI);
-    FMI = MBB->insert(MBB->erase(FoldPt), FMI);
+    FoldPt->eraseFromParent();
     ++NumFolds;
     
     IntervalSSMap[vreg] = SS;
@@ -944,12 +940,11 @@ MachineInstr* PreAllocSplitting::FoldRestore(unsigned vreg,
   if (!TII->canFoldMemoryOperand(FoldPt, Ops))
     return 0;
   
-  MachineInstr* FMI = TII->foldMemoryOperand(*MBB->getParent(),
-                                             FoldPt, Ops, SS);
+  MachineInstr* FMI = TII->foldMemoryOperand(FoldPt, Ops, SS);
   
   if (FMI) {
     LIs->ReplaceMachineInstrInMaps(FoldPt, FMI);
-    FMI = MBB->insert(MBB->erase(FoldPt), FMI);
+    FoldPt->eraseFromParent();
     ++NumRestoreFolds;
   }
   
@@ -1255,9 +1250,7 @@ bool PreAllocSplitting::removeDeadSpills(SmallPtrSet<LiveInterval*, 8>& split) {
         Ops.push_back(OpIdx);
         if (!TII->canFoldMemoryOperand(use, Ops)) continue;
 
-        MachineInstr* NewMI =
-                          TII->foldMemoryOperand(*use->getParent()->getParent(),  
-                                                 use, Ops, FrameIndex);
+        MachineInstr* NewMI = TII->foldMemoryOperand(use, Ops, FrameIndex);
 
         if (!NewMI) continue;
 
@@ -1267,10 +1260,9 @@ bool PreAllocSplitting::removeDeadSpills(SmallPtrSet<LiveInterval*, 8>& split) {
         (*LI)->removeValNo(CurrVN);
 
         DefMI->eraseFromParent();
-        MachineBasicBlock* MBB = use->getParent();
-        NewMI = MBB->insert(MBB->erase(use), NewMI);
+        use->eraseFromParent();
         VNUseCount[CurrVN].erase(use);
-        
+
         // Remove deleted instructions.  Note that we need to remove them from 
         // the VNInfo->use map as well, just to be safe.
         for (SmallPtrSet<MachineInstr*, 4>::iterator II = 

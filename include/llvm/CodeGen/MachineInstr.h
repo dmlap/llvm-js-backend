@@ -201,12 +201,14 @@ public:
   /// isLabel - Returns true if the MachineInstr represents a label.
   ///
   bool isLabel() const {
-    return getOpcode() == TargetOpcode::DBG_LABEL ||
+    return getOpcode() == TargetOpcode::PROLOG_LABEL ||
            getOpcode() == TargetOpcode::EH_LABEL ||
            getOpcode() == TargetOpcode::GC_LABEL;
   }
   
-  bool isDebugLabel() const { return getOpcode() == TargetOpcode::DBG_LABEL; }
+  bool isPrologLabel() const {
+    return getOpcode() == TargetOpcode::PROLOG_LABEL;
+  }
   bool isEHLabel() const { return getOpcode() == TargetOpcode::EH_LABEL; }
   bool isGCLabel() const { return getOpcode() == TargetOpcode::GC_LABEL; }
   bool isDebugValue() const { return getOpcode() == TargetOpcode::DBG_VALUE; }
@@ -215,9 +217,6 @@ public:
   bool isKill() const { return getOpcode() == TargetOpcode::KILL; }
   bool isImplicitDef() const { return getOpcode()==TargetOpcode::IMPLICIT_DEF; }
   bool isInlineAsm() const { return getOpcode() == TargetOpcode::INLINEASM; }
-  bool isExtractSubreg() const {
-    return getOpcode() == TargetOpcode::EXTRACT_SUBREG;
-  }
   bool isInsertSubreg() const {
     return getOpcode() == TargetOpcode::INSERT_SUBREG;
   }
@@ -234,7 +233,13 @@ public:
   /// isCopyLike - Return true if the instruction behaves like a copy.
   /// This does not include native copy instructions.
   bool isCopyLike() const {
-    return isCopy() || isSubregToReg() || isExtractSubreg() || isInsertSubreg();
+    return isCopy() || isSubregToReg();
+  }
+
+  /// isIdentityCopy - Return true is the instruction is an identity copy.
+  bool isIdentityCopy() const {
+    return isCopy() && getOperand(0).getReg() == getOperand(1).getReg() &&
+      getOperand(0).getSubReg() == getOperand(1).getSubReg();
   }
 
   /// readsRegister - Return true if the MachineInstr reads the specified

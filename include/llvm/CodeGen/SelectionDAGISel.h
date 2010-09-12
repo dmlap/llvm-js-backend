@@ -34,6 +34,7 @@ namespace llvm {
   class ScheduleHazardRecognizer;
   class GCFunctionInfo;
   class ScheduleDAGSDNodes;
+  class LoadInst;
  
 /// SelectionDAGISel - This is the common base class used for SelectionDAG-based
 /// pattern-matching instruction selectors.
@@ -280,16 +281,15 @@ private:
   SDNode *MorphNode(SDNode *Node, unsigned TargetOpc, SDVTList VTs,
                     const SDValue *Ops, unsigned NumOps, unsigned EmitNodeInfo);
   
-  void PrepareEHLandingPad(MachineBasicBlock *BB);
+  void PrepareEHLandingPad();
   void SelectAllBasicBlocks(const Function &Fn);
-  void FinishBasicBlock(MachineBasicBlock *BB);
+  bool TryToFoldFastISelLoad(const LoadInst *LI, FastISel *FastIS);
+  void FinishBasicBlock();
 
-  MachineBasicBlock *SelectBasicBlock(MachineBasicBlock *BB,
-                                      const BasicBlock *LLVMBB,
-                                      BasicBlock::const_iterator Begin,
-                                      BasicBlock::const_iterator End,
-                                      bool &HadTailCall);
-  MachineBasicBlock *CodeGenAndEmitDAG(MachineBasicBlock *BB);
+  void SelectBasicBlock(BasicBlock::const_iterator Begin,
+                        BasicBlock::const_iterator End,
+                        bool &HadTailCall);
+  void CodeGenAndEmitDAG();
   void LowerArguments(const BasicBlock *BB);
   
   void ComputeLiveOutVRegInfo();

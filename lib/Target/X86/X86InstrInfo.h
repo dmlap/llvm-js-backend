@@ -24,6 +24,24 @@ namespace llvm {
   class X86TargetMachine;
 
 namespace X86 {
+  // Enums for memory operand decoding.  Each memory operand is represented with
+  // a 5 operand sequence in the form:
+  //   [BaseReg, ScaleAmt, IndexReg, Disp, Segment]
+  // These enums help decode this.
+  enum {
+    AddrBaseReg = 0,
+    AddrScaleAmt = 1,
+    AddrIndexReg = 2,
+    AddrDisp = 3,
+    
+    /// AddrSegmentReg - The operand # of the segment in the memory operand.
+    AddrSegmentReg = 4,
+
+    /// AddrNumOperands - Total number of operands in a memory reference.
+    AddrNumOperands = 5
+  };
+  
+  
   // X86 specific condition code. These correspond to X86_*_COND in
   // X86InstrInfo.td. They must be kept in synch.
   enum CondCode {
@@ -293,6 +311,12 @@ namespace X86II {
     MRM_F0 = 40,
     MRM_F8 = 41,
     MRM_F9 = 42,
+    
+    /// RawFrmImm16 - This is used for CALL FAR instructions, which have two
+    /// immediates, the first of which is a 16 or 32-bit immediate (specified by
+    /// the imm encoding) and the second is a 16-bit fixed value.  In the AMD
+    /// manual, this operand is described as pntr16:32 and pntr16:16
+    RawFrmImm16 = 43,
 
     FormMask       = 63,
 
@@ -360,9 +384,10 @@ namespace X86II {
     Imm8       = 1 << ImmShift,
     Imm8PCRel  = 2 << ImmShift,
     Imm16      = 3 << ImmShift,
-    Imm32      = 4 << ImmShift,
-    Imm32PCRel = 5 << ImmShift,
-    Imm64      = 6 << ImmShift,
+    Imm16PCRel = 4 << ImmShift,
+    Imm32      = 5 << ImmShift,
+    Imm32PCRel = 6 << ImmShift,
+    Imm64      = 7 << ImmShift,
 
     //===------------------------------------------------------------------===//
     // FP Instruction Classification...  Zero is non-fp instruction.
@@ -416,24 +441,33 @@ namespace X86II {
     SSEDomainShift = 22,
 
     OpcodeShift   = 24,
-    OpcodeMask    = 0xFF << OpcodeShift
+    OpcodeMask    = 0xFF << OpcodeShift,
 
-  };
-  
-  // FIXME: The enum opcode space is over and more bits are needed. Anywhere
-  // those enums below are used, TSFlags must be shifted right by 32 first.
-  enum {
     //===------------------------------------------------------------------===//
-    // VEXPrefix - VEX prefixes are instruction prefixes used in AVX.
-    // VEX_4V is used to specify an additional AVX/SSE register. Several 2
+    // VEX - The opcode prefix used by AVX instructions
+    VEX         = 1U << 0,
+
+    // VEX_W - Has a opcode specific functionality, but is used in the same
+    // way as REX_W is for regular SSE instructions.
+    VEX_W       = 1U << 1,
+
+    // VEX_4V - Used to specify an additional AVX/SSE register. Several 2
     // address instructions in SSE are represented as 3 address ones in AVX
     // and the additional register is encoded in VEX_VVVV prefix.
-    //
-    VEX         = 1,
-    VEX_W       = 1 << 1,
-    VEX_4V      = 1 << 2
-  };
+    VEX_4V      = 1U << 2,
 
+    // VEX_I8IMM - Specifies that the last register used in a AVX instruction,
+    // must be encoded in the i8 immediate field. This usually happens in
+    // instructions with 4 operands.
+    VEX_I8IMM   = 1U << 3,
+
+    // VEX_L - Stands for a bit in the VEX opcode prefix meaning the current
+    // instruction uses 256-bit wide registers. This is usually auto detected if
+    // a VR256 register is used, but some AVX instructions also have this field
+    // marked when using a f256 memory references.
+    VEX_L       = 1U << 4
+  };
+  
   // getBaseOpcodeFor - This function returns the "base" X86 opcode for the
   // specified machine instruction.
   //
@@ -452,7 +486,8 @@ namespace X86II {
     default: assert(0 && "Unknown immediate size");
     case X86II::Imm8:
     case X86II::Imm8PCRel:  return 1;
-    case X86II::Imm16:      return 2;
+    case X86II::Imm16:
+    case X86II::Imm16PCRel: return 2;
     case X86II::Imm32:
     case X86II::Imm32PCRel: return 4;
     case X86II::Imm64:      return 8;
@@ -463,20 +498,75 @@ namespace X86II {
   /// TSFlags indicates that it is pc relative.
   static inline unsigned isImmPCRel(uint64_t TSFlags) {
     switch (TSFlags & X86II::ImmMask) {
-      default: assert(0 && "Unknown immediate size");
-      case X86II::Imm8PCRel:
-      case X86II::Imm32PCRel:
-        return true;
-      case X86II::Imm8:
-      case X86II::Imm16:
-      case X86II::Imm32:
-      case X86II::Imm64:
-        return false;
+    default: assert(0 && "Unknown immediate size");
+    case X86II::Imm8PCRel:
+    case X86II::Imm16PCRel:
+    case X86II::Imm32PCRel:
+      return true;
+    case X86II::Imm8:
+    case X86II::Imm16:
+    case X86II::Imm32:
+    case X86II::Imm64:
+      return false;
     }
-  }    
+  }
+  
+  /// getMemoryOperandNo - The function returns the MCInst operand # for the
+  /// first field of the memory operand.  If the instruction doesn't have a
+  /// memory operand, this returns -1.
+  ///
+  /// Note that this ignores tied operands.  If there is a tied register which
+  /// is duplicated in the MCInst (e.g. "EAX = addl EAX, [mem]") it is only
+  /// counted as one operand.
+  ///
+  static inline int getMemoryOperandNo(uint64_t TSFlags) {
+    switch (TSFlags & X86II::FormMask) {
+    case X86II::MRMInitReg:  assert(0 && "FIXME: Remove this form");
+    default: assert(0 && "Unknown FormMask value in getMemoryOperandNo!");
+    case X86II::Pseudo:
+    case X86II::RawFrm:
+    case X86II::AddRegFrm:
+    case X86II::MRMDestReg:
+    case X86II::MRMSrcReg:
+    case X86II::RawFrmImm16:
+       return -1;
+    case X86II::MRMDestMem:
+      return 0;
+    case X86II::MRMSrcMem: {
+      bool HasVEX_4V = (TSFlags >> 32) & X86II::VEX_4V;
+      unsigned FirstMemOp = 1;
+      if (HasVEX_4V)
+        ++FirstMemOp;// Skip the register source (which is encoded in VEX_VVVV).
+      
+      // FIXME: Maybe lea should have its own form?  This is a horrible hack.
+      //if (Opcode == X86::LEA64r || Opcode == X86::LEA64_32r ||
+      //    Opcode == X86::LEA16r || Opcode == X86::LEA32r)
+      return FirstMemOp;
+    }
+    case X86II::MRM0r: case X86II::MRM1r:
+    case X86II::MRM2r: case X86II::MRM3r:
+    case X86II::MRM4r: case X86II::MRM5r:
+    case X86II::MRM6r: case X86II::MRM7r:
+      return -1;
+    case X86II::MRM0m: case X86II::MRM1m:
+    case X86II::MRM2m: case X86II::MRM3m:
+    case X86II::MRM4m: case X86II::MRM5m:
+    case X86II::MRM6m: case X86II::MRM7m:
+      return 0;
+    case X86II::MRM_C1:
+    case X86II::MRM_C2:
+    case X86II::MRM_C3:
+    case X86II::MRM_C4:
+    case X86II::MRM_C8:
+    case X86II::MRM_C9:
+    case X86II::MRM_E8:
+    case X86II::MRM_F0:
+    case X86II::MRM_F8:
+    case X86II::MRM_F9:
+      return -1;
+    }
+  }
 }
-
-const int X86AddrNumOperands = 5;
 
 inline static bool isScale(const MachineOperand &MO) {
   return MO.isImm() &&
@@ -526,12 +616,6 @@ public:
   /// always be able to get register info as well (through this method).
   ///
   virtual const X86RegisterInfo &getRegisterInfo() const { return RI; }
-
-  /// Return true if the instruction is a register to register move and return
-  /// the source and dest operands and their sub-register indices by reference.
-  virtual bool isMoveInstr(const MachineInstr &MI,
-                           unsigned &SrcReg, unsigned &DstReg,
-                           unsigned &SrcSubIdx, unsigned &DstSubIdx) const;
 
   /// isCoalescableExtInstr - Return true if the instruction is a "coalescable"
   /// extension instruction. That is, it's like a copy where it's legal for the
@@ -615,12 +699,10 @@ public:
                                 MachineBasicBlock *FBB,
                                 const SmallVectorImpl<MachineOperand> &Cond,
                                 DebugLoc DL) const;
-  virtual bool copyRegToReg(MachineBasicBlock &MBB,
-                            MachineBasicBlock::iterator MI,
-                            unsigned DestReg, unsigned SrcReg,
-                            const TargetRegisterClass *DestRC,
-                            const TargetRegisterClass *SrcRC,
-                            DebugLoc DL) const;
+  virtual void copyPhysReg(MachineBasicBlock &MBB,
+                           MachineBasicBlock::iterator MI, DebugLoc DL,
+                           unsigned DestReg, unsigned SrcReg,
+                           bool KillSrc) const;
   virtual void storeRegToStackSlot(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator MI,
                                    unsigned SrcReg, bool isKill, int FrameIndex,
@@ -745,15 +827,10 @@ public:
     if (!MO.isReg()) return false;
     return isX86_64ExtendedReg(MO.getReg());
   }
-  static unsigned determineREX(const MachineInstr &MI);
 
   /// isX86_64ExtendedReg - Is the MachineOperand a x86-64 extended (r8 or
   /// higher) register?  e.g. r8, xmm8, xmm13, etc.
   static bool isX86_64ExtendedReg(unsigned RegNo);
-
-  /// GetInstSize - Returns the size of the specified MachineInstr.
-  ///
-  virtual unsigned GetInstSizeInBytes(const MachineInstr *MI) const;
 
   /// getGlobalBaseReg - Return a virtual register initialized with the
   /// the global base register value. Output instructions required to
@@ -768,17 +845,17 @@ public:
   /// SetSSEDomain - Set the SSEDomain of MI.
   void SetSSEDomain(MachineInstr *MI, unsigned Domain) const;
 
+  MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
+                                      MachineInstr* MI,
+                                      unsigned OpNum,
+                                      const SmallVectorImpl<MachineOperand> &MOs,
+                                      unsigned Size, unsigned Alignment) const;
+  
 private:
   MachineInstr * convertToThreeAddressWithLEA(unsigned MIOpc,
                                               MachineFunction::iterator &MFI,
                                               MachineBasicBlock::iterator &MBBI,
                                               LiveVariables *LV) const;
-
-  MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                     MachineInstr* MI,
-                                     unsigned OpNum,
-                                     const SmallVectorImpl<MachineOperand> &MOs,
-                                     unsigned Size, unsigned Alignment) const;
 
   /// isFrameOperand - Return true and the FrameIndex if the specified
   /// operand and follow operands form a reference to the stack frame.

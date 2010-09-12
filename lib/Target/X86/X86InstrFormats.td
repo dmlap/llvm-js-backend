@@ -39,6 +39,7 @@ def MRM_E8 : Format<39>;
 def MRM_F0 : Format<40>;
 def MRM_F8 : Format<41>;
 def MRM_F9 : Format<42>;
+def RawFrmImm16 : Format<43>;
 
 // ImmType - This specifies the immediate type used by an instruction. This is
 // part of the ad-hoc solution used to emit machine instruction encodings by our
@@ -50,9 +51,10 @@ def NoImm      : ImmType<0>;
 def Imm8       : ImmType<1>;
 def Imm8PCRel  : ImmType<2>;
 def Imm16      : ImmType<3>;
-def Imm32      : ImmType<4>;
-def Imm32PCRel : ImmType<5>;
-def Imm64      : ImmType<6>;
+def Imm16PCRel : ImmType<4>;
+def Imm32      : ImmType<5>;
+def Imm32PCRel : ImmType<6>;
+def Imm64      : ImmType<7>;
 
 // FPFormat - This specifies what form this FP instruction has.  This is used by
 // the Floating-Point stackifier pass.
@@ -104,6 +106,8 @@ class TF     { bits<4> Prefix = 15; }
 class VEX    { bit hasVEXPrefix = 1; }
 class VEX_W  { bit hasVEX_WPrefix = 1; }
 class VEX_4V : VEX { bit hasVEX_4VPrefix = 1; }
+class VEX_I8IMM { bit hasVEX_i8ImmReg = 1; }
+class VEX_L  { bit hasVEX_L = 1; }
 
 class X86Inst<bits<8> opcod, Format f, ImmType i, dag outs, dag ins,
               string AsmStr, Domain d = GenericDomain>
@@ -134,6 +138,9 @@ class X86Inst<bits<8> opcod, Format f, ImmType i, dag outs, dag ins,
   bit hasVEXPrefix = 0;     // Does this inst requires a VEX prefix?
   bit hasVEX_WPrefix = 0;   // Does this inst set the VEX_W field?
   bit hasVEX_4VPrefix = 0;  // Does this inst requires the VEX.VVVV field?
+  bit hasVEX_i8ImmReg = 0;  // Does this inst requires the last source register
+                            // to be encoded in a immediate field?
+  bit hasVEX_L = 0;         // Does this inst uses large (256-bit) registers?
 
   // TSFlags layout should be kept in sync with X86InstrInfo.h.
   let TSFlags{5-0}   = FormBits;
@@ -150,6 +157,8 @@ class X86Inst<bits<8> opcod, Format f, ImmType i, dag outs, dag ins,
   let TSFlags{32}    = hasVEXPrefix;
   let TSFlags{33}    = hasVEX_WPrefix;
   let TSFlags{34}    = hasVEX_4VPrefix;
+  let TSFlags{35}    = hasVEX_i8ImmReg;
+  let TSFlags{36}    = hasVEX_L;
 }
 
 class I<bits<8> o, Format f, dag outs, dag ins, string asm,
@@ -183,6 +192,13 @@ class Ii32<bits<8> o, Format f, dag outs, dag ins, string asm,
   let CodeSize = 3;
 }
 
+class Ii16PCRel<bits<8> o, Format f, dag outs, dag ins, string asm, 
+           list<dag> pattern>
+  : X86Inst<o, f, Imm16PCRel, outs, ins, asm> {
+  let Pattern = pattern;
+  let CodeSize = 3;
+}
+
 class Ii32PCRel<bits<8> o, Format f, dag outs, dag ins, string asm, 
            list<dag> pattern>
   : X86Inst<o, f, Imm32PCRel, outs, ins, asm> {
@@ -195,7 +211,7 @@ class Ii32PCRel<bits<8> o, Format f, dag outs, dag ins, string asm,
 class FPI<bits<8> o, Format F, dag outs, dag ins, string asm>
   : I<o, F, outs, ins, asm, []> {}
 
-// FpI_ - Floating Point Psuedo Instruction template. Not Predicated.
+// FpI_ - Floating Point Pseudo Instruction template. Not Predicated.
 class FpI_<dag outs, dag ins, FPFormat fp, list<dag> pattern>
   : X86Inst<0, Pseudo, NoImm, outs, ins, ""> {
   let FPForm = fp;
@@ -209,13 +225,13 @@ class FpI_<dag outs, dag ins, FPFormat fp, list<dag> pattern>
 //   Iseg32 - 16-bit segment selector, 32-bit offset
 
 class Iseg16 <bits<8> o, Format f, dag outs, dag ins, string asm, 
-              list<dag> pattern> : X86Inst<o, f, NoImm, outs, ins, asm> {
+              list<dag> pattern> : X86Inst<o, f, Imm16, outs, ins, asm> {
   let Pattern = pattern;
   let CodeSize = 3;
 }
 
 class Iseg32 <bits<8> o, Format f, dag outs, dag ins, string asm, 
-              list<dag> pattern> : X86Inst<o, f, NoImm, outs, ins, asm> {
+              list<dag> pattern> : X86Inst<o, f, Imm32, outs, ins, asm> {
   let Pattern = pattern;
   let CodeSize = 3;
 }
@@ -223,8 +239,7 @@ class Iseg32 <bits<8> o, Format f, dag outs, dag ins, string asm,
 // SI - SSE 1 & 2 scalar instructions
 class SI<bits<8> o, Format F, dag outs, dag ins, string asm, list<dag> pattern>
       : I<o, F, outs, ins, asm, pattern> {
-  let Predicates = !if(hasVEXPrefix /* VEX_4V */,
-            !if(!eq(Prefix, 11 /* XD */), [HasAVX, HasSSE2], [HasAVX, HasSSE1]),
+  let Predicates = !if(hasVEXPrefix /* VEX */, [HasAVX],
             !if(!eq(Prefix, 12 /* XS */), [HasSSE1], [HasSSE2]));
 
   // AVX instructions have a 'v' prefix in the mnemonic
@@ -235,8 +250,7 @@ class SI<bits<8> o, Format F, dag outs, dag ins, string asm, list<dag> pattern>
 class SIi8<bits<8> o, Format F, dag outs, dag ins, string asm,
            list<dag> pattern>
       : Ii8<o, F, outs, ins, asm, pattern> {
-  let Predicates = !if(hasVEXPrefix /* VEX_4V */,
-            !if(!eq(Prefix, 11 /* XD */), [HasAVX, HasSSE2], [HasAVX, HasSSE1]),
+  let Predicates = !if(hasVEXPrefix /* VEX */, [HasAVX],
             !if(!eq(Prefix, 12 /* XS */), [HasSSE1], [HasSSE2]));
 
   // AVX instructions have a 'v' prefix in the mnemonic
@@ -247,8 +261,7 @@ class SIi8<bits<8> o, Format F, dag outs, dag ins, string asm,
 class PI<bits<8> o, Format F, dag outs, dag ins, string asm, list<dag> pattern,
          Domain d>
       : I<o, F, outs, ins, asm, pattern, d> {
-  let Predicates = !if(hasVEXPrefix /* VEX_4V */,
-        !if(hasOpSizePrefix /* OpSize */, [HasAVX, HasSSE2], [HasAVX, HasSSE1]),
+  let Predicates = !if(hasVEXPrefix /* VEX */, [HasAVX],
         !if(hasOpSizePrefix /* OpSize */, [HasSSE2], [HasSSE1]));
 
   // AVX instructions have a 'v' prefix in the mnemonic
@@ -259,8 +272,7 @@ class PI<bits<8> o, Format F, dag outs, dag ins, string asm, list<dag> pattern,
 class PIi8<bits<8> o, Format F, dag outs, dag ins, string asm,
            list<dag> pattern, Domain d>
       : Ii8<o, F, outs, ins, asm, pattern, d> {
-  let Predicates = !if(hasVEX_4VPrefix /* VEX_4V */,
-        !if(hasOpSizePrefix /* OpSize */, [HasAVX, HasSSE2], [HasAVX, HasSSE1]),
+  let Predicates = !if(hasVEX_4VPrefix /* VEX */, [HasAVX],
         !if(hasOpSizePrefix /* OpSize */, [HasSSE2], [HasSSE1]));
 
   // AVX instructions have a 'v' prefix in the mnemonic
@@ -290,11 +302,11 @@ class PSIi8<bits<8> o, Format F, dag outs, dag ins, string asm,
 class VSSI<bits<8> o, Format F, dag outs, dag ins, string asm,
            list<dag> pattern>
       : I<o, F, outs, ins, !strconcat("v", asm), pattern>, XS,
-        Requires<[HasAVX, HasSSE1]>;
+        Requires<[HasAVX]>;
 class VPSI<bits<8> o, Format F, dag outs, dag ins, string asm,
            list<dag> pattern>
       : I<o, F, outs, ins, !strconcat("v", asm), pattern, SSEPackedSingle>,
-        Requires<[HasAVX, HasSSE1]>;
+        Requires<[HasAVX]>;
 
 // SSE2 Instruction Templates:
 // 
@@ -324,11 +336,11 @@ class PDIi8<bits<8> o, Format F, dag outs, dag ins, string asm,
 class VSDI<bits<8> o, Format F, dag outs, dag ins, string asm,
            list<dag> pattern>
       : I<o, F, outs, ins, !strconcat("v", asm), pattern>, XD,
-        Requires<[HasAVX, HasSSE2]>;
+        Requires<[HasAVX]>;
 class VPDI<bits<8> o, Format F, dag outs, dag ins, string asm,
            list<dag> pattern>
       : I<o, F, outs, ins, !strconcat("v", asm), pattern, SSEPackedDouble>,
-        OpSize, Requires<[HasAVX, HasSSE2]>;
+        OpSize, Requires<[HasAVX]>;
 
 // SSE3 Instruction Templates:
 // 
@@ -400,6 +412,20 @@ class SS42AI<bits<8> o, Format F, dag outs, dag ins, string asm,
       : Ii8<o, F, outs, ins, asm, pattern, SSEPackedInt>, TA,
         Requires<[HasSSE42]>;
 
+// AVX Instruction Templates:
+//   Instructions introduced in AVX (no SSE equivalent forms)
+//
+//   AVX8I - AVX instructions with T8 and OpSize prefix.
+//   AVXAIi8 - AVX instructions with TA, OpSize prefix and ImmT = Imm8.
+class AVX8I<bits<8> o, Format F, dag outs, dag ins, string asm,
+            list<dag> pattern>
+      : I<o, F, outs, ins, asm, pattern, SSEPackedInt>, T8, OpSize,
+        Requires<[HasAVX]>;
+class AVXAIi8<bits<8> o, Format F, dag outs, dag ins, string asm,
+              list<dag> pattern>
+      : Ii8<o, F, outs, ins, asm, pattern, SSEPackedInt>, TA, OpSize,
+        Requires<[HasAVX]>;
+
 // AES Instruction Templates:
 //
 // AES8I
@@ -413,6 +439,18 @@ class AESAI<bits<8> o, Format F, dag outs, dag ins, string asm,
             list<dag> pattern>
       : Ii8<o, F, outs, ins, asm, pattern, SSEPackedInt>, TA,
         Requires<[HasAES]>;
+
+// CLMUL Instruction Templates
+class CLMULIi8<bits<8> o, Format F, dag outs, dag ins, string asm,
+               list<dag>pattern>
+      : Ii8<o, F, outs, ins, asm, pattern, SSEPackedInt>, TA,
+        OpSize, VEX_4V, Requires<[HasAVX, HasCLMUL]>;
+
+// FMA3 Instruction Templates
+class FMA3<bits<8> o, Format F, dag outs, dag ins, string asm,
+           list<dag>pattern>
+      : I<o, F, outs, ins, asm, pattern, SSEPackedInt>, T8,
+        OpSize, VEX_4V, Requires<[HasFMA3]>;
 
 // X86-64 Instruction templates...
 //

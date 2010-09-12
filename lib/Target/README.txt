@@ -906,17 +906,6 @@ The expression should optimize to something like
 
 //===---------------------------------------------------------------------===//
 
-From GCC Bug 3756:
-int
-pn (int n)
-{
- return (n >= 0 ? 1 : -1);
-}
-Should combine to (n >> 31) | 1.  Currently not optimized with "clang
--emit-llvm-bc | opt -std-compile-opts | llc".
-
-//===---------------------------------------------------------------------===//
-
 void a(int variable)
 {
  if (variable == 4 || variable == 6)
@@ -1930,5 +1919,21 @@ something like the following, which eliminates a branch:
 	ret
 .LBB0_2:
 	jmp	foo  # TAILCALL
+//===---------------------------------------------------------------------===//
+Given a branch where the two target blocks are identical ("ret i32 %b" in
+both), simplifycfg will simplify them away. But not so for a switch statement:
 
+define i32 @f(i32 %a, i32 %b) nounwind readnone {
+entry:
+        switch i32 %a, label %bb3 [
+                i32 4, label %bb
+                i32 6, label %bb
+        ]
+
+bb:             ; preds = %entry, %entry
+        ret i32 %b
+
+bb3:            ; preds = %entry
+        ret i32 %b
+}
 //===---------------------------------------------------------------------===//

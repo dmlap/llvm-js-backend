@@ -47,7 +47,6 @@ namespace llvm {
     const MachineLoopInfo* loopInfo;
     AliasAnalysis *AA;
     
-    BitVector allocatableRegs_;
     DenseMap<const TargetRegisterClass*, BitVector> allocatableRCRegs_;
 
     /// JoinedCopies - Keep track of copies eliminated due to coalescing.
@@ -64,7 +63,7 @@ namespace llvm {
 
   public:
     static char ID; // Pass identifcation, replacement for typeid
-    SimpleRegisterCoalescing() : MachineFunctionPass(&ID) {}
+    SimpleRegisterCoalescing() : MachineFunctionPass(ID) {}
 
     struct InstrSlots {
       enum {
@@ -130,8 +129,7 @@ namespace llvm {
     /// If the source value number is defined by a commutable instruction and
     /// its other operand is coalesced to the copy dest register, see if we
     /// can transform the copy into a noop by commuting the definition.
-    bool RemoveCopyByCommutingDef(LiveInterval &IntA, LiveInterval &IntB,
-                                  MachineInstr *CopyMI);
+    bool RemoveCopyByCommutingDef(const CoalescerPair &CP,MachineInstr *CopyMI);
 
     /// TrimLiveIntervalToLastUse - If there is a last use in the same basic
     /// block as the copy instruction, trim the ive interval to the last use

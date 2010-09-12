@@ -19,6 +19,7 @@
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
 #include "llvm/CodeGen/LiveStackAnalysis.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -94,9 +95,9 @@ namespace {
   public:
     static char ID; // Pass identification
     StackSlotColoring() :
-      MachineFunctionPass(&ID), ColorWithRegs(false), NextColor(-1) {}
+      MachineFunctionPass(ID), ColorWithRegs(false), NextColor(-1) {}
     StackSlotColoring(bool RegColor) :
-      MachineFunctionPass(&ID), ColorWithRegs(RegColor), NextColor(-1) {}
+      MachineFunctionPass(ID), ColorWithRegs(RegColor), NextColor(-1) {}
     
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
       AU.setPreservesCFG();
@@ -118,7 +119,6 @@ namespace {
 
   private:
     void InitializeSlots();
-    bool CheckForSetJmpCall(const MachineFunction &MF) const;
     void ScanForSpillSlotRefs(MachineFunction &MF);
     bool OverlapWithAssignments(LiveInterval *li, int Color) const;
     int ColorSlot(LiveInterval *li);
@@ -145,8 +145,8 @@ namespace {
 
 char StackSlotColoring::ID = 0;
 
-static RegisterPass<StackSlotColoring>
-X("stack-slot-coloring", "Stack Slot Coloring");
+INITIALIZE_PASS(StackSlotColoring, "stack-slot-coloring",
+                "Stack Slot Coloring", false, false);
 
 FunctionPass *llvm::createStackSlotColoringPass(bool RegColor) {
   return new StackSlotColoring(RegColor);
@@ -508,8 +508,7 @@ bool StackSlotColoring::PropagateBackward(MachineBasicBlock::iterator MII,
 
         // Abort the use is actually a sub-register def. We don't have enough
         // information to figure out if it is really legal.
-        if (MO.getSubReg() || MII->isExtractSubreg() ||
-            MII->isInsertSubreg() || MII->isSubregToReg())
+        if (MO.getSubReg() || MII->isSubregToReg())
           return false;
 
         const TargetRegisterClass *RC = TID.OpInfo[i].getRegClass(TRI);
@@ -571,7 +570,7 @@ bool StackSlotColoring::PropagateForward(MachineBasicBlock::iterator MII,
 
         // Abort the use is actually a sub-register use. We don't have enough
         // information to figure out if it is really legal.
-        if (MO.getSubReg() || MII->isExtractSubreg())
+        if (MO.getSubReg())
           return false;
 
         const TargetRegisterClass *RC = TID.OpInfo[i].getRegClass(TRI);
@@ -610,8 +609,8 @@ StackSlotColoring::UnfoldAndRewriteInstruction(MachineInstr *MI, int OldFI,
       DEBUG(MI->dump());
       ++NumLoadElim;
     } else {
-      TII->copyRegToReg(*MBB, MI, DstReg, Reg, RC, RC,
-                        MI->getDebugLoc());
+      BuildMI(*MBB, MI, MI->getDebugLoc(), TII->get(TargetOpcode::COPY),
+              DstReg).addReg(Reg);
       ++NumRegRepl;
     }
 
@@ -627,8 +626,8 @@ StackSlotColoring::UnfoldAndRewriteInstruction(MachineInstr *MI, int OldFI,
       DEBUG(MI->dump());
       ++NumStoreElim;
     } else {
-      TII->copyRegToReg(*MBB, MI, Reg, SrcReg, RC, RC,
-                        MI->getDebugLoc());
+      BuildMI(*MBB, MI, MI->getDebugLoc(), TII->get(TargetOpcode::COPY), Reg)
+        .addReg(SrcReg);
       ++NumRegRepl;
     }
 

@@ -652,7 +652,7 @@
     the profiled tools (<tt>gmon.out</tt>).</dd>
     <dt><a name="DISABLE_ASSERTIONS"><tt>DISABLE_ASSERTIONS</tt></a></dt>
     <dd>If set to any value, causes the build to disable assertions, even if 
-    building a release or profile build.  This will exclude all assertion check
+    building a debug or profile build.  This will exclude all assertion check
     code from the build. LLVM will execute faster, but with little help when
     things go wrong.</dd>
     <dt><a name="EXPERIMENTAL_DIRS"><tt>EXPERIMENTAL_DIRS</tt></a></dt>
@@ -785,6 +785,9 @@
     not.</dd>
     <dt><a name="PROJ_SRC_DIR"><tt>PROJ_SRC_DIR</tt></a></dt>
     <dd>The directory which contains the source files to be built.</dd>
+    <dt><a name="BUILD_EXAMPLES"><tt>BUILD_EXAMPLES</tt></a></dt>
+    <dd>If set to 1, build examples in <tt>examples</tt> and (if building
+    Clang) <tt>tools/clang/examples</tt> directories.</dd>
     <dt><a name="BZIP2"><tt>BZIP2</tt></a><small>(configured)</small></dt>
     <dd>The path to the <tt>bzip2</tt> tool.</dd>
     <dt><a name="CC"><tt>CC</tt></a><small>(configured)</small></dt>

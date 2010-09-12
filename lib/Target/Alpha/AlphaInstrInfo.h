@@ -30,12 +30,6 @@ public:
   ///
   virtual const AlphaRegisterInfo &getRegisterInfo() const { return RI; }
 
-  /// Return true if the instruction is a register to register move and return
-  /// the source and dest operands and their sub-register indices by reference.
-  virtual bool isMoveInstr(const MachineInstr &MI,
-                           unsigned &SrcReg, unsigned &DstReg,
-                           unsigned &SrcSubIdx, unsigned &DstSubIdx) const;
-  
   virtual unsigned isLoadFromStackSlot(const MachineInstr *MI,
                                        int &FrameIndex) const;
   virtual unsigned isStoreToStackSlot(const MachineInstr *MI,
@@ -45,12 +39,10 @@ public:
                                 MachineBasicBlock *FBB,
                                 const SmallVectorImpl<MachineOperand> &Cond,
                                 DebugLoc DL) const;
-  virtual bool copyRegToReg(MachineBasicBlock &MBB,
-                            MachineBasicBlock::iterator MI,
-                            unsigned DestReg, unsigned SrcReg,
-                            const TargetRegisterClass *DestRC,
-                            const TargetRegisterClass *SrcRC,
-                            DebugLoc DL) const;
+  virtual void copyPhysReg(MachineBasicBlock &MBB,
+                           MachineBasicBlock::iterator MI, DebugLoc DL,
+                           unsigned DestReg, unsigned SrcReg,
+                           bool KillSrc) const;
   virtual void storeRegToStackSlot(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator MBBI,
                                    unsigned SrcReg, bool isKill, int FrameIndex,
@@ -62,18 +54,6 @@ public:
                                     unsigned DestReg, int FrameIndex,
                                     const TargetRegisterClass *RC,
                                     const TargetRegisterInfo *TRI) const;
-  
-  virtual MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                              MachineInstr* MI,
-                                           const SmallVectorImpl<unsigned> &Ops,
-                                              int FrameIndex) const;
-
-  virtual MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                              MachineInstr* MI,
-                                           const SmallVectorImpl<unsigned> &Ops,
-                                              MachineInstr* LoadMI) const {
-    return 0;
-  }
   
   bool AnalyzeBranch(MachineBasicBlock &MBB,MachineBasicBlock *&TBB,
                      MachineBasicBlock *&FBB,

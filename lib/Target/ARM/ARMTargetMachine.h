@@ -45,11 +45,12 @@ public:
   virtual const ARMFrameInfo     *getFrameInfo() const { return &FrameInfo; }
   virtual       ARMJITInfo       *getJITInfo()         { return &JITInfo; }
   virtual const ARMSubtarget  *getSubtargetImpl() const { return &Subtarget; }
-  virtual const InstrItineraryData getInstrItineraryData() const {
-    return InstrItins;
+  virtual const InstrItineraryData *getInstrItineraryData() const {
+    return &InstrItins;
   }
 
   // Pass Pipeline Configuration
+  virtual bool addPreISel(PassManagerBase &PM, CodeGenOpt::Level OptLevel);
   virtual bool addInstSelector(PassManagerBase &PM, CodeGenOpt::Level OptLevel);
   virtual bool addPreRegAlloc(PassManagerBase &PM, CodeGenOpt::Level OptLevel);
   virtual bool addPreSched2(PassManagerBase &PM, CodeGenOpt::Level OptLevel);

@@ -19,7 +19,8 @@
 // 
 // Another limitation is that it assumes all code will be executed. A store
 // through a null pointer in a basic block which is never reached is harmless,
-// but this pass will warn about it anyway.
+// but this pass will warn about it anyway. This is the main reason why most
+// of these checks live here instead of in the Verifier pass.
 //
 // Optimization passes may make conditions that this pass checks for more or
 // less obvious. If an optimization pass appears to be introducing a warning,
@@ -107,7 +108,7 @@ namespace {
     raw_string_ostream MessagesStr;
 
     static char ID; // Pass identification, replacement for typeid
-    Lint() : FunctionPass(&ID), MessagesStr(Messages) {}
+    Lint() : FunctionPass(ID), MessagesStr(Messages) {}
 
     virtual bool runOnFunction(Function &F);
 
@@ -128,12 +129,6 @@ namespace {
       }
     }
 
-    void WriteType(const Type *T) {
-      if (!T) return;
-      MessagesStr << ' ';
-      WriteTypeSymbolic(MessagesStr, T, Mod);
-    }
-
     // CheckFailed - A check failed, so print out the condition and the message
     // that failed.  This provides a nice place to put a breakpoint if you want
     // to see why something is not correct.
@@ -146,28 +141,11 @@ namespace {
       WriteValue(V3);
       WriteValue(V4);
     }
-
-    void CheckFailed(const Twine &Message, const Value *V1,
-                     const Type *T2, const Value *V3 = 0) {
-      MessagesStr << Message.str() << "\n";
-      WriteValue(V1);
-      WriteType(T2);
-      WriteValue(V3);
-    }
-
-    void CheckFailed(const Twine &Message, const Type *T1,
-                     const Type *T2 = 0, const Type *T3 = 0) {
-      MessagesStr << Message.str() << "\n";
-      WriteType(T1);
-      WriteType(T2);
-      WriteType(T3);
-    }
   };
 }
 
 char Lint::ID = 0;
-static RegisterPass<Lint>
-X("lint", "Statically lint-checks LLVM IR", false, true);
+INITIALIZE_PASS(Lint, "lint", "Statically lint-checks LLVM IR", false, true);
 
 // Assert - We know that cond should be true, if not print an error message.
 #define Assert(C, M) \
@@ -200,6 +178,8 @@ void Lint::visitFunction(Function &F) {
   // fairly common mistake to neglect to name a function.
   Assert1(F.hasName() || F.hasLocalLinkage(),
           "Unusual: Unnamed function with non-local linkage", &F);
+
+  // TODO: Check for irreducible control flow.
 }
 
 void Lint::visitCallSite(CallSite CS) {
@@ -222,7 +202,12 @@ void Lint::visitCallSite(CallSite CS) {
             "Undefined behavior: Call argument count mismatches callee "
             "argument count", &I);
 
+    Assert1(FT->getReturnType() == I.getType(),
+            "Undefined behavior: Call return type mismatches "
+            "callee return type", &I);
+
     // Check argument types (in case the callee was casted) and attributes.
+    // TODO: Verify that caller and callee attributes are compatible.
     Function::arg_iterator PI = F->arg_begin(), PE = F->arg_end();
     CallSite::arg_iterator AI = CS.arg_begin(), AE = CS.arg_end();
     for (; AI != AE; ++AI) {
@@ -239,8 +224,7 @@ void Lint::visitCallSite(CallSite CS) {
         // where nothing is known.
         if (Formal->hasNoAliasAttr() && Actual->getType()->isPointerTy())
           for (CallSite::arg_iterator BI = CS.arg_begin(); BI != AE; ++BI) {
-            Assert1(AI == BI ||
-                    AA->alias(*AI, ~0u, *BI, ~0u) != AliasAnalysis::MustAlias,
+            Assert1(AI == BI || AA->alias(*AI, *BI) != AliasAnalysis::MustAlias,
                     "Unusual: noalias argument aliases another argument", &I);
           }
 
@@ -360,6 +344,7 @@ void Lint::visitReturnInst(ReturnInst &I) {
 }
 
 // TODO: Check that the reference is in bounds.
+// TODO: Check readnone/readonly function attributes.
 void Lint::visitMemoryReference(Instruction &I,
                                 Value *Ptr, unsigned Size, unsigned Align,
                                 const Type *Ty, unsigned Flags) {
@@ -500,6 +485,8 @@ void Lint::visitAllocaInst(AllocaInst &I) {
     // This isn't undefined behavior, it's just an obvious pessimization.
     Assert1(&I.getParent()->getParent()->getEntryBlock() == I.getParent(),
             "Pessimization: Static alloca outside of entry block", &I);
+
+  // TODO: Check for an unusual size (MSB set?)
 }
 
 void Lint::visitVAArgInst(VAArgInst &I) {
@@ -509,6 +496,9 @@ void Lint::visitVAArgInst(VAArgInst &I) {
 
 void Lint::visitIndirectBrInst(IndirectBrInst &I) {
   visitMemoryReference(I, I.getAddress(), ~0u, 0, 0, MemRef::Branchee);
+
+  Assert1(I.getNumDestinations() != 0,
+          "Undefined behavior: indirectbr with no destinations", &I);
 }
 
 void Lint::visitExtractElementInst(ExtractElementInst &I) {

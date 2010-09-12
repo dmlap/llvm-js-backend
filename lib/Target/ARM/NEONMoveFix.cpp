@@ -24,7 +24,7 @@ STATISTIC(NumVMovs, "Number of reg-reg moves converted");
 namespace {
   struct NEONMoveFixPass : public MachineFunctionPass {
     static char ID;
-    NEONMoveFixPass() : MachineFunctionPass(&ID) {}
+    NEONMoveFixPass() : MachineFunctionPass(ID) {}
 
     virtual bool runOnMachineFunction(MachineFunction &Fn);
 
@@ -105,8 +105,8 @@ bool NEONMoveFixPass::InsertMoves(MachineBasicBlock &MBB) {
       unsigned MOReg = MO.getReg();
 
       Defs[MOReg] = MI;
-      // Catch subregs as well.
-      for (const unsigned *R = TRI->getSubRegisters(MOReg); *R; ++R)
+      // Catch aliases as well.
+      for (const unsigned *R = TRI->getAliasSet(MOReg); *R; ++R)
         Defs[*R] = MI;
     }
   }

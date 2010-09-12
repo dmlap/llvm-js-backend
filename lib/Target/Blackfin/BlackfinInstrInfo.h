@@ -30,10 +30,6 @@ namespace llvm {
     /// always be able to get register info as well (through this method).
     virtual const BlackfinRegisterInfo &getRegisterInfo() const { return RI; }
 
-    virtual bool isMoveInstr(const MachineInstr &MI,
-                             unsigned &SrcReg, unsigned &DstReg,
-                             unsigned &SrcSubIdx, unsigned &DstSubIdx) const;
-
     virtual unsigned isLoadFromStackSlot(const MachineInstr *MI,
                                          int &FrameIndex) const;
 
@@ -47,12 +43,10 @@ namespace llvm {
                  const SmallVectorImpl<MachineOperand> &Cond,
                  DebugLoc DL) const;
 
-    virtual bool copyRegToReg(MachineBasicBlock &MBB,
-                              MachineBasicBlock::iterator I,
-                              unsigned DestReg, unsigned SrcReg,
-                              const TargetRegisterClass *DestRC,
-                              const TargetRegisterClass *SrcRC,
-                              DebugLoc DL) const;
+    virtual void copyPhysReg(MachineBasicBlock &MBB,
+                             MachineBasicBlock::iterator MI, DebugLoc DL,
+                             unsigned DestReg, unsigned SrcReg,
+                             bool KillSrc) const;
 
     virtual void storeRegToStackSlot(MachineBasicBlock &MBB,
                                      MachineBasicBlock::iterator MBBI,

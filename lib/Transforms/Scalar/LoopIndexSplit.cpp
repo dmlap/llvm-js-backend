@@ -74,7 +74,7 @@ namespace {
   class LoopIndexSplit : public LoopPass {
   public:
     static char ID; // Pass ID, replacement for typeid
-    LoopIndexSplit() : LoopPass(&ID) {}
+    LoopIndexSplit() : LoopPass(ID) {}
 
     // Index split Loop L. Return true if loop is split.
     bool runOnLoop(Loop *L, LPPassManager &LPM);
@@ -197,8 +197,8 @@ namespace {
 }
 
 char LoopIndexSplit::ID = 0;
-static RegisterPass<LoopIndexSplit>
-X("loop-index-split", "Index Split Loops");
+INITIALIZE_PASS(LoopIndexSplit, "loop-index-split",
+                "Index Split Loops", false, false);
 
 Pass *llvm::createLoopIndexSplitPass() {
   return new LoopIndexSplit();
@@ -617,8 +617,8 @@ bool LoopIndexSplit::updateLoopIterationSpace() {
   if (Op1->use_empty())
     Op1->eraseFromParent();
 
-  // Update domiantor info. Now, ExitingBlock has only one predecessor, 
-  // ExitingBBPred, and it is ExitingBlock's immediate domiantor.
+  // Update dominator info. Now, ExitingBlock has only one predecessor, 
+  // ExitingBBPred, and it is ExitingBlock's immediate dominator.
   DT->changeImmediateDominator(ExitingBlock, ExitingBBPred);
 
   BasicBlock *ExitBlock = ExitingBlock->getTerminator()->getSuccessor(1);
@@ -677,7 +677,7 @@ void LoopIndexSplit::removeBlocks(BasicBlock *DeadBB, Loop *LP,
       for(pred_iterator PI = pred_begin(FrontierBB), PE = pred_end(FrontierBB);
           PI != PE; ++PI) {
         BasicBlock *P = *PI;
-        if (P == DeadBB || DT->dominates(DeadBB, P))
+        if (DT->dominates(DeadBB, P))
           PredBlocks.push_back(P);
       }
 
@@ -799,7 +799,7 @@ void LoopIndexSplit::moveExitCondition(BasicBlock *CondBB, BasicBlock *ActiveBB,
   // the dominance frontiers.
   for (Loop::block_iterator I = LP->block_begin(), E = LP->block_end();
        I != E; ++I) {
-    if (*I == CondBB || !DT->dominates(CondBB, *I)) continue;
+    if (!DT->properlyDominates(CondBB, *I)) continue;
     DominanceFrontier::iterator BBDF = DF->find(*I);
     DominanceFrontier::DomSetType::iterator DomSetI = BBDF->second.begin();
     DominanceFrontier::DomSetType::iterator DomSetE = BBDF->second.end();
@@ -958,11 +958,11 @@ bool LoopIndexSplit::splitLoop() {
       continue;
 
     for (BasicBlock::iterator BI = BB->begin(), BE = BB->end();
-	 BI != BE; ++BI) {
+         BI != BE; ++BI) {
       Instruction *Inst = BI;
 
       if (!Inst->isSafeToSpeculativelyExecute() && !isa<PHINode>(Inst)
-	  && !isa<BranchInst>(Inst) && !isa<DbgInfoIntrinsic>(Inst))
+          && !isa<BranchInst>(Inst) && !isa<DbgInfoIntrinsic>(Inst))
         return false;
     }
   }
@@ -1040,7 +1040,7 @@ bool LoopIndexSplit::splitLoop() {
 
   // [*] Update BLoop's header phi nodes. Remove incoming PHINode's from
   //     original loop's preheader. Add incoming PHINode values from
-  //     ALoop's exiting block. Update BLoop header's domiantor info.
+  //     ALoop's exiting block. Update BLoop header's dominator info.
 
   // Collect inverse map of Header PHINodes.
   DenseMap<Value *, Value *> InverseMap;
@@ -1183,7 +1183,7 @@ bool LoopIndexSplit::cleanBlock(BasicBlock *BB) {
     bool usedOutsideBB = false;
     for (Value::use_iterator UI = I->use_begin(), UE = I->use_end(); 
          UI != UE; ++UI) {
-      Instruction *U = cast<Instruction>(UI);
+      Instruction *U = cast<Instruction>(*UI);
       if (U->getParent() != BB)
         usedOutsideBB = true;
     }

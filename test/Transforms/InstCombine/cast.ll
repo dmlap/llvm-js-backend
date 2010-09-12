@@ -437,8 +437,8 @@ define i64 @test47(i8 %A) {
  ret i64 %E
 ; CHECK: @test47
 ; CHECK-NEXT:   %B = sext i8 %A to i64
-; CHECK-NEXT: %C = or i64 %B, 42
-; CHECK-NEXT:  %E = and i64 %C, 4294967295
+; CHECK-NEXT: %C = and i64 %B, 4294967253
+; CHECK-NEXT:  %E = or i64 %C, 42
 ; CHECK-NEXT:  ret i64 %E
 }
 
@@ -508,8 +508,8 @@ define i32 @test52(i64 %A) {
   ret i32 %E
 ; CHECK: @test52
 ; CHECK-NEXT: %B = trunc i64 %A to i32
-; CHECK-NEXT: %C = or i32 %B, 32962
-; CHECK-NEXT: %D = and i32 %C, 40186
+; CHECK-NEXT: %C = and i32 %B, 7224
+; CHECK-NEXT: %D = or i32 %C, 32962
 ; CHECK-NEXT: ret i32 %D
 }
 
@@ -521,8 +521,8 @@ define i64 @test53(i32 %A) {
   ret i64 %E
 ; CHECK: @test53
 ; CHECK-NEXT: %B = zext i32 %A to i64
-; CHECK-NEXT: %C = or i64 %B, 32962
-; CHECK-NEXT: %D = and i64 %C, 40186
+; CHECK-NEXT: %C = and i64 %B, 7224
+; CHECK-NEXT: %D = or i64 %C, 32962
 ; CHECK-NEXT: ret i64 %D
 }
 
@@ -534,8 +534,8 @@ define i32 @test54(i64 %A) {
   ret i32 %E
 ; CHECK: @test54
 ; CHECK-NEXT: %B = trunc i64 %A to i32
-; CHECK-NEXT: %C = or i32 %B, -32574
-; CHECK-NEXT: %D = and i32 %C, -25350
+; CHECK-NEXT: %C = and i32 %B, 7224
+; CHECK-NEXT: %D = or i32 %C, -32574
 ; CHECK-NEXT: ret i32 %D
 }
 
@@ -547,8 +547,8 @@ define i64 @test55(i32 %A) {
   ret i64 %E
 ; CHECK: @test55
 ; CHECK-NEXT: %B = zext i32 %A to i64
-; CHECK-NEXT: %C = or i64 %B, -32574
-; CHECK-NEXT: %D = and i64 %C, -25350
+; CHECK-NEXT: %C = and i64 %B, 7224
+; CHECK-NEXT: %D = or i64 %C, -32574
 ; CHECK-NEXT: ret i64 %D
 }
 
@@ -584,8 +584,8 @@ define i64 @test58(i64 %A) nounwind {
  
 ; CHECK: @test58
 ; CHECK-NEXT:   %C = lshr i64 %A, 8
-; CHECK-NEXT:   %D = or i64 %C, 128
-; CHECK-NEXT:   %E = and i64 %D, 16777215
+; CHECK-NEXT:   %D = and i64 %C, 16777087
+; CHECK-NEXT:   %E = or i64 %D, 128
 ; CHECK-NEXT:   ret i64 %E
 }
 
@@ -636,5 +636,16 @@ define <4 x i32> @test62(<3 x float> %call4) nounwind {
 ; CHECK-NEXT: bitcast
 ; CHECK-NEXT: shufflevector
 ; CHECK-NEXT: ret
+}
+
+; PR7311 - Don't create invalid IR on scalar->vector cast.
+define <2 x float> @test63(i64 %tmp8) nounwind {
+entry:
+  %a = bitcast i64 %tmp8 to <2 x i32>           
+  %vcvt.i = uitofp <2 x i32> %a to <2 x float>  
+  ret <2 x float> %vcvt.i
+; CHECK: @test63
+; CHECK: bitcast
+; CHECK: uitofp
 }
 

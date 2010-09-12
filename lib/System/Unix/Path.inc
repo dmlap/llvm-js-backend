@@ -276,20 +276,20 @@ Path::GetCurrentDirectory() {
   char pathname[MAXPATHLEN];
   if (!getcwd(pathname,MAXPATHLEN)) {
     assert (false && "Could not query current working directory.");
-    return Path("");
+    return Path();
   }
 
   return Path(pathname);
 }
 
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined (__NetBSD__) || defined(__minix)
 static int
 test_dir(char buf[PATH_MAX], char ret[PATH_MAX],
     const char *dir, const char *bin)
 {
   struct stat sb;
 
-  snprintf(buf, PATH_MAX, "%s//%s", dir, bin);
+  snprintf(buf, PATH_MAX, "%s/%s", dir, bin);
   if (realpath(buf, ret) == NULL)
     return (1);
   if (stat(buf, &sb) != 0)
@@ -334,7 +334,7 @@ getprogpath(char ret[PATH_MAX], const char *bin)
   free(pv);
   return (NULL);
 }
-#endif // __FreeBSD__
+#endif // __FreeBSD__ || __NetBSD__
 
 /// GetMainExecutable - Return the path to the main executable, given the
 /// value of argv[0] from program startup.
@@ -350,7 +350,7 @@ Path Path::GetMainExecutable(const char *argv0, void *MainAddr) {
     if (realpath(exe_path, link_path))
       return Path(std::string(link_path));
   }
-#elif defined(__FreeBSD__)
+#elif defined(__FreeBSD__) || defined (__NetBSD__) || defined(__minix)
   char exe_path[PATH_MAX];
 
   if (getprogpath(exe_path, argv0) != NULL)
@@ -372,6 +372,8 @@ Path Path::GetMainExecutable(const char *argv0, void *MainAddr) {
   char link_path[MAXPATHLEN];
   if (realpath(DLInfo.dli_fname, link_path))
     return Path(std::string(link_path));
+#else
+#error GetMainExecutable is not implemented on this host yet.
 #endif
   return Path();
 }
@@ -408,7 +410,7 @@ Path::getSuffix() const {
 
   std::string::size_type dot = path.rfind('.');
   if (dot == std::string::npos || dot < slash)
-    return StringRef("");
+    return StringRef();
   else
     return StringRef(path).substr(dot + 1);
 }
@@ -888,14 +890,19 @@ Path::makeUnique(bool reuse_current, std::string* ErrMsg) {
 #else
   // Okay, looks like we have to do it all by our lonesome.
   static unsigned FCounter = 0;
-  unsigned offset = path.size() + 1;
-  while ( FCounter < 999999 && exists()) {
-    sprintf(FNBuffer+offset,"%06u",++FCounter);
+  // Try to initialize with unique value.
+  if (FCounter == 0) FCounter = ((unsigned)getpid() & 0xFFFF) << 8;
+  char* pos = strstr(FNBuffer, "XXXXXX");
+  do {
+    if (++FCounter > 0xFFFFFF) {
+      return MakeErrMsg(ErrMsg,
+        path + ": can't make unique filename: too many files");
+    }
+    sprintf(pos, "%06X", FCounter);
     path = FNBuffer;
-  }
-  if (FCounter > 999999)
-    return MakeErrMsg(ErrMsg,
-      path + ": can't make unique filename: too many files");
+  } while (exists());
+  // POSSIBLE SECURITY BUG: An attacker can easily guess the name and exploit
+  // LLVM.
 #endif
   return false;
 }

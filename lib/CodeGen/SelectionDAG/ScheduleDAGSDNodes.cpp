@@ -34,8 +34,8 @@ using namespace llvm;
 STATISTIC(LoadsClustered, "Number of loads clustered together");
 
 ScheduleDAGSDNodes::ScheduleDAGSDNodes(MachineFunction &mf)
-  : ScheduleDAG(mf) {
-}
+  : ScheduleDAG(mf),
+    InstrItins(mf.getTarget().getInstrItineraryData()) {}
 
 /// Run - perform scheduling.
 ///
@@ -59,8 +59,9 @@ SUnit *ScheduleDAGSDNodes::NewSUnit(SDNode *N) {
   SUnits.back().OrigNode = &SUnits.back();
   SUnit *SU = &SUnits.back();
   const TargetLowering &TLI = DAG->getTargetLoweringInfo();
-  if (N->isMachineOpcode() &&
-      N->getMachineOpcode() == TargetOpcode::IMPLICIT_DEF)
+  if (!N ||
+      (N->isMachineOpcode() &&
+       N->getMachineOpcode() == TargetOpcode::IMPLICIT_DEF))
     SU->SchedulingPref = Sched::None;
   else
     SU->SchedulingPref = TLI.getSchedulingPreference(N);
@@ -428,8 +429,7 @@ void ScheduleDAGSDNodes::ComputeLatency(SUnit *SU) {
     return;
   }
 
-  const InstrItineraryData &InstrItins = TM.getInstrItineraryData();
-  if (InstrItins.isEmpty()) {
+  if (!InstrItins || InstrItins->isEmpty()) {
     SU->Latency = 1;
     return;
   }
@@ -439,7 +439,7 @@ void ScheduleDAGSDNodes::ComputeLatency(SUnit *SU) {
   SU->Latency = 0;
   for (SDNode *N = SU->getNode(); N; N = N->getFlaggedNode())
     if (N->isMachineOpcode()) {
-      SU->Latency += InstrItins.
+      SU->Latency += InstrItins->
         getStageLatency(TII->get(N->getMachineOpcode()).getSchedClass());
     }
 }
@@ -450,8 +450,7 @@ void ScheduleDAGSDNodes::ComputeOperandLatency(SDNode *Def, SDNode *Use,
   if (ForceUnitLatencies())
     return;
 
-  const InstrItineraryData &InstrItins = TM.getInstrItineraryData();
-  if (InstrItins.isEmpty())
+  if (!InstrItins || InstrItins->isEmpty())
     return;
   
   if (dep.getKind() != SDep::Data)
@@ -462,13 +461,13 @@ void ScheduleDAGSDNodes::ComputeOperandLatency(SDNode *Def, SDNode *Use,
     const TargetInstrDesc &II = TII->get(Def->getMachineOpcode());
     if (DefIdx >= II.getNumDefs())
       return;
-    int DefCycle = InstrItins.getOperandCycle(II.getSchedClass(), DefIdx);
+    int DefCycle = InstrItins->getOperandCycle(II.getSchedClass(), DefIdx);
     if (DefCycle < 0)
       return;
     int UseCycle = 1;
     if (Use->isMachineOpcode()) {
       const unsigned UseClass = TII->get(Use->getMachineOpcode()).getSchedClass();
-      UseCycle = InstrItins.getOperandCycle(UseClass, OpIdx);
+      UseCycle = InstrItins->getOperandCycle(UseClass, OpIdx);
     }
     if (UseCycle >= 0) {
       int Latency = DefCycle - UseCycle + 1;
@@ -519,13 +518,13 @@ static void ProcessSourceNode(SDNode *N, SelectionDAG *DAG,
     return;
 
   MachineBasicBlock *BB = Emitter.getBlock();
-  if (BB->empty() || BB->back().isPHI()) {
+  if (Emitter.getInsertPos() == BB->begin() || BB->back().isPHI()) {
     // Did not insert any instruction.
     Orders.push_back(std::make_pair(Order, (MachineInstr*)0));
     return;
   }
 
-  Orders.push_back(std::make_pair(Order, &BB->back()));
+  Orders.push_back(std::make_pair(Order, prior(Emitter.getInsertPos())));
   if (!N->getHasDebugValue())
     return;
   // Opportunistically insert immediate dbg_value uses, i.e. those with source
@@ -564,7 +563,7 @@ MachineBasicBlock *ScheduleDAGSDNodes::EmitSchedule() {
     for (; PDI != PDE; ++PDI) {
       MachineInstr *DbgMI= Emitter.EmitDbgValue(*PDI, VRBaseMap);
       if (DbgMI)
-        BB->push_back(DbgMI);
+        BB->insert(InsertPos, DbgMI);
     }
   }
 
@@ -608,9 +607,7 @@ MachineBasicBlock *ScheduleDAGSDNodes::EmitSchedule() {
   // Insert all the dbg_values which have not already been inserted in source
   // order sequence.
   if (HasDbg) {
-    MachineBasicBlock::iterator BBBegin = BB->empty() ? BB->end() : BB->begin();
-    while (BBBegin != BB->end() && BBBegin->isPHI())
-      ++BBBegin;
+    MachineBasicBlock::iterator BBBegin = BB->getFirstNonPHI();
 
     // Sort the source order instructions and use the order to insert debug
     // values.
@@ -626,7 +623,6 @@ MachineBasicBlock *ScheduleDAGSDNodes::EmitSchedule() {
       // Insert all SDDbgValue's whose order(s) are before "Order".
       if (!MI)
         continue;
-      MachineBasicBlock *MIBB = MI->getParent();
 #ifndef NDEBUG
       unsigned LastDIOrder = 0;
 #endif
@@ -645,8 +641,10 @@ MachineBasicBlock *ScheduleDAGSDNodes::EmitSchedule() {
             // Insert to start of the BB (after PHIs).
             BB->insert(BBBegin, DbgMI);
           else {
+            // Insert at the instruction, which may be in a different
+            // block, if the block was split by a custom inserter.
             MachineBasicBlock::iterator Pos = MI;
-            MIBB->insert(llvm::next(Pos), DbgMI);
+            MI->getParent()->insert(llvm::next(Pos), DbgMI);
           }
         }
       }

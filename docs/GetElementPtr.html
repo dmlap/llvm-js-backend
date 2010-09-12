@@ -26,7 +26,6 @@
     <li><a href="#lead0">Why don't GEP x,0,0,1 and GEP x,1 alias? </a></li>
     <li><a href="#trail0">Why do GEP x,1,0,0 and GEP x,1 alias? </a></li>
     <li><a href="#vectors">Can GEP index into vector elements?</a>
-    <li><a href="#unions">Can GEP index into unions?</a>
     <li><a href="#addrspace">What effect do address spaces have on GEPs?</a>
     <li><a href="#int">How is GEP different from ptrtoint, arithmetic, and inttoptr?</a></li>
     <li><a href="#be">I'm writing a backend for a target which needs custom lowering for GEP. How do I do this?</a>
@@ -64,7 +63,8 @@
 
 <div class="doc_text"> 
   <p>This document seeks to dispel the mystery and confusion surrounding LLVM's
-  GetElementPtr (GEP) instruction. Questions about the wily GEP instruction are
+  <a href="LangRef.html#i_getelementptr">GetElementPtr</a> (GEP) instruction.
+  Questions about the wily GEP instruction are
   probably the most frequently occurring questions once a developer gets down to
   coding with LLVM. Here we lay out the sources of confusion and show that the
   GEP instruction is really quite simple.
@@ -369,16 +369,6 @@ idx3 = (char*) &amp;MyVar + 8
 <!-- *********************************************************************** -->
 
 <div class="doc_subsection">
-  <a name="unions"><b>Can GEP index into unions?</b></a>
-</div>
-<div class="doc_text">
-   <p>Unknown.</p>
-
-</div>
-
-<!-- *********************************************************************** -->
-
-<div class="doc_subsection">
   <a name="addrspace"><b>What effect do address spaces have on GEPs?</b></a>
 </div>
 <div class="doc_text">
@@ -653,7 +643,8 @@ idx3 = (char*) &amp;MyVar + 8
      <li>Support C, C-like languages, and languages which can be
          conceptually lowered into C (this covers a lot).</li>
      <li>Support optimizations such as those that are common in
-         C compilers.</li>
+         C compilers. In particular, GEP is a cornerstone of LLVM's
+         <a href="LangRef.html#pointeraliasing">pointer aliasing model</a>.</li>
      <li>Provide a consistent method for computing addresses so that
          address computations don't need to be a part of load and
          store instructions in the IR.</li>

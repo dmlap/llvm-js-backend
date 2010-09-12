@@ -279,7 +279,7 @@ struct StrCmpOpt : public LibCallOptimization {
     // Verify the "strcmp" function prototype.
     const FunctionType *FT = Callee->getFunctionType();
     if (FT->getNumParams() != 2 ||
-	!FT->getReturnType()->isIntegerTy(32) ||
+        !FT->getReturnType()->isIntegerTy(32) ||
         FT->getParamType(0) != FT->getParamType(1) ||
         FT->getParamType(0) != Type::getInt8PtrTy(*Context))
       return 0;
@@ -327,7 +327,7 @@ struct StrNCmpOpt : public LibCallOptimization {
     // Verify the "strncmp" function prototype.
     const FunctionType *FT = Callee->getFunctionType();
     if (FT->getNumParams() != 3 ||
-	!FT->getReturnType()->isIntegerTy(32) ||
+        !FT->getReturnType()->isIntegerTy(32) ||
         FT->getParamType(0) != FT->getParamType(1) ||
         FT->getParamType(0) != Type::getInt8PtrTy(*Context) ||
         !FT->getParamType(2)->isIntegerTy())
@@ -532,7 +532,7 @@ struct StrStrOpt : public LibCallOptimization {
                                    StrLen, B, TD);
       for (Value::use_iterator UI = CI->use_begin(), UE = CI->use_end();
            UI != UE; ) {
-        ICmpInst *Old = cast<ICmpInst>(UI++);
+        ICmpInst *Old = cast<ICmpInst>(*UI++);
         Value *Cmp = B.CreateICmp(Old->getPredicate(), StrNCmp,
                                   ConstantInt::getNullValue(StrNCmp->getType()),
                                   "cmp");
@@ -566,8 +566,8 @@ struct StrStrOpt : public LibCallOptimization {
 
     // fold strstr(x, "y") -> strchr(x, 'y').
     if (HasStr2 && ToFindStr.size() == 1)
-      return B.CreateBitCast(EmitStrChr(CI->getArgOperand(0), ToFindStr[0], B, TD),
-                             CI->getType());
+      return B.CreateBitCast(EmitStrChr(CI->getArgOperand(0),
+                             ToFindStr[0], B, TD), CI->getType());
     return 0;
   }
 };
@@ -681,8 +681,8 @@ struct MemSetOpt : public LibCallOptimization {
       return 0;
 
     // memset(p, v, n) -> llvm.memset(p, v, n, 1)
-    Value *Val = B.CreateIntCast(CI->getArgOperand(1), Type::getInt8Ty(*Context),
-				 false);
+    Value *Val = B.CreateIntCast(CI->getArgOperand(1),
+                                 Type::getInt8Ty(*Context), false);
     EmitMemSet(CI->getArgOperand(0), Val,  CI->getArgOperand(2), false, B, TD);
     return CI->getArgOperand(0);
   }
@@ -766,11 +766,11 @@ struct Exp2Opt : public LibCallOptimization {
     if (SIToFPInst *OpC = dyn_cast<SIToFPInst>(Op)) {
       if (OpC->getOperand(0)->getType()->getPrimitiveSizeInBits() <= 32)
         LdExpArg = B.CreateSExt(OpC->getOperand(0),
-				Type::getInt32Ty(*Context), "tmp");
+                                Type::getInt32Ty(*Context), "tmp");
     } else if (UIToFPInst *OpC = dyn_cast<UIToFPInst>(Op)) {
       if (OpC->getOperand(0)->getType()->getPrimitiveSizeInBits() < 32)
         LdExpArg = B.CreateZExt(OpC->getOperand(0),
-				Type::getInt32Ty(*Context), "tmp");
+                                Type::getInt32Ty(*Context), "tmp");
     }
 
     if (LdExpArg) {
@@ -836,7 +836,7 @@ struct FFSOpt : public LibCallOptimization {
     // Just make sure this has 2 arguments of the same FP type, which match the
     // result type.
     if (FT->getNumParams() != 1 ||
-	!FT->getReturnType()->isIntegerTy(32) ||
+        !FT->getReturnType()->isIntegerTy(32) ||
         !FT->getParamType(0)->isIntegerTy())
       return 0;
 
@@ -860,7 +860,7 @@ struct FFSOpt : public LibCallOptimization {
 
     Value *Cond = B.CreateICmpNE(Op, Constant::getNullValue(ArgType), "tmp");
     return B.CreateSelect(Cond, V,
-			  ConstantInt::get(Type::getInt32Ty(*Context), 0));
+                          ConstantInt::get(Type::getInt32Ty(*Context), 0));
   }
 };
 
@@ -1042,9 +1042,9 @@ struct SPrintFOpt : public LibCallOptimization {
       if (!TD) return 0;
 
       // sprintf(str, fmt) -> llvm.memcpy(str, fmt, strlen(fmt)+1, 1)
-      EmitMemCpy(CI->getArgOperand(0), CI->getArgOperand(1), // Copy the nul byte.
-                 ConstantInt::get(TD->getIntPtrType(*Context),
-                 FormatStr.size()+1), 1, false, B, TD);
+      EmitMemCpy(CI->getArgOperand(0), CI->getArgOperand(1),   // Copy the
+                 ConstantInt::get(TD->getIntPtrType(*Context), // nul byte.
+                 FormatStr.size() + 1), 1, false, B, TD);
       return ConstantInt::get(CI->getType(), FormatStr.size());
     }
 
@@ -1080,7 +1080,8 @@ struct SPrintFOpt : public LibCallOptimization {
       Value *IncLen = B.CreateAdd(Len,
                                   ConstantInt::get(Len->getType(), 1),
                                   "leninc");
-      EmitMemCpy(CI->getArgOperand(0), CI->getArgOperand(2), IncLen, 1, false, B, TD);
+      EmitMemCpy(CI->getArgOperand(0), CI->getArgOperand(2),
+                 IncLen, 1, false, B, TD);
 
       // The sprintf result is the unincremented number of bytes in the string.
       return B.CreateIntCast(Len, CI->getType(), false);
@@ -1236,7 +1237,7 @@ namespace {
     bool Modified;  // This is only used by doInitialization.
   public:
     static char ID; // Pass identification
-    SimplifyLibCalls() : FunctionPass(&ID), StrCpy(false), StrCpyChk(true) {}
+    SimplifyLibCalls() : FunctionPass(ID), StrCpy(false), StrCpyChk(true) {}
     void InitOptimizations();
     bool runOnFunction(Function &F);
 
@@ -1253,8 +1254,8 @@ namespace {
   char SimplifyLibCalls::ID = 0;
 } // end anonymous namespace.
 
-static RegisterPass<SimplifyLibCalls>
-X("simplify-libcalls", "Simplify well-known library calls");
+INITIALIZE_PASS(SimplifyLibCalls, "simplify-libcalls",
+                "Simplify well-known library calls", false, false);
 
 // Public interface to the Simplify LibCalls pass.
 FunctionPass *llvm::createSimplifyLibCallsPass() {
@@ -2155,7 +2156,7 @@ bool SimplifyLibCalls::doInitialization(Module &M) {
 //   * pow(pow(x,y),z)-> pow(x,y*z)
 //
 // puts:
-//   * puts("") -> putchar("\n")
+//   * puts("") -> putchar('\n')
 //
 // round, roundf, roundl:
 //   * round(cnst) -> cnst'

@@ -59,7 +59,7 @@ namespace {
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
     }
     static char ID; // Pass identification, replacement for typeid
-    GlobalOpt() : ModulePass(&ID) {}
+    GlobalOpt() : ModulePass(ID) {}
 
     bool runOnModule(Module &M);
 
@@ -74,7 +74,8 @@ namespace {
 }
 
 char GlobalOpt::ID = 0;
-static RegisterPass<GlobalOpt> X("globalopt", "Global Variable Optimizer");
+INITIALIZE_PASS(GlobalOpt, "globalopt",
+                "Global Variable Optimizer", false, false);
 
 ModulePass *llvm::createGlobalOptimizerPass() { return new GlobalOpt(); }
 
@@ -160,13 +161,12 @@ static bool SafeToDestroyConstant(const Constant *C) {
 static bool AnalyzeGlobal(const Value *V, GlobalStatus &GS,
                           SmallPtrSet<const PHINode*, 16> &PHIUsers) {
   for (Value::const_use_iterator UI = V->use_begin(), E = V->use_end(); UI != E;
-       ++UI)
-    if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(*UI)) {
+       ++UI) {
+    const User *U = *UI;
+    if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(U)) {
       GS.HasNonInstructionUser = true;
-
       if (AnalyzeGlobal(CE, GS, PHIUsers)) return true;
-
-    } else if (const Instruction *I = dyn_cast<Instruction>(*UI)) {
+    } else if (const Instruction *I = dyn_cast<Instruction>(U)) {
       if (!GS.HasMultipleAccessingFunctions) {
         const Function *F = I->getParent()->getParent();
         if (GS.AccessingFunction == 0)
@@ -235,7 +235,7 @@ static bool AnalyzeGlobal(const Value *V, GlobalStatus &GS,
       } else {
         return true;  // Any other non-load instruction might take address!
       }
-    } else if (const Constant *C = dyn_cast<Constant>(*UI)) {
+    } else if (const Constant *C = dyn_cast<Constant>(U)) {
       GS.HasNonInstructionUser = true;
       // We might have a dead and dangling constant hanging off of here.
       if (!SafeToDestroyConstant(C))
@@ -245,6 +245,7 @@ static bool AnalyzeGlobal(const Value *V, GlobalStatus &GS,
       // Otherwise must be some other user.
       return true;
     }
+  }
 
   return false;
 }
@@ -1307,7 +1308,7 @@ static GlobalVariable *PerformHeapAllocSRoA(GlobalVariable *GV, CallInst *CI,
     const Type *IntPtrTy = TD->getIntPtrType(CI->getContext());
     Value *NMI = CallInst::CreateMalloc(CI, IntPtrTy, FieldTy,
                                         ConstantInt::get(IntPtrTy, TypeSize),
-                                        NElems,
+                                        NElems, 0,
                                         CI->getName() + ".f" + Twine(FieldNo));
     FieldMallocs.push_back(NMI);
     new StoreInst(NMI, NGV, CI);
@@ -1467,7 +1468,7 @@ static bool TryToOptimizeStoreOfMallocToGlobal(GlobalVariable *GV,
                                                TargetData *TD) {
   if (!TD)
     return false;
-          
+  
   // If this is a malloc of an abstract type, don't touch it.
   if (!AllocTy->isSized())
     return false;
@@ -1536,7 +1537,7 @@ static bool TryToOptimizeStoreOfMallocToGlobal(GlobalVariable *GV,
       Value *NumElements = ConstantInt::get(IntPtrTy, AT->getNumElements());
       Instruction *Malloc = CallInst::CreateMalloc(CI, IntPtrTy, AllocSTy,
                                                    AllocSize, NumElements,
-                                                   CI->getName());
+                                                   0, CI->getName());
       Instruction *Cast = new BitCastInst(Malloc, CI->getType(), "tmp", CI);
       CI->replaceAllUsesWith(Cast);
       CI->eraseFromParent();
@@ -1600,13 +1601,15 @@ static bool TryToShrinkGlobalToBoolean(GlobalVariable *GV, Constant *OtherVal) {
       GVElType->isFloatingPointTy() ||
       GVElType->isPointerTy() || GVElType->isVectorTy())
     return false;
-  
+
   // Walk the use list of the global seeing if all the uses are load or store.
   // If there is anything else, bail out.
-  for (Value::use_iterator I = GV->use_begin(), E = GV->use_end(); I != E; ++I)
-    if (!isa<LoadInst>(I) && !isa<StoreInst>(I))
+  for (Value::use_iterator I = GV->use_begin(), E = GV->use_end(); I != E; ++I){
+    User *U = *I;
+    if (!isa<LoadInst>(U) && !isa<StoreInst>(U))
       return false;
-  
+  }
+
   DEBUG(dbgs() << "   *** SHRINKING TO BOOL: " << *GV);
   
   // Create the new global, initializing it to false.
@@ -2075,7 +2078,7 @@ static bool isSimpleEnoughPointerToCommit(Constant *C) {
         return false;
 
       // The first index must be zero.
-      ConstantInt *CI = dyn_cast<ConstantInt>(*next(CE->op_begin()));
+      ConstantInt *CI = dyn_cast<ConstantInt>(*llvm::next(CE->op_begin()));
       if (!CI || !CI->isZero()) return false;
 
       // The remaining indices must be compile-time known integers within the
@@ -2300,7 +2303,8 @@ static bool EvaluateFunction(Function *F, Constant *&RetVal,
       if (isa<InlineAsm>(CI->getCalledValue())) return false;
 
       // Resolve function pointers.
-      Function *Callee = dyn_cast<Function>(getVal(Values, CI->getCalledValue()));
+      Function *Callee = dyn_cast<Function>(getVal(Values,
+                                                   CI->getCalledValue()));
       if (!Callee) return false;  // Cannot resolve.
 
       SmallVector<Constant*, 8> Formals;

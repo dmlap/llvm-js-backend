@@ -113,8 +113,8 @@ namespace {
     static uint64_t getNearPower2(uint64_t x) {
       if (!x) return 0;
       unsigned at = CountLeadingZeros_64(x);
-      uint64_t complow = 1 << (63 - at);
-      uint64_t comphigh = 1 << (64 - at);
+      uint64_t complow = 1ULL << (63 - at);
+      uint64_t comphigh = 1ULL << (64 - at);
       //cerr << x << ":" << complow << ":" << comphigh << "\n";
       if (abs64(complow - x) <= abs64(comphigh - x))
         return complow;
@@ -128,19 +128,6 @@ namespace {
         return (y - x) == r;
       else
         return (x - y) == r;
-    }
-
-    static bool isFPZ(SDValue N) {
-      ConstantFPSDNode *CN = dyn_cast<ConstantFPSDNode>(N);
-      return (CN && (CN->getValueAPF().isZero()));
-    }
-    static bool isFPZn(SDValue N) {
-      ConstantFPSDNode *CN = dyn_cast<ConstantFPSDNode>(N);
-      return (CN && CN->getValueAPF().isNegZero());
-    }
-    static bool isFPZp(SDValue N) {
-      ConstantFPSDNode *CN = dyn_cast<ConstantFPSDNode>(N);
-      return (CN && CN->getValueAPF().isPosZero());
     }
 
   public:

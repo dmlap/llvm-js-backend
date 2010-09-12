@@ -60,15 +60,6 @@ namespace {
       return GV != 0 || CP != 0 || ES != 0 || JT != -1;
     }
 
-    bool hasBaseReg() const {
-      return Base.Reg.getNode() != 0;
-    }
-
-    void setBaseReg(SDValue Reg) {
-      BaseType = RegBase;
-      Base.Reg = Reg;
-    }
-
     void dump() {
       errs() << "MSP430ISelAddressMode " << this << '\n';
       if (BaseType == RegBase && Base.Reg.getNode() != 0) {
@@ -272,7 +263,8 @@ bool MSP430DAGToDAGISel::SelectAddr(SDNode *Op, SDValue N,
     AM.Base.Reg;
 
   if (AM.GV)
-    Disp = CurDAG->getTargetGlobalAddress(AM.GV, MVT::i16, AM.Disp,
+    Disp = CurDAG->getTargetGlobalAddress(AM.GV, Op->getDebugLoc(),
+                                          MVT::i16, AM.Disp,
                                           0/*AM.SymbolFlags*/);
   else if (AM.CP)
     Disp = CurDAG->getTargetConstantPool(AM.CP, MVT::i16,

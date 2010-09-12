@@ -18,6 +18,18 @@ define <4 x i16> @v_movi16b() nounwind {
 	ret <4 x i16> < i16 4096, i16 4096, i16 4096, i16 4096 >
 }
 
+define <4 x i16> @v_mvni16a() nounwind {
+;CHECK: v_mvni16a:
+;CHECK: vmvn.i16 d0, #0x10
+	ret <4 x i16> < i16 65519, i16 65519, i16 65519, i16 65519 >
+}
+
+define <4 x i16> @v_mvni16b() nounwind {
+;CHECK: v_mvni16b:
+;CHECK: vmvn.i16 d0, #0x1000
+	ret <4 x i16> < i16 61439, i16 61439, i16 61439, i16 61439 >
+}
+
 define <2 x i32> @v_movi32a() nounwind {
 ;CHECK: v_movi32a:
 ;CHECK: vmov.i32 d0, #0x20
@@ -52,6 +64,42 @@ define <2 x i32> @v_movi32f() nounwind {
 ;CHECK: v_movi32f:
 ;CHECK: vmov.i32 d0, #0x20FFFF
 	ret <2 x i32> < i32 2162687, i32 2162687 >
+}
+
+define <2 x i32> @v_mvni32a() nounwind {
+;CHECK: v_mvni32a:
+;CHECK: vmvn.i32 d0, #0x20
+	ret <2 x i32> < i32 4294967263, i32 4294967263 >
+}
+
+define <2 x i32> @v_mvni32b() nounwind {
+;CHECK: v_mvni32b:
+;CHECK: vmvn.i32 d0, #0x2000
+	ret <2 x i32> < i32 4294959103, i32 4294959103 >
+}
+
+define <2 x i32> @v_mvni32c() nounwind {
+;CHECK: v_mvni32c:
+;CHECK: vmvn.i32 d0, #0x200000
+	ret <2 x i32> < i32 4292870143, i32 4292870143 >
+}
+
+define <2 x i32> @v_mvni32d() nounwind {
+;CHECK: v_mvni32d:
+;CHECK: vmvn.i32 d0, #0x20000000
+	ret <2 x i32> < i32 3758096383, i32 3758096383 >
+}
+
+define <2 x i32> @v_mvni32e() nounwind {
+;CHECK: v_mvni32e:
+;CHECK: vmvn.i32 d0, #0x20FF
+	ret <2 x i32> < i32 4294958848, i32 4294958848 >
+}
+
+define <2 x i32> @v_mvni32f() nounwind {
+;CHECK: v_mvni32f:
+;CHECK: vmvn.i32 d0, #0x20FFFF
+	ret <2 x i32> < i32 4292804608, i32 4292804608 >
 }
 
 define <1 x i64> @v_movi64() nounwind {
@@ -144,7 +192,7 @@ define <8 x i16> @vmovls8(<8 x i8>* %A) nounwind {
 ;CHECK: vmovls8:
 ;CHECK: vmovl.s8
 	%tmp1 = load <8 x i8>* %A
-	%tmp2 = call <8 x i16> @llvm.arm.neon.vmovls.v8i16(<8 x i8> %tmp1)
+	%tmp2 = sext <8 x i8> %tmp1 to <8 x i16>
 	ret <8 x i16> %tmp2
 }
 
@@ -152,7 +200,7 @@ define <4 x i32> @vmovls16(<4 x i16>* %A) nounwind {
 ;CHECK: vmovls16:
 ;CHECK: vmovl.s16
 	%tmp1 = load <4 x i16>* %A
-	%tmp2 = call <4 x i32> @llvm.arm.neon.vmovls.v4i32(<4 x i16> %tmp1)
+	%tmp2 = sext <4 x i16> %tmp1 to <4 x i32>
 	ret <4 x i32> %tmp2
 }
 
@@ -160,7 +208,7 @@ define <2 x i64> @vmovls32(<2 x i32>* %A) nounwind {
 ;CHECK: vmovls32:
 ;CHECK: vmovl.s32
 	%tmp1 = load <2 x i32>* %A
-	%tmp2 = call <2 x i64> @llvm.arm.neon.vmovls.v2i64(<2 x i32> %tmp1)
+	%tmp2 = sext <2 x i32> %tmp1 to <2 x i64>
 	ret <2 x i64> %tmp2
 }
 
@@ -168,7 +216,7 @@ define <8 x i16> @vmovlu8(<8 x i8>* %A) nounwind {
 ;CHECK: vmovlu8:
 ;CHECK: vmovl.u8
 	%tmp1 = load <8 x i8>* %A
-	%tmp2 = call <8 x i16> @llvm.arm.neon.vmovlu.v8i16(<8 x i8> %tmp1)
+	%tmp2 = zext <8 x i8> %tmp1 to <8 x i16>
 	ret <8 x i16> %tmp2
 }
 
@@ -176,7 +224,7 @@ define <4 x i32> @vmovlu16(<4 x i16>* %A) nounwind {
 ;CHECK: vmovlu16:
 ;CHECK: vmovl.u16
 	%tmp1 = load <4 x i16>* %A
-	%tmp2 = call <4 x i32> @llvm.arm.neon.vmovlu.v4i32(<4 x i16> %tmp1)
+	%tmp2 = zext <4 x i16> %tmp1 to <4 x i32>
 	ret <4 x i32> %tmp2
 }
 
@@ -184,23 +232,15 @@ define <2 x i64> @vmovlu32(<2 x i32>* %A) nounwind {
 ;CHECK: vmovlu32:
 ;CHECK: vmovl.u32
 	%tmp1 = load <2 x i32>* %A
-	%tmp2 = call <2 x i64> @llvm.arm.neon.vmovlu.v2i64(<2 x i32> %tmp1)
+	%tmp2 = zext <2 x i32> %tmp1 to <2 x i64>
 	ret <2 x i64> %tmp2
 }
-
-declare <8 x i16> @llvm.arm.neon.vmovls.v8i16(<8 x i8>) nounwind readnone
-declare <4 x i32> @llvm.arm.neon.vmovls.v4i32(<4 x i16>) nounwind readnone
-declare <2 x i64> @llvm.arm.neon.vmovls.v2i64(<2 x i32>) nounwind readnone
-
-declare <8 x i16> @llvm.arm.neon.vmovlu.v8i16(<8 x i8>) nounwind readnone
-declare <4 x i32> @llvm.arm.neon.vmovlu.v4i32(<4 x i16>) nounwind readnone
-declare <2 x i64> @llvm.arm.neon.vmovlu.v2i64(<2 x i32>) nounwind readnone
 
 define <8 x i8> @vmovni16(<8 x i16>* %A) nounwind {
 ;CHECK: vmovni16:
 ;CHECK: vmovn.i16
 	%tmp1 = load <8 x i16>* %A
-	%tmp2 = call <8 x i8> @llvm.arm.neon.vmovn.v8i8(<8 x i16> %tmp1)
+	%tmp2 = trunc <8 x i16> %tmp1 to <8 x i8>
 	ret <8 x i8> %tmp2
 }
 
@@ -208,7 +248,7 @@ define <4 x i16> @vmovni32(<4 x i32>* %A) nounwind {
 ;CHECK: vmovni32:
 ;CHECK: vmovn.i32
 	%tmp1 = load <4 x i32>* %A
-	%tmp2 = call <4 x i16> @llvm.arm.neon.vmovn.v4i16(<4 x i32> %tmp1)
+	%tmp2 = trunc <4 x i32> %tmp1 to <4 x i16>
 	ret <4 x i16> %tmp2
 }
 
@@ -216,13 +256,9 @@ define <2 x i32> @vmovni64(<2 x i64>* %A) nounwind {
 ;CHECK: vmovni64:
 ;CHECK: vmovn.i64
 	%tmp1 = load <2 x i64>* %A
-	%tmp2 = call <2 x i32> @llvm.arm.neon.vmovn.v2i32(<2 x i64> %tmp1)
+	%tmp2 = trunc <2 x i64> %tmp1 to <2 x i32>
 	ret <2 x i32> %tmp2
 }
-
-declare <8 x i8>  @llvm.arm.neon.vmovn.v8i8(<8 x i16>) nounwind readnone
-declare <4 x i16> @llvm.arm.neon.vmovn.v4i16(<4 x i32>) nounwind readnone
-declare <2 x i32> @llvm.arm.neon.vmovn.v2i32(<2 x i64>) nounwind readnone
 
 define <8 x i8> @vqmovns16(<8 x i16>* %A) nounwind {
 ;CHECK: vqmovns16:

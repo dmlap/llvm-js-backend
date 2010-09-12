@@ -20,10 +20,14 @@ add_llvm_library(LLVMTransformUtils
   Mem2Reg.cpp
   PromoteMemoryToRegister.cpp
   SSAUpdater.cpp
-  SSI.cpp
   SimplifyCFG.cpp
   UnifyFunctionExitNodes.cpp
   ValueMapper.cpp
   )
 
-target_link_libraries (LLVMTransformUtils LLVMSupport)
+target_link_libraries(LLVMTransformUtils
+  LLVMAnalysis
+  LLVMCore
+  LLVMTarget
+  LLVMipa
+  )

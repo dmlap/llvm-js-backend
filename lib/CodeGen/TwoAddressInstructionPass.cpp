@@ -138,7 +138,7 @@ namespace {
 
   public:
     static char ID; // Pass identification, replacement for typeid
-    TwoAddressInstructionPass() : MachineFunctionPass(&ID) {}
+    TwoAddressInstructionPass() : MachineFunctionPass(ID) {}
 
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
       AU.setPreservesCFG();
@@ -159,10 +159,10 @@ namespace {
 }
 
 char TwoAddressInstructionPass::ID = 0;
-static RegisterPass<TwoAddressInstructionPass>
-X("twoaddressinstruction", "Two-Address instruction pass");
+INITIALIZE_PASS(TwoAddressInstructionPass, "twoaddressinstruction",
+                "Two-Address instruction pass", false, false);
 
-const PassInfo *const llvm::TwoAddressInstructionPassID = &X;
+char &llvm::TwoAddressInstructionPassID = TwoAddressInstructionPass::ID;
 
 /// Sink3AddrInstruction - A two-address instruction has been converted to a
 /// three-address instruction to avoid clobbering a register. Try to sink it
@@ -380,26 +380,18 @@ static bool isCopyToReg(MachineInstr &MI, const TargetInstrInfo *TII,
                         bool &IsSrcPhys, bool &IsDstPhys) {
   SrcReg = 0;
   DstReg = 0;
-  unsigned SrcSubIdx, DstSubIdx;
-  if (!TII->isMoveInstr(MI, SrcReg, DstReg, SrcSubIdx, DstSubIdx)) {
-    if (MI.isCopy() || MI.isExtractSubreg()) {
-      DstReg = MI.getOperand(0).getReg();
-      SrcReg = MI.getOperand(1).getReg();
-    } else if (MI.isInsertSubreg()) {
-      DstReg = MI.getOperand(0).getReg();
-      SrcReg = MI.getOperand(2).getReg();
-    } else if (MI.isSubregToReg()) {
-      DstReg = MI.getOperand(0).getReg();
-      SrcReg = MI.getOperand(2).getReg();
-    }
-  }
+  if (MI.isCopy()) {
+    DstReg = MI.getOperand(0).getReg();
+    SrcReg = MI.getOperand(1).getReg();
+  } else if (MI.isInsertSubreg() || MI.isSubregToReg()) {
+    DstReg = MI.getOperand(0).getReg();
+    SrcReg = MI.getOperand(2).getReg();
+  } else
+    return false;
 
-  if (DstReg) {
-    IsSrcPhys = TargetRegisterInfo::isPhysicalRegister(SrcReg);
-    IsDstPhys = TargetRegisterInfo::isPhysicalRegister(DstReg);
-    return true;
-  }
-  return false;
+  IsSrcPhys = TargetRegisterInfo::isPhysicalRegister(SrcReg);
+  IsDstPhys = TargetRegisterInfo::isPhysicalRegister(DstReg);
+  return true;
 }
 
 /// isKilled - Test if the given register value, which is used by the given
@@ -1154,10 +1146,8 @@ bool TwoAddressInstructionPass::runOnMachineFunction(MachineFunction &MF) {
             ReMatRegs.set(regB);
             ++NumReMats;
           } else {
-            bool Emitted = TII->copyRegToReg(*mbbi, mi, regA, regB, rc, rc,
-                                             mi->getDebugLoc());
-            (void)Emitted;
-            assert(Emitted && "Unable to issue a copy instruction!\n");
+            BuildMI(*mbbi, mi, mi->getDebugLoc(), TII->get(TargetOpcode::COPY),
+                    regA).addReg(regB);
           }
 
           MachineBasicBlock::iterator prevMI = prior(mi);
@@ -1216,6 +1206,19 @@ bool TwoAddressInstructionPass::runOnMachineFunction(MachineFunction &MF) {
         MadeChange = true;
 
         DEBUG(dbgs() << "\t\trewrite to:\t" << *mi);
+      }
+
+      // Rewrite INSERT_SUBREG as COPY now that we no longer need SSA form.
+      if (mi->isInsertSubreg()) {
+        // From %reg = INSERT_SUBREG %reg, %subreg, subidx
+        // To   %reg:subidx = COPY %subreg
+        unsigned SubIdx = mi->getOperand(3).getImm();
+        mi->RemoveOperand(3);
+        assert(mi->getOperand(0).getSubReg() == 0 && "Unexpected subreg idx");
+        mi->getOperand(0).setSubReg(SubIdx);
+        mi->RemoveOperand(1);
+        mi->setDesc(TII->get(TargetOpcode::COPY));
+        DEBUG(dbgs() << "\t\tconvert to:\t" << *mi);
       }
 
       // Clear TiedOperands here instead of at the top of the loop
@@ -1278,7 +1281,7 @@ TwoAddressInstructionPass::CoalesceExtSubRegs(SmallVector<unsigned,4> &Srcs,
     if (SrcDefMI->getParent() != DstDefMI->getParent())
       continue;
 
-    // If there are no other uses than extract_subreg which feed into
+    // If there are no other uses than copies which feed into
     // the reg_sequence, then we might be able to coalesce them.
     bool CanCoalesce = true;
     SmallVector<unsigned, 4> SrcSubIndices, DstSubIndices;
@@ -1286,13 +1289,11 @@ TwoAddressInstructionPass::CoalesceExtSubRegs(SmallVector<unsigned,4> &Srcs,
            UI = MRI->use_nodbg_begin(SrcReg),
            UE = MRI->use_nodbg_end(); UI != UE; ++UI) {
       MachineInstr *UseMI = &*UI;
-      if (!UseMI->isExtractSubreg() ||
-          UseMI->getOperand(0).getReg() != DstReg ||
-          UseMI->getOperand(1).getSubReg() != 0) {
+      if (!UseMI->isCopy() || UseMI->getOperand(0).getReg() != DstReg) {
         CanCoalesce = false;
         break;
       }
-      SrcSubIndices.push_back(UseMI->getOperand(2).getImm());
+      SrcSubIndices.push_back(UseMI->getOperand(1).getSubReg());
       DstSubIndices.push_back(UseMI->getOperand(0).getSubReg());
     }
 
@@ -1327,9 +1328,9 @@ TwoAddressInstructionPass::CoalesceExtSubRegs(SmallVector<unsigned,4> &Srcs,
            UI = MRI->use_nodbg_begin(SrcReg),
            UE = MRI->use_nodbg_end(); UI != UE; ++UI) {
       MachineInstr *UseMI = &*UI;
-      assert(UseMI->isExtractSubreg());
+      assert(UseMI->isCopy());
       unsigned DstSubIdx = UseMI->getOperand(0).getSubReg();
-      unsigned SrcSubIdx = UseMI->getOperand(2).getImm();
+      unsigned SrcSubIdx = UseMI->getOperand(1).getSubReg();
       assert(DstSubIdx != 0 && "missing subreg from RegSequence elimination");
       if ((NewDstSubIdx == 0 &&
            TRI->composeSubRegIndices(NewSrcSubIdx, DstSubIdx) != SrcSubIdx) ||
@@ -1344,27 +1345,13 @@ TwoAddressInstructionPass::CoalesceExtSubRegs(SmallVector<unsigned,4> &Srcs,
     if (!CanCoalesce)
       continue;
 
-    // Insert a copy or an extract to replace the original extracts.
+    // Insert a copy to replace the original.
     MachineBasicBlock::iterator InsertLoc = SomeMI;
-    if (NewSrcSubIdx) {
-      // Insert an extract subreg.
-      BuildMI(*SomeMI->getParent(), InsertLoc, SomeMI->getDebugLoc(),
-              TII->get(TargetOpcode::EXTRACT_SUBREG), DstReg)
-        .addReg(SrcReg).addImm(NewSrcSubIdx);
-    } else if (NewDstSubIdx) {
-      // Do a subreg insertion.
-      BuildMI(*SomeMI->getParent(), InsertLoc, SomeMI->getDebugLoc(),
-              TII->get(TargetOpcode::INSERT_SUBREG), DstReg)
-        .addReg(DstReg).addReg(SrcReg).addImm(NewDstSubIdx);
-    } else {
-      // Insert a copy.
-      bool Emitted =
-        TII->copyRegToReg(*SomeMI->getParent(), InsertLoc, DstReg, SrcReg,
-                          MRI->getRegClass(DstReg), MRI->getRegClass(SrcReg),
-                          SomeMI->getDebugLoc());
-      (void)Emitted;
-    }
-    MachineBasicBlock::iterator CopyMI = prior(InsertLoc);
+    MachineInstr *CopyMI = BuildMI(*SomeMI->getParent(), SomeMI,
+                                   SomeMI->getDebugLoc(),
+                                   TII->get(TargetOpcode::COPY))
+      .addReg(DstReg, RegState::Define, NewDstSubIdx)
+      .addReg(SrcReg, 0, NewSrcSubIdx);
 
     // Remove all the old extract instructions.
     for (MachineRegisterInfo::use_nodbg_iterator
@@ -1374,11 +1361,10 @@ TwoAddressInstructionPass::CoalesceExtSubRegs(SmallVector<unsigned,4> &Srcs,
       ++UI;
       if (UseMI == CopyMI)
         continue;
-      assert(UseMI->isExtractSubreg());
+      assert(UseMI->isCopy());
       // Move any kills to the new copy or extract instruction.
       if (UseMI->getOperand(1).isKill()) {
-        MachineOperand *KillMO = CopyMI->findRegisterUseOperand(SrcReg);
-        KillMO->setIsKill();
+        CopyMI->getOperand(1).setIsKill();
         if (LV)
           // Update live variables
           LV->replaceKillInstruction(SrcReg, UseMI, &*CopyMI);
@@ -1439,15 +1425,13 @@ bool TwoAddressInstructionPass::EliminateRegSequences() {
       }
       IsImpDef = false;
 
-      // Remember EXTRACT_SUBREG sources. These might be candidate for
-      // coalescing.
-      if (DefMI->isExtractSubreg())
+      // Remember COPY sources. These might be candidate for coalescing.
+      if (DefMI->isCopy() && DefMI->getOperand(1).getSubReg())
         RealSrcs.push_back(DefMI->getOperand(1).getReg());
 
-      if (!Seen.insert(SrcReg) ||
-          MI->getParent() != DefMI->getParent() ||
-          !MI->getOperand(i).isKill() ||
-          HasOtherRegSequenceUses(SrcReg, MI, MRI)) {
+      bool isKill = MI->getOperand(i).isKill();
+      if (!Seen.insert(SrcReg) || MI->getParent() != DefMI->getParent() ||
+          !isKill || HasOtherRegSequenceUses(SrcReg, MI, MRI)) {
         // REG_SEQUENCE cannot have duplicated operands, add a copy.
         // Also add an copy if the source is live-in the block. We don't want
         // to end up with a partial-redef of a livein, e.g.
@@ -1462,29 +1446,32 @@ bool TwoAddressInstructionPass::EliminateRegSequences() {
         //
         // If the REG_SEQUENCE doesn't kill its source, keeping live variables
         // correctly up to date becomes very difficult. Insert a copy.
-        //
-        const TargetRegisterClass *RC = MRI->getRegClass(SrcReg);
-        unsigned NewReg = MRI->createVirtualRegister(RC);
+
+        // Defer any kill flag to the last operand using SrcReg. Otherwise, we
+        // might insert a COPY that uses SrcReg after is was killed.
+        if (isKill)
+          for (unsigned j = i + 2; j < e; j += 2)
+            if (MI->getOperand(j).getReg() == SrcReg) {
+              MI->getOperand(j).setIsKill();
+              isKill = false;
+              break;
+            }
+
         MachineBasicBlock::iterator InsertLoc = MI;
-        bool Emitted =
-          TII->copyRegToReg(*MI->getParent(), InsertLoc, NewReg, SrcReg, RC, RC,
-                            MI->getDebugLoc());
-        (void)Emitted;
-        assert(Emitted && "Unable to issue a copy instruction!\n");
-        MI->getOperand(i).setReg(NewReg);
-        if (MI->getOperand(i).isKill()) {
-          MachineBasicBlock::iterator CopyMI = prior(InsertLoc);
-          MachineOperand *KillMO = CopyMI->findRegisterUseOperand(SrcReg);
-          KillMO->setIsKill();
-          if (LV)
-            // Update live variables
-            LV->replaceKillInstruction(SrcReg, MI, &*CopyMI);
-        }
+        MachineInstr *CopyMI = BuildMI(*MI->getParent(), InsertLoc,
+                                MI->getDebugLoc(), TII->get(TargetOpcode::COPY))
+            .addReg(DstReg, RegState::Define, MI->getOperand(i+1).getImm())
+            .addReg(SrcReg, getKillRegState(isKill));
+        MI->getOperand(i).setReg(0);
+        if (LV && isKill)
+          LV->replaceKillInstruction(SrcReg, MI, CopyMI);
+        DEBUG(dbgs() << "Inserted: " << *CopyMI);
       }
     }
 
     for (unsigned i = 1, e = MI->getNumOperands(); i < e; i += 2) {
       unsigned SrcReg = MI->getOperand(i).getReg();
+      if (!SrcReg) continue;
       unsigned SubIdx = MI->getOperand(i+1).getImm();
       UpdateRegSequenceSrcs(SrcReg, DstReg, SubIdx, MRI, *TRI);
     }
