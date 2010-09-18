@@ -12,7 +12,6 @@
 
 #include "llvm/AbstractTypeUser.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/System/DataTypes.h"
 #include "llvm/ADT/GraphTraits.h"
 #include <string>
 #include <vector>
@@ -213,7 +212,7 @@ public:
   bool isFloatingPointTy() const { return ID == FloatTyID || ID == DoubleTyID ||
       ID == X86_FP80TyID || ID == FP128TyID || ID == PPC_FP128TyID; }
 
-  /// isPPC_FP128Ty - Return true if this is X86 MMX.
+  /// isX86_MMXTy - Return true if this is X86 MMX.
   bool isX86_MMXTy() const { return ID == X86_MMXTyID; }
 
   /// isFPOrFPVectorTy - Return true if this is a FP type or a vector of FP.
@@ -314,7 +313,8 @@ public:
   ///
   bool isSized() const {
     // If it's a primitive, it is always sized.
-    if (ID == IntegerTyID || isFloatingPointTy() || ID == PointerTyID)
+    if (ID == IntegerTyID || isFloatingPointTy() || ID == PointerTyID ||
+        ID == X86_MMXTyID)
       return true;
     // If it is not something that can have a size (e.g. a function or label),
     // it doesn't have a size.

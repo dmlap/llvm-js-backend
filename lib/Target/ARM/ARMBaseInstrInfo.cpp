@@ -573,84 +573,6 @@ unsigned ARMBaseInstrInfo::GetInstSizeInBytes(const MachineInstr *MI) const {
   return 0; // Not reached
 }
 
-unsigned
-ARMBaseInstrInfo::isLoadFromStackSlot(const MachineInstr *MI,
-                                      int &FrameIndex) const {
-  switch (MI->getOpcode()) {
-  default: break;
-  case ARM::LDR:
-  case ARM::t2LDRs:  // FIXME: don't use t2LDRs to access frame.
-    if (MI->getOperand(1).isFI() &&
-        MI->getOperand(2).isReg() &&
-        MI->getOperand(3).isImm() &&
-        MI->getOperand(2).getReg() == 0 &&
-        MI->getOperand(3).getImm() == 0) {
-      FrameIndex = MI->getOperand(1).getIndex();
-      return MI->getOperand(0).getReg();
-    }
-    break;
-  case ARM::t2LDRi12:
-  case ARM::tRestore:
-    if (MI->getOperand(1).isFI() &&
-        MI->getOperand(2).isImm() &&
-        MI->getOperand(2).getImm() == 0) {
-      FrameIndex = MI->getOperand(1).getIndex();
-      return MI->getOperand(0).getReg();
-    }
-    break;
-  case ARM::VLDRD:
-  case ARM::VLDRS:
-    if (MI->getOperand(1).isFI() &&
-        MI->getOperand(2).isImm() &&
-        MI->getOperand(2).getImm() == 0) {
-      FrameIndex = MI->getOperand(1).getIndex();
-      return MI->getOperand(0).getReg();
-    }
-    break;
-  }
-
-  return 0;
-}
-
-unsigned
-ARMBaseInstrInfo::isStoreToStackSlot(const MachineInstr *MI,
-                                     int &FrameIndex) const {
-  switch (MI->getOpcode()) {
-  default: break;
-  case ARM::STR:
-  case ARM::t2STRs: // FIXME: don't use t2STRs to access frame.
-    if (MI->getOperand(1).isFI() &&
-        MI->getOperand(2).isReg() &&
-        MI->getOperand(3).isImm() &&
-        MI->getOperand(2).getReg() == 0 &&
-        MI->getOperand(3).getImm() == 0) {
-      FrameIndex = MI->getOperand(1).getIndex();
-      return MI->getOperand(0).getReg();
-    }
-    break;
-  case ARM::t2STRi12:
-  case ARM::tSpill:
-    if (MI->getOperand(1).isFI() &&
-        MI->getOperand(2).isImm() &&
-        MI->getOperand(2).getImm() == 0) {
-      FrameIndex = MI->getOperand(1).getIndex();
-      return MI->getOperand(0).getReg();
-    }
-    break;
-  case ARM::VSTRD:
-  case ARM::VSTRS:
-    if (MI->getOperand(1).isFI() &&
-        MI->getOperand(2).isImm() &&
-        MI->getOperand(2).getImm() == 0) {
-      FrameIndex = MI->getOperand(1).getIndex();
-      return MI->getOperand(0).getReg();
-    }
-    break;
-  }
-
-  return 0;
-}
-
 void ARMBaseInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator I, DebugLoc DL,
                                    unsigned DestReg, unsigned SrcReg,
@@ -748,7 +670,7 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
   case ARM::QPR_VFP2RegClassID:
   case ARM::QPR_8RegClassID:
     if (Align >= 16 && getRegisterInfo().needsStackRealignment(MF)) {
-      AddDefaultPred(BuildMI(MBB, I, DL, get(ARM::VST1q))
+      AddDefaultPred(BuildMI(MBB, I, DL, get(ARM::VST1q64Pseudo))
                      .addFrameIndex(FI).addImm(16)
                      .addReg(SrcReg, getKillRegState(isKill))
                      .addMemOperand(MMO));
@@ -765,13 +687,10 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
     if (Align >= 16 && getRegisterInfo().canRealignStack(MF)) {
       // FIXME: It's possible to only store part of the QQ register if the
       // spilled def has a sub-register index.
-      MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(ARM::VST1d64Q))
-        .addFrameIndex(FI).addImm(16);
-      MIB = AddDReg(MIB, SrcReg, ARM::dsub_0, getKillRegState(isKill), TRI);
-      MIB = AddDReg(MIB, SrcReg, ARM::dsub_1, 0, TRI);
-      MIB = AddDReg(MIB, SrcReg, ARM::dsub_2, 0, TRI);
-      MIB = AddDReg(MIB, SrcReg, ARM::dsub_3, 0, TRI);
-      AddDefaultPred(MIB.addMemOperand(MMO));
+      AddDefaultPred(BuildMI(MBB, I, DL, get(ARM::VST1d64QPseudo))
+                     .addFrameIndex(FI).addImm(16)
+                     .addReg(SrcReg, getKillRegState(isKill))
+                     .addMemOperand(MMO));
     } else {
       MachineInstrBuilder MIB =
         AddDefaultPred(BuildMI(MBB, I, DL, get(ARM::VSTMD))
@@ -803,6 +722,54 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
   default:
     llvm_unreachable("Unknown regclass!");
   }
+}
+
+unsigned
+ARMBaseInstrInfo::isStoreToStackSlot(const MachineInstr *MI,
+                                     int &FrameIndex) const {
+  switch (MI->getOpcode()) {
+  default: break;
+  case ARM::STR:
+  case ARM::t2STRs: // FIXME: don't use t2STRs to access frame.
+    if (MI->getOperand(1).isFI() &&
+        MI->getOperand(2).isReg() &&
+        MI->getOperand(3).isImm() &&
+        MI->getOperand(2).getReg() == 0 &&
+        MI->getOperand(3).getImm() == 0) {
+      FrameIndex = MI->getOperand(1).getIndex();
+      return MI->getOperand(0).getReg();
+    }
+    break;
+  case ARM::t2STRi12:
+  case ARM::tSpill:
+  case ARM::VSTRD:
+  case ARM::VSTRS:
+    if (MI->getOperand(1).isFI() &&
+        MI->getOperand(2).isImm() &&
+        MI->getOperand(2).getImm() == 0) {
+      FrameIndex = MI->getOperand(1).getIndex();
+      return MI->getOperand(0).getReg();
+    }
+    break;
+  case ARM::VST1q64Pseudo:
+    if (MI->getOperand(0).isFI() &&
+        MI->getOperand(2).getSubReg() == 0) {
+      FrameIndex = MI->getOperand(0).getIndex();
+      return MI->getOperand(2).getReg();
+    }
+    break;
+  case ARM::VSTMQ:
+    if (MI->getOperand(1).isFI() &&
+        MI->getOperand(2).isImm() &&
+        MI->getOperand(2).getImm() == ARM_AM::getAM4ModeImm(ARM_AM::ia) &&
+        MI->getOperand(0).getSubReg() == 0) {
+      FrameIndex = MI->getOperand(1).getIndex();
+      return MI->getOperand(0).getReg();
+    }
+    break;
+  }
+
+  return 0;
 }
 
 void ARMBaseInstrInfo::
@@ -846,7 +813,7 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
   case ARM::QPR_VFP2RegClassID:
   case ARM::QPR_8RegClassID:
     if (Align >= 16 && getRegisterInfo().needsStackRealignment(MF)) {
-      AddDefaultPred(BuildMI(MBB, I, DL, get(ARM::VLD1q), DestReg)
+      AddDefaultPred(BuildMI(MBB, I, DL, get(ARM::VLD1q64Pseudo), DestReg)
                      .addFrameIndex(FI).addImm(16)
                      .addMemOperand(MMO));
     } else {
@@ -859,12 +826,9 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
   case ARM::QQPRRegClassID:
   case ARM::QQPR_VFP2RegClassID:
     if (Align >= 16 && getRegisterInfo().canRealignStack(MF)) {
-      MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(ARM::VLD1d64Q));
-      MIB = AddDReg(MIB, DestReg, ARM::dsub_0, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::dsub_1, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::dsub_2, RegState::Define, TRI);
-      MIB = AddDReg(MIB, DestReg, ARM::dsub_3, RegState::Define, TRI);
-      AddDefaultPred(MIB.addFrameIndex(FI).addImm(16).addMemOperand(MMO));
+      AddDefaultPred(BuildMI(MBB, I, DL, get(ARM::VLD1d64QPseudo), DestReg)
+                     .addFrameIndex(FI).addImm(16)
+                     .addMemOperand(MMO));
     } else {
       MachineInstrBuilder MIB =
         AddDefaultPred(BuildMI(MBB, I, DL, get(ARM::VLDMD))
@@ -896,6 +860,54 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
   default:
     llvm_unreachable("Unknown regclass!");
   }
+}
+
+unsigned
+ARMBaseInstrInfo::isLoadFromStackSlot(const MachineInstr *MI,
+                                      int &FrameIndex) const {
+  switch (MI->getOpcode()) {
+  default: break;
+  case ARM::LDR:
+  case ARM::t2LDRs:  // FIXME: don't use t2LDRs to access frame.
+    if (MI->getOperand(1).isFI() &&
+        MI->getOperand(2).isReg() &&
+        MI->getOperand(3).isImm() &&
+        MI->getOperand(2).getReg() == 0 &&
+        MI->getOperand(3).getImm() == 0) {
+      FrameIndex = MI->getOperand(1).getIndex();
+      return MI->getOperand(0).getReg();
+    }
+    break;
+  case ARM::t2LDRi12:
+  case ARM::tRestore:
+  case ARM::VLDRD:
+  case ARM::VLDRS:
+    if (MI->getOperand(1).isFI() &&
+        MI->getOperand(2).isImm() &&
+        MI->getOperand(2).getImm() == 0) {
+      FrameIndex = MI->getOperand(1).getIndex();
+      return MI->getOperand(0).getReg();
+    }
+    break;
+  case ARM::VLD1q64Pseudo:
+    if (MI->getOperand(1).isFI() &&
+        MI->getOperand(0).getSubReg() == 0) {
+      FrameIndex = MI->getOperand(1).getIndex();
+      return MI->getOperand(0).getReg();
+    }
+    break;
+  case ARM::VLDMQ:
+    if (MI->getOperand(1).isFI() &&
+        MI->getOperand(2).isImm() &&
+        MI->getOperand(2).getImm() == ARM_AM::getAM4ModeImm(ARM_AM::ia) &&
+        MI->getOperand(0).getSubReg() == 0) {
+      FrameIndex = MI->getOperand(1).getIndex();
+      return MI->getOperand(0).getReg();
+    }
+    break;
+  }
+
+  return 0;
 }
 
 MachineInstr*
@@ -1372,6 +1384,21 @@ AnalyzeCompare(const MachineInstr *MI, unsigned &SrcReg, int &CmpValue) const {
     SrcReg = MI->getOperand(0).getReg();
     CmpValue = MI->getOperand(1).getImm();
     return true;
+  case ARM::TSTri: {
+    MachineBasicBlock::const_iterator MII(MI);
+    if (MI->getParent()->begin() == MII)
+      return false;
+    const MachineInstr *AND = llvm::prior(MII);
+    if (AND->getOpcode() != ARM::ANDri)
+      return false;
+    if (MI->getOperand(0).getReg() == AND->getOperand(1).getReg() &&
+        MI->getOperand(1).getImm() == AND->getOperand(2).getImm()) {
+      SrcReg = AND->getOperand(0).getReg();
+      CmpValue = 0;
+      return true;
+    }
+    }
+    break;
   }
 
   return false;
@@ -1421,6 +1448,8 @@ OptimizeCompareInstr(MachineInstr *CmpInstr, unsigned SrcReg, int CmpValue,
   switch (MI->getOpcode()) {
   default: break;
   case ARM::ADDri:
+  case ARM::ANDri:
+  case ARM::t2ANDri:
   case ARM::SUBri:
   case ARM::t2ADDri:
   case ARM::t2SUBri:
@@ -1443,7 +1472,7 @@ ARMBaseInstrInfo::getNumMicroOps(const MachineInstr *MI,
 
   const TargetInstrDesc &Desc = MI->getDesc();
   unsigned Class = Desc.getSchedClass();
-  unsigned UOps = ItinData->Itineratries[Class].NumMicroOps;
+  unsigned UOps = ItinData->Itineraries[Class].NumMicroOps;
   if (UOps)
     return UOps;
 

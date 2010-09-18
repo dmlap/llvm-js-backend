@@ -129,61 +129,37 @@ def nModImm : Operand<i32> {
 // NEON load / store instructions
 //===----------------------------------------------------------------------===//
 
-// Use vldmia to load a Q register as a D register pair.
-// This is equivalent to VLDMD except that it has a Q register operand
-// instead of a pair of D registers.
+// Use VLDM to load a Q register as a D register pair.
+// This is a pseudo instruction that is expanded to VLDMD after reg alloc.
 def VLDMQ
-  : AXDI4<(outs QPR:$dst), (ins addrmode4:$addr, pred:$p),
-          IndexModeNone, IIC_fpLoadm,
-          "vldm${addr:submode}${p}\t$addr, ${dst:dregpair}", "",
-          [(set QPR:$dst, (v2f64 (load addrmode4:$addr)))]>;
+  : PseudoVFPLdStM<(outs QPR:$dst), (ins addrmode4:$addr), IIC_fpLoadm, "",
+                   [(set QPR:$dst, (v2f64 (load addrmode4:$addr)))]>;
 
-let mayLoad = 1, neverHasSideEffects = 1 in {
-// Use vld1 to load a Q register as a D register pair.
-// This alternative to VLDMQ allows an alignment to be specified.
-// This is equivalent to VLD1q64 except that it has a Q register operand.
-def VLD1q
-  : NLdSt<0,0b10,0b1010,0b1100, (outs QPR:$dst), (ins addrmode6:$addr),
-          IIC_VLD1, "vld1", "64", "${dst:dregpair}, $addr", "", []>;
-} // mayLoad = 1, neverHasSideEffects = 1
-
-// Use vstmia to store a Q register as a D register pair.
-// This is equivalent to VSTMD except that it has a Q register operand
-// instead of a pair of D registers.
+// Use VSTM to store a Q register as a D register pair.
+// This is a pseudo instruction that is expanded to VSTMD after reg alloc.
 def VSTMQ
-  : AXDI4<(outs), (ins QPR:$src, addrmode4:$addr, pred:$p),
-          IndexModeNone, IIC_fpStorem,
-          "vstm${addr:submode}${p}\t$addr, ${src:dregpair}", "",
-          [(store (v2f64 QPR:$src), addrmode4:$addr)]>;
-
-let mayStore = 1, neverHasSideEffects = 1 in {
-// Use vst1 to store a Q register as a D register pair.
-// This alternative to VSTMQ allows an alignment to be specified.
-// This is equivalent to VST1q64 except that it has a Q register operand.
-def VST1q
-  : NLdSt<0,0b00,0b1010,0b1100, (outs), (ins addrmode6:$addr, QPR:$src),
-          IIC_VST, "vst1", "64", "${src:dregpair}, $addr", "", []>;
-} // mayStore = 1, neverHasSideEffects = 1
+  : PseudoVFPLdStM<(outs), (ins QPR:$src, addrmode4:$addr), IIC_fpStorem, "",
+                   [(store (v2f64 QPR:$src), addrmode4:$addr)]>;
 
 let mayLoad = 1, neverHasSideEffects = 1, hasExtraDefRegAllocReq = 1 in {
 
 // Classes for VLD* pseudo-instructions with multi-register operands.
 // These are expanded to real instructions after register allocation.
-class VLDQPseudo
-  : PseudoNLdSt<(outs QPR:$dst), (ins addrmode6:$addr), IIC_VLD2, "">;
-class VLDQWBPseudo
+class VLDQPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs QPR:$dst), (ins addrmode6:$addr), itin, "">;
+class VLDQWBPseudo<InstrItinClass itin>
   : PseudoNLdSt<(outs QPR:$dst, GPR:$wb),
-                (ins addrmode6:$addr, am6offset:$offset), IIC_VLD2,
+                (ins addrmode6:$addr, am6offset:$offset), itin,
                 "$addr.addr = $wb">;
-class VLDQQPseudo
-  : PseudoNLdSt<(outs QQPR:$dst), (ins addrmode6:$addr), IIC_VLD4, "">;
-class VLDQQWBPseudo
+class VLDQQPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs QQPR:$dst), (ins addrmode6:$addr), itin, "">;
+class VLDQQWBPseudo<InstrItinClass itin>
   : PseudoNLdSt<(outs QQPR:$dst, GPR:$wb),
-                (ins addrmode6:$addr, am6offset:$offset), IIC_VLD4,
+                (ins addrmode6:$addr, am6offset:$offset), itin,
                 "$addr.addr = $wb">;
-class VLDQQQQWBPseudo
+class VLDQQQQWBPseudo<InstrItinClass itin>
   : PseudoNLdSt<(outs QQQQPR:$dst, GPR:$wb),
-                (ins addrmode6:$addr, am6offset:$offset, QQQQPR:$src), IIC_VLD4,
+                (ins addrmode6:$addr, am6offset:$offset, QQQQPR:$src), itin,
                 "$addr.addr = $wb, $src = $dst">;
 
 //   VLD1     : Vector Load (multiple single elements)
@@ -193,7 +169,7 @@ class VLD1D<bits<4> op7_4, string Dt>
           "vld1", Dt, "\\{$dst\\}, $addr", "", []>;
 class VLD1Q<bits<4> op7_4, string Dt>
   : NLdSt<0,0b10,0b1010,op7_4, (outs DPR:$dst1, DPR:$dst2),
-          (ins addrmode6:$addr), IIC_VLD1,
+          (ins addrmode6:$addr), IIC_VLD2,
           "vld1", Dt, "\\{$dst1, $dst2\\}, $addr", "", []>;
 
 def  VLD1d8   : VLD1D<0b0000, "8">;
@@ -206,10 +182,10 @@ def  VLD1q16  : VLD1Q<0b0100, "16">;
 def  VLD1q32  : VLD1Q<0b1000, "32">;
 def  VLD1q64  : VLD1Q<0b1100, "64">;
 
-def  VLD1q8Pseudo  : VLDQPseudo;
-def  VLD1q16Pseudo : VLDQPseudo;
-def  VLD1q32Pseudo : VLDQPseudo;
-def  VLD1q64Pseudo : VLDQPseudo;
+def  VLD1q8Pseudo  : VLDQPseudo<IIC_VLD2>;
+def  VLD1q16Pseudo : VLDQPseudo<IIC_VLD2>;
+def  VLD1q32Pseudo : VLDQPseudo<IIC_VLD2>;
+def  VLD1q64Pseudo : VLDQPseudo<IIC_VLD2>;
 
 // ...with address register writeback:
 class VLD1DWB<bits<4> op7_4, string Dt>
@@ -218,9 +194,9 @@ class VLD1DWB<bits<4> op7_4, string Dt>
           "vld1", Dt, "\\{$dst\\}, $addr$offset",
           "$addr.addr = $wb", []>;
 class VLD1QWB<bits<4> op7_4, string Dt>
-  : NLdSt<0,0b10,0b1010,op7_4, (outs QPR:$dst, GPR:$wb),
-          (ins addrmode6:$addr, am6offset:$offset), IIC_VLD1,
-          "vld1", Dt, "${dst:dregpair}, $addr$offset",
+  : NLdSt<0,0b10,0b1010,op7_4, (outs DPR:$dst1, DPR:$dst2, GPR:$wb),
+          (ins addrmode6:$addr, am6offset:$offset), IIC_VLD2,
+          "vld1", Dt, "\\{$dst1, $dst2\\}, $addr$offset",
           "$addr.addr = $wb", []>;
 
 def VLD1d8_UPD  : VLD1DWB<0b0000, "8">;
@@ -233,19 +209,19 @@ def VLD1q16_UPD : VLD1QWB<0b0100, "16">;
 def VLD1q32_UPD : VLD1QWB<0b1000, "32">;
 def VLD1q64_UPD : VLD1QWB<0b1100, "64">;
 
-def VLD1q8Pseudo_UPD  : VLDQWBPseudo;
-def VLD1q16Pseudo_UPD : VLDQWBPseudo;
-def VLD1q32Pseudo_UPD : VLDQWBPseudo;
-def VLD1q64Pseudo_UPD : VLDQWBPseudo;
+def VLD1q8Pseudo_UPD  : VLDQWBPseudo<IIC_VLD2>;
+def VLD1q16Pseudo_UPD : VLDQWBPseudo<IIC_VLD2>;
+def VLD1q32Pseudo_UPD : VLDQWBPseudo<IIC_VLD2>;
+def VLD1q64Pseudo_UPD : VLDQWBPseudo<IIC_VLD2>;
 
 // ...with 3 registers (some of these are only for the disassembler):
 class VLD1D3<bits<4> op7_4, string Dt>
   : NLdSt<0,0b10,0b0110,op7_4, (outs DPR:$dst1, DPR:$dst2, DPR:$dst3),
-          (ins addrmode6:$addr), IIC_VLD1, "vld1", Dt,
+          (ins addrmode6:$addr), IIC_VLD3, "vld1", Dt,
           "\\{$dst1, $dst2, $dst3\\}, $addr", "", []>;
 class VLD1D3WB<bits<4> op7_4, string Dt>
   : NLdSt<0,0b10,0b0110,op7_4, (outs DPR:$dst1, DPR:$dst2, DPR:$dst3, GPR:$wb),
-          (ins addrmode6:$addr, am6offset:$offset), IIC_VLD1, "vld1", Dt,
+          (ins addrmode6:$addr, am6offset:$offset), IIC_VLD3, "vld1", Dt,
           "\\{$dst1, $dst2, $dst3\\}, $addr$offset", "$addr.addr = $wb", []>;
 
 def VLD1d8T      : VLD1D3<0b0000, "8">;
@@ -258,18 +234,18 @@ def VLD1d16T_UPD : VLD1D3WB<0b0100, "16">;
 def VLD1d32T_UPD : VLD1D3WB<0b1000, "32">;
 def VLD1d64T_UPD : VLD1D3WB<0b1100, "64">;
 
-def VLD1d64TPseudo     : VLDQQPseudo;
-def VLD1d64TPseudo_UPD : VLDQQWBPseudo;
+def VLD1d64TPseudo     : VLDQQPseudo<IIC_VLD3>;
+def VLD1d64TPseudo_UPD : VLDQQWBPseudo<IIC_VLD3>;
 
 // ...with 4 registers (some of these are only for the disassembler):
 class VLD1D4<bits<4> op7_4, string Dt>
   : NLdSt<0,0b10,0b0010,op7_4,(outs DPR:$dst1, DPR:$dst2, DPR:$dst3, DPR:$dst4),
-          (ins addrmode6:$addr), IIC_VLD1, "vld1", Dt,
+          (ins addrmode6:$addr), IIC_VLD4, "vld1", Dt,
           "\\{$dst1, $dst2, $dst3, $dst4\\}, $addr", "", []>;
 class VLD1D4WB<bits<4> op7_4, string Dt>
   : NLdSt<0,0b10,0b0010,op7_4,
           (outs DPR:$dst1, DPR:$dst2, DPR:$dst3, DPR:$dst4, GPR:$wb),
-          (ins addrmode6:$addr, am6offset:$offset), IIC_VLD1, "vld1", Dt,
+          (ins addrmode6:$addr, am6offset:$offset), IIC_VLD4, "vld1", Dt,
           "\\{$dst1, $dst2, $dst3, $dst4\\}, $addr$offset", "$addr.addr = $wb",
           []>;
 
@@ -283,8 +259,8 @@ def VLD1d16Q_UPD : VLD1D4WB<0b0100, "16">;
 def VLD1d32Q_UPD : VLD1D4WB<0b1000, "32">;
 def VLD1d64Q_UPD : VLD1D4WB<0b1100, "64">;
 
-def VLD1d64QPseudo     : VLDQQPseudo;
-def VLD1d64QPseudo_UPD : VLDQQWBPseudo;
+def VLD1d64QPseudo     : VLDQQPseudo<IIC_VLD4>;
+def VLD1d64QPseudo_UPD : VLDQQWBPseudo<IIC_VLD4>;
 
 //   VLD2     : Vector Load (multiple 2-element structures)
 class VLD2D<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -294,7 +270,7 @@ class VLD2D<bits<4> op11_8, bits<4> op7_4, string Dt>
 class VLD2Q<bits<4> op7_4, string Dt>
   : NLdSt<0, 0b10, 0b0011, op7_4,
           (outs DPR:$dst1, DPR:$dst2, DPR:$dst3, DPR:$dst4),
-          (ins addrmode6:$addr), IIC_VLD2,
+          (ins addrmode6:$addr), IIC_VLD4,
           "vld2", Dt, "\\{$dst1, $dst2, $dst3, $dst4\\}, $addr", "", []>;
 
 def  VLD2d8   : VLD2D<0b1000, 0b0000, "8">;
@@ -305,13 +281,13 @@ def  VLD2q8   : VLD2Q<0b0000, "8">;
 def  VLD2q16  : VLD2Q<0b0100, "16">;
 def  VLD2q32  : VLD2Q<0b1000, "32">;
 
-def  VLD2d8Pseudo  : VLDQPseudo;
-def  VLD2d16Pseudo : VLDQPseudo;
-def  VLD2d32Pseudo : VLDQPseudo;
+def  VLD2d8Pseudo  : VLDQPseudo<IIC_VLD2>;
+def  VLD2d16Pseudo : VLDQPseudo<IIC_VLD2>;
+def  VLD2d32Pseudo : VLDQPseudo<IIC_VLD2>;
 
-def  VLD2q8Pseudo  : VLDQQPseudo;
-def  VLD2q16Pseudo : VLDQQPseudo;
-def  VLD2q32Pseudo : VLDQQPseudo;
+def  VLD2q8Pseudo  : VLDQQPseudo<IIC_VLD4>;
+def  VLD2q16Pseudo : VLDQQPseudo<IIC_VLD4>;
+def  VLD2q32Pseudo : VLDQQPseudo<IIC_VLD4>;
 
 // ...with address register writeback:
 class VLD2DWB<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -322,7 +298,7 @@ class VLD2DWB<bits<4> op11_8, bits<4> op7_4, string Dt>
 class VLD2QWB<bits<4> op7_4, string Dt>
   : NLdSt<0, 0b10, 0b0011, op7_4,
           (outs DPR:$dst1, DPR:$dst2, DPR:$dst3, DPR:$dst4, GPR:$wb),
-          (ins addrmode6:$addr, am6offset:$offset), IIC_VLD2,
+          (ins addrmode6:$addr, am6offset:$offset), IIC_VLD4,
           "vld2", Dt, "\\{$dst1, $dst2, $dst3, $dst4\\}, $addr$offset",
           "$addr.addr = $wb", []>;
 
@@ -334,13 +310,13 @@ def VLD2q8_UPD  : VLD2QWB<0b0000, "8">;
 def VLD2q16_UPD : VLD2QWB<0b0100, "16">;
 def VLD2q32_UPD : VLD2QWB<0b1000, "32">;
 
-def VLD2d8Pseudo_UPD  : VLDQWBPseudo;
-def VLD2d16Pseudo_UPD : VLDQWBPseudo;
-def VLD2d32Pseudo_UPD : VLDQWBPseudo;
+def VLD2d8Pseudo_UPD  : VLDQWBPseudo<IIC_VLD2>;
+def VLD2d16Pseudo_UPD : VLDQWBPseudo<IIC_VLD2>;
+def VLD2d32Pseudo_UPD : VLDQWBPseudo<IIC_VLD2>;
 
-def VLD2q8Pseudo_UPD  : VLDQQWBPseudo;
-def VLD2q16Pseudo_UPD : VLDQQWBPseudo;
-def VLD2q32Pseudo_UPD : VLDQQWBPseudo;
+def VLD2q8Pseudo_UPD  : VLDQQWBPseudo<IIC_VLD4>;
+def VLD2q16Pseudo_UPD : VLDQQWBPseudo<IIC_VLD4>;
+def VLD2q32Pseudo_UPD : VLDQQWBPseudo<IIC_VLD4>;
 
 // ...with double-spaced registers (for disassembly only):
 def VLD2b8      : VLD2D<0b1001, 0b0000, "8">;
@@ -360,9 +336,9 @@ def  VLD3d8   : VLD3D<0b0100, 0b0000, "8">;
 def  VLD3d16  : VLD3D<0b0100, 0b0100, "16">;
 def  VLD3d32  : VLD3D<0b0100, 0b1000, "32">;
 
-def  VLD3d8Pseudo  : VLDQQPseudo;
-def  VLD3d16Pseudo : VLDQQPseudo;
-def  VLD3d32Pseudo : VLDQQPseudo;
+def  VLD3d8Pseudo  : VLDQQPseudo<IIC_VLD3>;
+def  VLD3d16Pseudo : VLDQQPseudo<IIC_VLD3>;
+def  VLD3d32Pseudo : VLDQQPseudo<IIC_VLD3>;
 
 // ...with address register writeback:
 class VLD3DWB<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -376,9 +352,9 @@ def VLD3d8_UPD  : VLD3DWB<0b0100, 0b0000, "8">;
 def VLD3d16_UPD : VLD3DWB<0b0100, 0b0100, "16">;
 def VLD3d32_UPD : VLD3DWB<0b0100, 0b1000, "32">;
 
-def VLD3d8Pseudo_UPD  : VLDQQWBPseudo;
-def VLD3d16Pseudo_UPD : VLDQQWBPseudo;
-def VLD3d32Pseudo_UPD : VLDQQWBPseudo;
+def VLD3d8Pseudo_UPD  : VLDQQWBPseudo<IIC_VLD3>;
+def VLD3d16Pseudo_UPD : VLDQQWBPseudo<IIC_VLD3>;
+def VLD3d32Pseudo_UPD : VLDQQWBPseudo<IIC_VLD3>;
 
 // ...with double-spaced registers (non-updating versions for disassembly only):
 def VLD3q8      : VLD3D<0b0101, 0b0000, "8">;
@@ -388,14 +364,14 @@ def VLD3q8_UPD  : VLD3DWB<0b0101, 0b0000, "8">;
 def VLD3q16_UPD : VLD3DWB<0b0101, 0b0100, "16">;
 def VLD3q32_UPD : VLD3DWB<0b0101, 0b1000, "32">;
 
-def VLD3q8Pseudo_UPD  : VLDQQQQWBPseudo;
-def VLD3q16Pseudo_UPD : VLDQQQQWBPseudo;
-def VLD3q32Pseudo_UPD : VLDQQQQWBPseudo;
+def VLD3q8Pseudo_UPD  : VLDQQQQWBPseudo<IIC_VLD3>;
+def VLD3q16Pseudo_UPD : VLDQQQQWBPseudo<IIC_VLD3>;
+def VLD3q32Pseudo_UPD : VLDQQQQWBPseudo<IIC_VLD3>;
 
 // ...alternate versions to be allocated odd register numbers:
-def VLD3q8oddPseudo_UPD  : VLDQQQQWBPseudo;
-def VLD3q16oddPseudo_UPD : VLDQQQQWBPseudo;
-def VLD3q32oddPseudo_UPD : VLDQQQQWBPseudo;
+def VLD3q8oddPseudo_UPD  : VLDQQQQWBPseudo<IIC_VLD3>;
+def VLD3q16oddPseudo_UPD : VLDQQQQWBPseudo<IIC_VLD3>;
+def VLD3q32oddPseudo_UPD : VLDQQQQWBPseudo<IIC_VLD3>;
 
 //   VLD4     : Vector Load (multiple 4-element structures)
 class VLD4D<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -408,9 +384,9 @@ def  VLD4d8   : VLD4D<0b0000, 0b0000, "8">;
 def  VLD4d16  : VLD4D<0b0000, 0b0100, "16">;
 def  VLD4d32  : VLD4D<0b0000, 0b1000, "32">;
 
-def  VLD4d8Pseudo  : VLDQQPseudo;
-def  VLD4d16Pseudo : VLDQQPseudo;
-def  VLD4d32Pseudo : VLDQQPseudo;
+def  VLD4d8Pseudo  : VLDQQPseudo<IIC_VLD4>;
+def  VLD4d16Pseudo : VLDQQPseudo<IIC_VLD4>;
+def  VLD4d32Pseudo : VLDQQPseudo<IIC_VLD4>;
 
 // ...with address register writeback:
 class VLD4DWB<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -424,9 +400,9 @@ def VLD4d8_UPD  : VLD4DWB<0b0000, 0b0000, "8">;
 def VLD4d16_UPD : VLD4DWB<0b0000, 0b0100, "16">;
 def VLD4d32_UPD : VLD4DWB<0b0000, 0b1000, "32">;
 
-def VLD4d8Pseudo_UPD  : VLDQQWBPseudo;
-def VLD4d16Pseudo_UPD : VLDQQWBPseudo;
-def VLD4d32Pseudo_UPD : VLDQQWBPseudo;
+def VLD4d8Pseudo_UPD  : VLDQQWBPseudo<IIC_VLD4>;
+def VLD4d16Pseudo_UPD : VLDQQWBPseudo<IIC_VLD4>;
+def VLD4d32Pseudo_UPD : VLDQQWBPseudo<IIC_VLD4>;
 
 // ...with double-spaced registers (non-updating versions for disassembly only):
 def VLD4q8      : VLD4D<0b0001, 0b0000, "8">;
@@ -436,14 +412,41 @@ def VLD4q8_UPD  : VLD4DWB<0b0001, 0b0000, "8">;
 def VLD4q16_UPD : VLD4DWB<0b0001, 0b0100, "16">;
 def VLD4q32_UPD : VLD4DWB<0b0001, 0b1000, "32">;
 
-def VLD4q8Pseudo_UPD  : VLDQQQQWBPseudo;
-def VLD4q16Pseudo_UPD : VLDQQQQWBPseudo;
-def VLD4q32Pseudo_UPD : VLDQQQQWBPseudo;
+def VLD4q8Pseudo_UPD  : VLDQQQQWBPseudo<IIC_VLD4>;
+def VLD4q16Pseudo_UPD : VLDQQQQWBPseudo<IIC_VLD4>;
+def VLD4q32Pseudo_UPD : VLDQQQQWBPseudo<IIC_VLD4>;
 
 // ...alternate versions to be allocated odd register numbers:
-def VLD4q8oddPseudo_UPD  : VLDQQQQWBPseudo;
-def VLD4q16oddPseudo_UPD : VLDQQQQWBPseudo;
-def VLD4q32oddPseudo_UPD : VLDQQQQWBPseudo;
+def VLD4q8oddPseudo_UPD  : VLDQQQQWBPseudo<IIC_VLD4>;
+def VLD4q16oddPseudo_UPD : VLDQQQQWBPseudo<IIC_VLD4>;
+def VLD4q32oddPseudo_UPD : VLDQQQQWBPseudo<IIC_VLD4>;
+
+// Classes for VLD*LN pseudo-instructions with multi-register operands.
+// These are expanded to real instructions after register allocation.
+class VLDQLNPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs QPR:$dst),
+                (ins addrmode6:$addr, QPR:$src, nohash_imm:$lane),
+                itin, "$src = $dst">;
+class VLDQLNWBPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs QPR:$dst, GPR:$wb),
+                (ins addrmode6:$addr, am6offset:$offset, QPR:$src,
+                 nohash_imm:$lane), itin, "$addr.addr = $wb, $src = $dst">;
+class VLDQQLNPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs QQPR:$dst),
+                (ins addrmode6:$addr, QQPR:$src, nohash_imm:$lane),
+                itin, "$src = $dst">;
+class VLDQQLNWBPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs QQPR:$dst, GPR:$wb),
+                (ins addrmode6:$addr, am6offset:$offset, QQPR:$src,
+                 nohash_imm:$lane), itin, "$addr.addr = $wb, $src = $dst">;
+class VLDQQQQLNPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs QQQQPR:$dst),
+                (ins addrmode6:$addr, QQQQPR:$src, nohash_imm:$lane),
+                itin, "$src = $dst">;
+class VLDQQQQLNWBPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs QQQQPR:$dst, GPR:$wb),
+                (ins addrmode6:$addr, am6offset:$offset, QQQQPR:$src,
+                 nohash_imm:$lane), itin, "$addr.addr = $wb, $src = $dst">;
 
 //   VLD1LN   : Vector Load (single element to one lane)
 //   FIXME: Not yet implemented.
@@ -459,13 +462,16 @@ def VLD2LNd8  : VLD2LN<0b0001, {?,?,?,?}, "8">;
 def VLD2LNd16 : VLD2LN<0b0101, {?,?,0,?}, "16">;
 def VLD2LNd32 : VLD2LN<0b1001, {?,0,?,?}, "32">;
 
+def VLD2LNd8Pseudo  : VLDQLNPseudo<IIC_VLD2>;
+def VLD2LNd16Pseudo : VLDQLNPseudo<IIC_VLD2>;
+def VLD2LNd32Pseudo : VLDQLNPseudo<IIC_VLD2>;
+
 // ...with double-spaced registers:
 def VLD2LNq16 : VLD2LN<0b0101, {?,?,1,?}, "16">;
 def VLD2LNq32 : VLD2LN<0b1001, {?,1,?,?}, "32">;
 
-// ...alternate versions to be allocated odd register numbers:
-def VLD2LNq16odd : VLD2LN<0b0101, {?,?,1,?}, "16">;
-def VLD2LNq32odd : VLD2LN<0b1001, {?,1,?,?}, "32">;
+def VLD2LNq16Pseudo : VLDQQLNPseudo<IIC_VLD2>;
+def VLD2LNq32Pseudo : VLDQQLNPseudo<IIC_VLD2>;
 
 // ...with address register writeback:
 class VLD2LNWB<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -479,8 +485,15 @@ def VLD2LNd8_UPD  : VLD2LNWB<0b0001, {?,?,?,?}, "8">;
 def VLD2LNd16_UPD : VLD2LNWB<0b0101, {?,?,0,?}, "16">;
 def VLD2LNd32_UPD : VLD2LNWB<0b1001, {?,0,?,?}, "32">;
 
+def VLD2LNd8Pseudo_UPD  : VLDQLNWBPseudo<IIC_VLD2>;
+def VLD2LNd16Pseudo_UPD : VLDQLNWBPseudo<IIC_VLD2>;
+def VLD2LNd32Pseudo_UPD : VLDQLNWBPseudo<IIC_VLD2>;
+
 def VLD2LNq16_UPD : VLD2LNWB<0b0101, {?,?,1,?}, "16">;
 def VLD2LNq32_UPD : VLD2LNWB<0b1001, {?,1,?,?}, "32">;
+
+def VLD2LNq16Pseudo_UPD : VLDQQLNWBPseudo<IIC_VLD2>;
+def VLD2LNq32Pseudo_UPD : VLDQQLNWBPseudo<IIC_VLD2>;
 
 //   VLD3LN   : Vector Load (single 3-element structure to one lane)
 class VLD3LN<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -494,13 +507,16 @@ def VLD3LNd8  : VLD3LN<0b0010, {?,?,?,0}, "8">;
 def VLD3LNd16 : VLD3LN<0b0110, {?,?,0,0}, "16">;
 def VLD3LNd32 : VLD3LN<0b1010, {?,0,0,0}, "32">;
 
+def VLD3LNd8Pseudo  : VLDQQLNPseudo<IIC_VLD3>;
+def VLD3LNd16Pseudo : VLDQQLNPseudo<IIC_VLD3>;
+def VLD3LNd32Pseudo : VLDQQLNPseudo<IIC_VLD3>;
+
 // ...with double-spaced registers:
 def VLD3LNq16 : VLD3LN<0b0110, {?,?,1,0}, "16">;
 def VLD3LNq32 : VLD3LN<0b1010, {?,1,0,0}, "32">;
 
-// ...alternate versions to be allocated odd register numbers:
-def VLD3LNq16odd : VLD3LN<0b0110, {?,?,1,0}, "16">;
-def VLD3LNq32odd : VLD3LN<0b1010, {?,1,0,0}, "32">;
+def VLD3LNq16Pseudo : VLDQQQQLNPseudo<IIC_VLD3>;
+def VLD3LNq32Pseudo : VLDQQQQLNPseudo<IIC_VLD3>;
 
 // ...with address register writeback:
 class VLD3LNWB<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -517,8 +533,15 @@ def VLD3LNd8_UPD  : VLD3LNWB<0b0010, {?,?,?,0}, "8">;
 def VLD3LNd16_UPD : VLD3LNWB<0b0110, {?,?,0,0}, "16">;
 def VLD3LNd32_UPD : VLD3LNWB<0b1010, {?,0,0,0}, "32">;
 
+def VLD3LNd8Pseudo_UPD  : VLDQQLNWBPseudo<IIC_VLD3>;
+def VLD3LNd16Pseudo_UPD : VLDQQLNWBPseudo<IIC_VLD3>;
+def VLD3LNd32Pseudo_UPD : VLDQQLNWBPseudo<IIC_VLD3>;
+
 def VLD3LNq16_UPD : VLD3LNWB<0b0110, {?,?,1,0}, "16">;
 def VLD3LNq32_UPD : VLD3LNWB<0b1010, {?,1,0,0}, "32">;
+
+def VLD3LNq16Pseudo_UPD : VLDQQQQLNWBPseudo<IIC_VLD3>;
+def VLD3LNq32Pseudo_UPD : VLDQQQQLNWBPseudo<IIC_VLD3>;
 
 //   VLD4LN   : Vector Load (single 4-element structure to one lane)
 class VLD4LN<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -533,13 +556,16 @@ def VLD4LNd8  : VLD4LN<0b0011, {?,?,?,?}, "8">;
 def VLD4LNd16 : VLD4LN<0b0111, {?,?,0,?}, "16">;
 def VLD4LNd32 : VLD4LN<0b1011, {?,0,?,?}, "32">;
 
+def VLD4LNd8Pseudo  : VLDQQLNPseudo<IIC_VLD4>;
+def VLD4LNd16Pseudo : VLDQQLNPseudo<IIC_VLD4>;
+def VLD4LNd32Pseudo : VLDQQLNPseudo<IIC_VLD4>;
+
 // ...with double-spaced registers:
 def VLD4LNq16 : VLD4LN<0b0111, {?,?,1,?}, "16">;
 def VLD4LNq32 : VLD4LN<0b1011, {?,1,?,?}, "32">;
 
-// ...alternate versions to be allocated odd register numbers:
-def VLD4LNq16odd : VLD4LN<0b0111, {?,?,1,?}, "16">;
-def VLD4LNq32odd : VLD4LN<0b1011, {?,1,?,?}, "32">;
+def VLD4LNq16Pseudo : VLDQQQQLNPseudo<IIC_VLD4>;
+def VLD4LNq32Pseudo : VLDQQQQLNPseudo<IIC_VLD4>;
 
 // ...with address register writeback:
 class VLD4LNWB<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -556,8 +582,15 @@ def VLD4LNd8_UPD  : VLD4LNWB<0b0011, {?,?,?,?}, "8">;
 def VLD4LNd16_UPD : VLD4LNWB<0b0111, {?,?,0,?}, "16">;
 def VLD4LNd32_UPD : VLD4LNWB<0b1011, {?,0,?,?}, "32">;
 
+def VLD4LNd8Pseudo_UPD  : VLDQQLNWBPseudo<IIC_VLD4>;
+def VLD4LNd16Pseudo_UPD : VLDQQLNWBPseudo<IIC_VLD4>;
+def VLD4LNd32Pseudo_UPD : VLDQQLNWBPseudo<IIC_VLD4>;
+
 def VLD4LNq16_UPD : VLD4LNWB<0b0111, {?,?,1,?}, "16">;
 def VLD4LNq32_UPD : VLD4LNWB<0b1011, {?,1,?,?}, "32">;
+
+def VLD4LNq16Pseudo_UPD : VLDQQQQLNWBPseudo<IIC_VLD4>;
+def VLD4LNq32Pseudo_UPD : VLDQQQQLNWBPseudo<IIC_VLD4>;
 
 //   VLD1DUP  : Vector Load (single element to all lanes)
 //   VLD2DUP  : Vector Load (single 2-element structure to all lanes)
@@ -570,19 +603,19 @@ let mayStore = 1, neverHasSideEffects = 1, hasExtraSrcRegAllocReq = 1 in {
 
 // Classes for VST* pseudo-instructions with multi-register operands.
 // These are expanded to real instructions after register allocation.
-class VSTQPseudo
-  : PseudoNLdSt<(outs), (ins addrmode6:$addr, QPR:$src), IIC_VST, "">;
-class VSTQWBPseudo
+class VSTQPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs), (ins addrmode6:$addr, QPR:$src), itin, "">;
+class VSTQWBPseudo<InstrItinClass itin>
   : PseudoNLdSt<(outs GPR:$wb),
-                (ins addrmode6:$addr, am6offset:$offset, QPR:$src), IIC_VST,
+                (ins addrmode6:$addr, am6offset:$offset, QPR:$src), itin,
                 "$addr.addr = $wb">;
-class VSTQQPseudo
-  : PseudoNLdSt<(outs), (ins addrmode6:$addr, QQPR:$src), IIC_VST, "">;
-class VSTQQWBPseudo
+class VSTQQPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs), (ins addrmode6:$addr, QQPR:$src), itin, "">;
+class VSTQQWBPseudo<InstrItinClass itin>
   : PseudoNLdSt<(outs GPR:$wb),
-                (ins addrmode6:$addr, am6offset:$offset, QQPR:$src), IIC_VST,
+                (ins addrmode6:$addr, am6offset:$offset, QQPR:$src), itin,
                 "$addr.addr = $wb">;
-class VSTQQQQWBPseudo
+class VSTQQQQWBPseudo<InstrItinClass itin>
   : PseudoNLdSt<(outs GPR:$wb),
                 (ins addrmode6:$addr, am6offset:$offset, QQQQPR:$src), IIC_VST,
                 "$addr.addr = $wb">;
@@ -606,10 +639,10 @@ def  VST1q16  : VST1Q<0b0100, "16">;
 def  VST1q32  : VST1Q<0b1000, "32">;
 def  VST1q64  : VST1Q<0b1100, "64">;
 
-def  VST1q8Pseudo  : VSTQPseudo;
-def  VST1q16Pseudo : VSTQPseudo;
-def  VST1q32Pseudo : VSTQPseudo;
-def  VST1q64Pseudo : VSTQPseudo;
+def  VST1q8Pseudo  : VSTQPseudo<IIC_VST>;
+def  VST1q16Pseudo : VSTQPseudo<IIC_VST>;
+def  VST1q32Pseudo : VSTQPseudo<IIC_VST>;
+def  VST1q64Pseudo : VSTQPseudo<IIC_VST>;
 
 // ...with address register writeback:
 class VST1DWB<bits<4> op7_4, string Dt>
@@ -618,8 +651,9 @@ class VST1DWB<bits<4> op7_4, string Dt>
           "vst1", Dt, "\\{$src\\}, $addr$offset", "$addr.addr = $wb", []>;
 class VST1QWB<bits<4> op7_4, string Dt>
   : NLdSt<0, 0b00, 0b1010, op7_4, (outs GPR:$wb),
-          (ins addrmode6:$addr, am6offset:$offset, QPR:$src), IIC_VST,
-          "vst1", Dt, "${src:dregpair}, $addr$offset", "$addr.addr = $wb", []>;
+          (ins addrmode6:$addr, am6offset:$offset, DPR:$src1, DPR:$src2),
+          IIC_VST, "vst1", Dt, "\\{$src1, $src2\\}, $addr$offset",
+          "$addr.addr = $wb", []>;
 
 def VST1d8_UPD  : VST1DWB<0b0000, "8">;
 def VST1d16_UPD : VST1DWB<0b0100, "16">;
@@ -631,10 +665,10 @@ def VST1q16_UPD : VST1QWB<0b0100, "16">;
 def VST1q32_UPD : VST1QWB<0b1000, "32">;
 def VST1q64_UPD : VST1QWB<0b1100, "64">;
 
-def VST1q8Pseudo_UPD  : VSTQWBPseudo;
-def VST1q16Pseudo_UPD : VSTQWBPseudo;
-def VST1q32Pseudo_UPD : VSTQWBPseudo;
-def VST1q64Pseudo_UPD : VSTQWBPseudo;
+def VST1q8Pseudo_UPD  : VSTQWBPseudo<IIC_VST>;
+def VST1q16Pseudo_UPD : VSTQWBPseudo<IIC_VST>;
+def VST1q32Pseudo_UPD : VSTQWBPseudo<IIC_VST>;
+def VST1q64Pseudo_UPD : VSTQWBPseudo<IIC_VST>;
 
 // ...with 3 registers (some of these are only for the disassembler):
 class VST1D3<bits<4> op7_4, string Dt>
@@ -658,8 +692,8 @@ def VST1d16T_UPD : VST1D3WB<0b0100, "16">;
 def VST1d32T_UPD : VST1D3WB<0b1000, "32">;
 def VST1d64T_UPD : VST1D3WB<0b1100, "64">;
 
-def VST1d64TPseudo     : VSTQQPseudo;
-def VST1d64TPseudo_UPD : VSTQQWBPseudo;
+def VST1d64TPseudo     : VSTQQPseudo<IIC_VST>;
+def VST1d64TPseudo_UPD : VSTQQWBPseudo<IIC_VST>;
 
 // ...with 4 registers (some of these are only for the disassembler):
 class VST1D4<bits<4> op7_4, string Dt>
@@ -684,8 +718,8 @@ def VST1d16Q_UPD : VST1D4WB<0b0100, "16">;
 def VST1d32Q_UPD : VST1D4WB<0b1000, "32">;
 def VST1d64Q_UPD : VST1D4WB<0b1100, "64">;
 
-def VST1d64QPseudo     : VSTQQPseudo;
-def VST1d64QPseudo_UPD : VSTQQWBPseudo;
+def VST1d64QPseudo     : VSTQQPseudo<IIC_VST>;
+def VST1d64QPseudo_UPD : VSTQQWBPseudo<IIC_VST>;
 
 //   VST2     : Vector Store (multiple 2-element structures)
 class VST2D<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -706,13 +740,13 @@ def  VST2q8   : VST2Q<0b0000, "8">;
 def  VST2q16  : VST2Q<0b0100, "16">;
 def  VST2q32  : VST2Q<0b1000, "32">;
 
-def  VST2d8Pseudo  : VSTQPseudo;
-def  VST2d16Pseudo : VSTQPseudo;
-def  VST2d32Pseudo : VSTQPseudo;
+def  VST2d8Pseudo  : VSTQPseudo<IIC_VST>;
+def  VST2d16Pseudo : VSTQPseudo<IIC_VST>;
+def  VST2d32Pseudo : VSTQPseudo<IIC_VST>;
 
-def  VST2q8Pseudo  : VSTQQPseudo;
-def  VST2q16Pseudo : VSTQQPseudo;
-def  VST2q32Pseudo : VSTQQPseudo;
+def  VST2q8Pseudo  : VSTQQPseudo<IIC_VST>;
+def  VST2q16Pseudo : VSTQQPseudo<IIC_VST>;
+def  VST2q32Pseudo : VSTQQPseudo<IIC_VST>;
 
 // ...with address register writeback:
 class VST2DWB<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -735,13 +769,13 @@ def VST2q8_UPD  : VST2QWB<0b0000, "8">;
 def VST2q16_UPD : VST2QWB<0b0100, "16">;
 def VST2q32_UPD : VST2QWB<0b1000, "32">;
 
-def VST2d8Pseudo_UPD  : VSTQWBPseudo;
-def VST2d16Pseudo_UPD : VSTQWBPseudo;
-def VST2d32Pseudo_UPD : VSTQWBPseudo;
+def VST2d8Pseudo_UPD  : VSTQWBPseudo<IIC_VST>;
+def VST2d16Pseudo_UPD : VSTQWBPseudo<IIC_VST>;
+def VST2d32Pseudo_UPD : VSTQWBPseudo<IIC_VST>;
 
-def VST2q8Pseudo_UPD  : VSTQQWBPseudo;
-def VST2q16Pseudo_UPD : VSTQQWBPseudo;
-def VST2q32Pseudo_UPD : VSTQQWBPseudo;
+def VST2q8Pseudo_UPD  : VSTQQWBPseudo<IIC_VST>;
+def VST2q16Pseudo_UPD : VSTQQWBPseudo<IIC_VST>;
+def VST2q32Pseudo_UPD : VSTQQWBPseudo<IIC_VST>;
 
 // ...with double-spaced registers (for disassembly only):
 def VST2b8      : VST2D<0b1001, 0b0000, "8">;
@@ -761,9 +795,9 @@ def  VST3d8   : VST3D<0b0100, 0b0000, "8">;
 def  VST3d16  : VST3D<0b0100, 0b0100, "16">;
 def  VST3d32  : VST3D<0b0100, 0b1000, "32">;
 
-def  VST3d8Pseudo  : VSTQQPseudo;
-def  VST3d16Pseudo : VSTQQPseudo;
-def  VST3d32Pseudo : VSTQQPseudo;
+def  VST3d8Pseudo  : VSTQQPseudo<IIC_VST>;
+def  VST3d16Pseudo : VSTQQPseudo<IIC_VST>;
+def  VST3d32Pseudo : VSTQQPseudo<IIC_VST>;
 
 // ...with address register writeback:
 class VST3DWB<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -777,9 +811,9 @@ def VST3d8_UPD  : VST3DWB<0b0100, 0b0000, "8">;
 def VST3d16_UPD : VST3DWB<0b0100, 0b0100, "16">;
 def VST3d32_UPD : VST3DWB<0b0100, 0b1000, "32">;
 
-def VST3d8Pseudo_UPD  : VSTQQWBPseudo;
-def VST3d16Pseudo_UPD : VSTQQWBPseudo;
-def VST3d32Pseudo_UPD : VSTQQWBPseudo;
+def VST3d8Pseudo_UPD  : VSTQQWBPseudo<IIC_VST>;
+def VST3d16Pseudo_UPD : VSTQQWBPseudo<IIC_VST>;
+def VST3d32Pseudo_UPD : VSTQQWBPseudo<IIC_VST>;
 
 // ...with double-spaced registers (non-updating versions for disassembly only):
 def VST3q8      : VST3D<0b0101, 0b0000, "8">;
@@ -789,14 +823,14 @@ def VST3q8_UPD  : VST3DWB<0b0101, 0b0000, "8">;
 def VST3q16_UPD : VST3DWB<0b0101, 0b0100, "16">;
 def VST3q32_UPD : VST3DWB<0b0101, 0b1000, "32">;
 
-def VST3q8Pseudo_UPD  : VSTQQQQWBPseudo;
-def VST3q16Pseudo_UPD : VSTQQQQWBPseudo;
-def VST3q32Pseudo_UPD : VSTQQQQWBPseudo;
+def VST3q8Pseudo_UPD  : VSTQQQQWBPseudo<IIC_VST>;
+def VST3q16Pseudo_UPD : VSTQQQQWBPseudo<IIC_VST>;
+def VST3q32Pseudo_UPD : VSTQQQQWBPseudo<IIC_VST>;
 
 // ...alternate versions to be allocated odd register numbers:
-def VST3q8oddPseudo_UPD  : VSTQQQQWBPseudo;
-def VST3q16oddPseudo_UPD : VSTQQQQWBPseudo;
-def VST3q32oddPseudo_UPD : VSTQQQQWBPseudo;
+def VST3q8oddPseudo_UPD  : VSTQQQQWBPseudo<IIC_VST>;
+def VST3q16oddPseudo_UPD : VSTQQQQWBPseudo<IIC_VST>;
+def VST3q32oddPseudo_UPD : VSTQQQQWBPseudo<IIC_VST>;
 
 //   VST4     : Vector Store (multiple 4-element structures)
 class VST4D<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -809,9 +843,9 @@ def  VST4d8   : VST4D<0b0000, 0b0000, "8">;
 def  VST4d16  : VST4D<0b0000, 0b0100, "16">;
 def  VST4d32  : VST4D<0b0000, 0b1000, "32">;
 
-def  VST4d8Pseudo  : VSTQQPseudo;
-def  VST4d16Pseudo : VSTQQPseudo;
-def  VST4d32Pseudo : VSTQQPseudo;
+def  VST4d8Pseudo  : VSTQQPseudo<IIC_VST>;
+def  VST4d16Pseudo : VSTQQPseudo<IIC_VST>;
+def  VST4d32Pseudo : VSTQQPseudo<IIC_VST>;
 
 // ...with address register writeback:
 class VST4DWB<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -825,9 +859,9 @@ def VST4d8_UPD  : VST4DWB<0b0000, 0b0000, "8">;
 def VST4d16_UPD : VST4DWB<0b0000, 0b0100, "16">;
 def VST4d32_UPD : VST4DWB<0b0000, 0b1000, "32">;
 
-def VST4d8Pseudo_UPD  : VSTQQWBPseudo;
-def VST4d16Pseudo_UPD : VSTQQWBPseudo;
-def VST4d32Pseudo_UPD : VSTQQWBPseudo;
+def VST4d8Pseudo_UPD  : VSTQQWBPseudo<IIC_VST>;
+def VST4d16Pseudo_UPD : VSTQQWBPseudo<IIC_VST>;
+def VST4d32Pseudo_UPD : VSTQQWBPseudo<IIC_VST>;
 
 // ...with double-spaced registers (non-updating versions for disassembly only):
 def VST4q8      : VST4D<0b0001, 0b0000, "8">;
@@ -837,14 +871,38 @@ def VST4q8_UPD  : VST4DWB<0b0001, 0b0000, "8">;
 def VST4q16_UPD : VST4DWB<0b0001, 0b0100, "16">;
 def VST4q32_UPD : VST4DWB<0b0001, 0b1000, "32">;
 
-def VST4q8Pseudo_UPD  : VSTQQQQWBPseudo;
-def VST4q16Pseudo_UPD : VSTQQQQWBPseudo;
-def VST4q32Pseudo_UPD : VSTQQQQWBPseudo;
+def VST4q8Pseudo_UPD  : VSTQQQQWBPseudo<IIC_VST>;
+def VST4q16Pseudo_UPD : VSTQQQQWBPseudo<IIC_VST>;
+def VST4q32Pseudo_UPD : VSTQQQQWBPseudo<IIC_VST>;
 
 // ...alternate versions to be allocated odd register numbers:
-def VST4q8oddPseudo_UPD  : VSTQQQQWBPseudo;
-def VST4q16oddPseudo_UPD : VSTQQQQWBPseudo;
-def VST4q32oddPseudo_UPD : VSTQQQQWBPseudo;
+def VST4q8oddPseudo_UPD  : VSTQQQQWBPseudo<IIC_VST>;
+def VST4q16oddPseudo_UPD : VSTQQQQWBPseudo<IIC_VST>;
+def VST4q32oddPseudo_UPD : VSTQQQQWBPseudo<IIC_VST>;
+
+// Classes for VST*LN pseudo-instructions with multi-register operands.
+// These are expanded to real instructions after register allocation.
+class VSTQLNPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs), (ins addrmode6:$addr, QPR:$src, nohash_imm:$lane),
+                itin, "">;
+class VSTQLNWBPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs GPR:$wb),
+                (ins addrmode6:$addr, am6offset:$offset, QPR:$src,
+                 nohash_imm:$lane), itin, "$addr.addr = $wb">;
+class VSTQQLNPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs), (ins addrmode6:$addr, QQPR:$src, nohash_imm:$lane),
+                itin, "">;
+class VSTQQLNWBPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs GPR:$wb),
+                (ins addrmode6:$addr, am6offset:$offset, QQPR:$src,
+                 nohash_imm:$lane), itin, "$addr.addr = $wb">;
+class VSTQQQQLNPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs), (ins addrmode6:$addr, QQQQPR:$src, nohash_imm:$lane),
+                itin, "">;
+class VSTQQQQLNWBPseudo<InstrItinClass itin>
+  : PseudoNLdSt<(outs GPR:$wb),
+                (ins addrmode6:$addr, am6offset:$offset, QQQQPR:$src,
+                 nohash_imm:$lane), itin, "$addr.addr = $wb">;
 
 //   VST1LN   : Vector Store (single element from one lane)
 //   FIXME: Not yet implemented.
@@ -860,13 +918,16 @@ def VST2LNd8  : VST2LN<0b0001, {?,?,?,?}, "8">;
 def VST2LNd16 : VST2LN<0b0101, {?,?,0,?}, "16">;
 def VST2LNd32 : VST2LN<0b1001, {?,0,?,?}, "32">;
 
+def VST2LNd8Pseudo  : VSTQLNPseudo<IIC_VST>;
+def VST2LNd16Pseudo : VSTQLNPseudo<IIC_VST>;
+def VST2LNd32Pseudo : VSTQLNPseudo<IIC_VST>;
+
 // ...with double-spaced registers:
 def VST2LNq16 : VST2LN<0b0101, {?,?,1,?}, "16">;
 def VST2LNq32 : VST2LN<0b1001, {?,1,?,?}, "32">;
 
-// ...alternate versions to be allocated odd register numbers:
-def VST2LNq16odd : VST2LN<0b0101, {?,?,1,?}, "16">;
-def VST2LNq32odd : VST2LN<0b1001, {?,1,?,?}, "32">;
+def VST2LNq16Pseudo : VSTQQLNPseudo<IIC_VST>;
+def VST2LNq32Pseudo : VSTQQLNPseudo<IIC_VST>;
 
 // ...with address register writeback:
 class VST2LNWB<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -880,8 +941,15 @@ def VST2LNd8_UPD  : VST2LNWB<0b0001, {?,?,?,?}, "8">;
 def VST2LNd16_UPD : VST2LNWB<0b0101, {?,?,0,?}, "16">;
 def VST2LNd32_UPD : VST2LNWB<0b1001, {?,0,?,?}, "32">;
 
+def VST2LNd8Pseudo_UPD  : VSTQLNWBPseudo<IIC_VST>;
+def VST2LNd16Pseudo_UPD : VSTQLNWBPseudo<IIC_VST>;
+def VST2LNd32Pseudo_UPD : VSTQLNWBPseudo<IIC_VST>;
+
 def VST2LNq16_UPD : VST2LNWB<0b0101, {?,?,1,?}, "16">;
 def VST2LNq32_UPD : VST2LNWB<0b1001, {?,1,?,?}, "32">;
+
+def VST2LNq16Pseudo_UPD : VSTQQLNWBPseudo<IIC_VST>;
+def VST2LNq32Pseudo_UPD : VSTQQLNWBPseudo<IIC_VST>;
 
 //   VST3LN   : Vector Store (single 3-element structure from one lane)
 class VST3LN<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -894,13 +962,16 @@ def VST3LNd8  : VST3LN<0b0010, {?,?,?,0}, "8">;
 def VST3LNd16 : VST3LN<0b0110, {?,?,0,0}, "16">;
 def VST3LNd32 : VST3LN<0b1010, {?,0,0,0}, "32">;
 
+def VST3LNd8Pseudo  : VSTQQLNPseudo<IIC_VST>;
+def VST3LNd16Pseudo : VSTQQLNPseudo<IIC_VST>;
+def VST3LNd32Pseudo : VSTQQLNPseudo<IIC_VST>;
+
 // ...with double-spaced registers:
 def VST3LNq16 : VST3LN<0b0110, {?,?,1,0}, "16">;
 def VST3LNq32 : VST3LN<0b1010, {?,1,0,0}, "32">;
 
-// ...alternate versions to be allocated odd register numbers:
-def VST3LNq16odd : VST3LN<0b0110, {?,?,1,0}, "16">;
-def VST3LNq32odd : VST3LN<0b1010, {?,1,0,0}, "32">;
+def VST3LNq16Pseudo : VSTQQQQLNPseudo<IIC_VST>;
+def VST3LNq32Pseudo : VSTQQQQLNPseudo<IIC_VST>;
 
 // ...with address register writeback:
 class VST3LNWB<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -915,8 +986,15 @@ def VST3LNd8_UPD  : VST3LNWB<0b0010, {?,?,?,0}, "8">;
 def VST3LNd16_UPD : VST3LNWB<0b0110, {?,?,0,0}, "16">;
 def VST3LNd32_UPD : VST3LNWB<0b1010, {?,0,0,0}, "32">;
 
+def VST3LNd8Pseudo_UPD  : VSTQQLNWBPseudo<IIC_VST>;
+def VST3LNd16Pseudo_UPD : VSTQQLNWBPseudo<IIC_VST>;
+def VST3LNd32Pseudo_UPD : VSTQQLNWBPseudo<IIC_VST>;
+
 def VST3LNq16_UPD : VST3LNWB<0b0110, {?,?,1,0}, "16">;
 def VST3LNq32_UPD : VST3LNWB<0b1010, {?,1,0,0}, "32">;
+
+def VST3LNq16Pseudo_UPD : VSTQQQQLNWBPseudo<IIC_VST>;
+def VST3LNq32Pseudo_UPD : VSTQQQQLNWBPseudo<IIC_VST>;
 
 //   VST4LN   : Vector Store (single 4-element structure from one lane)
 class VST4LN<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -930,13 +1008,16 @@ def VST4LNd8  : VST4LN<0b0011, {?,?,?,?}, "8">;
 def VST4LNd16 : VST4LN<0b0111, {?,?,0,?}, "16">;
 def VST4LNd32 : VST4LN<0b1011, {?,0,?,?}, "32">;
 
+def VST4LNd8Pseudo  : VSTQQLNPseudo<IIC_VST>;
+def VST4LNd16Pseudo : VSTQQLNPseudo<IIC_VST>;
+def VST4LNd32Pseudo : VSTQQLNPseudo<IIC_VST>;
+
 // ...with double-spaced registers:
 def VST4LNq16 : VST4LN<0b0111, {?,?,1,?}, "16">;
 def VST4LNq32 : VST4LN<0b1011, {?,1,?,?}, "32">;
 
-// ...alternate versions to be allocated odd register numbers:
-def VST4LNq16odd : VST4LN<0b0111, {?,?,1,?}, "16">;
-def VST4LNq32odd : VST4LN<0b1011, {?,1,?,?}, "32">;
+def VST4LNq16Pseudo : VSTQQQQLNPseudo<IIC_VST>;
+def VST4LNq32Pseudo : VSTQQQQLNPseudo<IIC_VST>;
 
 // ...with address register writeback:
 class VST4LNWB<bits<4> op11_8, bits<4> op7_4, string Dt>
@@ -951,8 +1032,15 @@ def VST4LNd8_UPD  : VST4LNWB<0b0011, {?,?,?,?}, "8">;
 def VST4LNd16_UPD : VST4LNWB<0b0111, {?,?,0,?}, "16">;
 def VST4LNd32_UPD : VST4LNWB<0b1011, {?,0,?,?}, "32">;
 
+def VST4LNd8Pseudo_UPD  : VSTQQLNWBPseudo<IIC_VST>;
+def VST4LNd16Pseudo_UPD : VSTQQLNWBPseudo<IIC_VST>;
+def VST4LNd32Pseudo_UPD : VSTQQLNWBPseudo<IIC_VST>;
+
 def VST4LNq16_UPD : VST4LNWB<0b0111, {?,?,1,?}, "16">;
 def VST4LNq32_UPD : VST4LNWB<0b1011, {?,1,?,?}, "32">;
+
+def VST4LNq16Pseudo_UPD : VSTQQQQLNWBPseudo<IIC_VST>;
+def VST4LNq32Pseudo_UPD : VSTQQQQLNWBPseudo<IIC_VST>;
 
 } // mayStore = 1, neverHasSideEffects = 1, hasExtraSrcRegAllocReq = 1
 
@@ -3727,6 +3815,13 @@ def  VTBL4
         "vtbl", "8", "$dst, \\{$tbl1, $tbl2, $tbl3, $tbl4\\}, $src", "", []>;
 } // hasExtraSrcRegAllocReq = 1
 
+def  VTBL2Pseudo
+  : PseudoNeonI<(outs DPR:$dst), (ins QPR:$tbl, DPR:$src), IIC_VTB2, "">;
+def  VTBL3Pseudo
+  : PseudoNeonI<(outs DPR:$dst), (ins QQPR:$tbl, DPR:$src), IIC_VTB3, "">;
+def  VTBL4Pseudo
+  : PseudoNeonI<(outs DPR:$dst), (ins QQPR:$tbl, DPR:$src), IIC_VTB4, "">;
+
 //   VTBX     : Vector Table Extension
 def  VTBX1
   : N3V<1,1,0b11,0b1000,1,0, (outs DPR:$dst),
@@ -3751,6 +3846,16 @@ def  VTBX4
         "vtbx", "8", "$dst, \\{$tbl1, $tbl2, $tbl3, $tbl4\\}, $src",
         "$orig = $dst", []>;
 } // hasExtraSrcRegAllocReq = 1
+
+def  VTBX2Pseudo
+  : PseudoNeonI<(outs DPR:$dst), (ins DPR:$orig, QPR:$tbl, DPR:$src),
+                IIC_VTBX2, "$orig = $dst">;
+def  VTBX3Pseudo
+  : PseudoNeonI<(outs DPR:$dst), (ins DPR:$orig, QQPR:$tbl, DPR:$src),
+                IIC_VTBX3, "$orig = $dst">;
+def  VTBX4Pseudo
+  : PseudoNeonI<(outs DPR:$dst), (ins DPR:$orig, QQPR:$tbl, DPR:$src),
+                IIC_VTBX4, "$orig = $dst">;
 
 //===----------------------------------------------------------------------===//
 // NEON instructions for single-precision FP math

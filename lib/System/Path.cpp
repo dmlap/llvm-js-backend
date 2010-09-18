@@ -127,6 +127,10 @@ sys::IdentifyFileType(const char *magic, unsigned length) {
       if (magic[1] == 0x02)
         return COFF_FileType;
       break;
+    case 0x64: // x86-64 Windows.
+      if (magic[1] == char(0x86))
+        return COFF_FileType;
+      break;
 
     default:
       break;
@@ -151,6 +155,20 @@ Path::isDynamicLibrary() const {
       case Mach_O_DynamicallyLinkedSharedLibStub_FileType:
       case ELF_SharedObject_FileType:
       case COFF_FileType:  return true;
+    }
+
+  return false;
+}
+
+bool
+Path::isObjectFile() const {
+  std::string Magic;
+  if (getMagicNumber(Magic, 64))
+    if (IdentifyFileType(Magic.c_str(),
+                         static_cast<unsigned>(Magic.length()))
+        != Unknown_FileType) {
+      // Everything in LLVMFileType is currently an object file.
+      return true;
     }
 
   return false;

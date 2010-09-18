@@ -151,7 +151,7 @@ class LiveIntervalMap {
   const LiveInterval &parentli_;
 
   // The child interval's values are fully contained inside parentli_ values.
-  LiveInterval &li_;
+  LiveInterval *li_;
 
   typedef DenseMap<const VNInfo*, VNInfo*> ValueMap;
 
@@ -162,8 +162,8 @@ class LiveIntervalMap {
   ValueMap valueMap_;
 
   // extendTo - Find the last li_ value defined in MBB at or before Idx. The
-  // parentli_ is assumed to be live at Idx. Extend the live range to Idx.
-  // Return the found VNInfo, or NULL.
+  // parentli is assumed to be live at Idx. Extend the live range to include
+  // Idx. Return the found VNInfo, or NULL.
   VNInfo *extendTo(MachineBasicBlock *MBB, SlotIndex Idx);
 
   // addSimpleRange - Add a simple range from parentli_ to li_.
@@ -172,9 +172,14 @@ class LiveIntervalMap {
 
 public:
   LiveIntervalMap(LiveIntervals &lis,
-                  const LiveInterval &parentli,
-                  LiveInterval &li)
-    : lis_(lis), parentli_(parentli), li_(li) {}
+                  const LiveInterval &parentli)
+    : lis_(lis), parentli_(parentli), li_(0) {}
+
+  /// reset - clear all data structures and start a new live interval.
+  void reset(LiveInterval *);
+
+  /// getLI - return the current live interval.
+  LiveInterval *getLI() const { return li_; }
 
   /// defValue - define a value in li_ from the parentli_ value VNI and Idx.
   /// Idx does not have to be ParentVNI->def, but it must be contained within
@@ -195,6 +200,14 @@ public:
   /// All needed values whose def is not inside [Start;End) must be defined
   /// beforehand so mapValue will work.
   void addRange(SlotIndex Start, SlotIndex End);
+
+  /// defByCopyFrom - Insert a copy from Reg to li, assuming that Reg carries
+  /// ParentVNI. Add a minimal live range for the new value and return it.
+  VNInfo *defByCopyFrom(unsigned Reg,
+                        const VNInfo *ParentVNI,
+                        MachineBasicBlock &MBB,
+                        MachineBasicBlock::iterator I);
+
 };
 
 
@@ -222,28 +235,14 @@ class SplitEditor {
   /// dupli_ - Created as a copy of curli_, ranges are carved out as new
   /// intervals get added through openIntv / closeIntv. This is used to avoid
   /// editing curli_.
-  LiveInterval *dupli_;
+  LiveIntervalMap dupli_;
 
   /// Currently open LiveInterval.
-  LiveInterval *openli_;
+  LiveIntervalMap openli_;
 
   /// createInterval - Create a new virtual register and LiveInterval with same
   /// register class and spill slot as curli.
   LiveInterval *createInterval();
-
-  /// getDupLI - Ensure dupli is created and return it.
-  LiveInterval *getDupLI();
-
-  /// valueMap_ - Map values in cupli to values in openli. These are direct 1-1
-  /// mappings, and do not include values created by inserted copies.
-  DenseMap<const VNInfo*, VNInfo*> valueMap_;
-
-  /// mapValue - Return the openIntv value that corresponds to the given curli
-  /// value.
-  VNInfo *mapValue(const VNInfo *curliVNI);
-
-  /// A dupli value is live through openIntv.
-  bool liveThrough_;
 
   /// All the new intervals created for this split are added to intervals_.
   SmallVectorImpl<LiveInterval*> &intervals_;
@@ -254,7 +253,7 @@ class SplitEditor {
 
   /// Insert a COPY instruction curli -> li. Allocate a new value from li
   /// defined by the COPY
-  VNInfo *insertCopy(LiveInterval &LI,
+  VNInfo *insertCopy(LiveIntervalMap &LI,
                      MachineBasicBlock &MBB,
                      MachineBasicBlock::iterator I);
 
@@ -275,9 +274,7 @@ public:
   void enterIntvBefore(SlotIndex Idx);
 
   /// enterIntvAtEnd - Enter openli at the end of MBB.
-  /// PhiMBB is a successor inside openli where a PHI value is created.
-  /// Currently, all entries must share the same PhiMBB.
-  void enterIntvAtEnd(MachineBasicBlock &MBB, MachineBasicBlock &PhiMBB);
+  void enterIntvAtEnd(MachineBasicBlock &MBB);
 
   /// useIntv - indicate that all instructions in MBB should use openli.
   void useIntv(const MachineBasicBlock &MBB);
@@ -298,7 +295,9 @@ public:
 
   /// rewrite - after all the new live ranges have been created, rewrite
   /// instructions using curli to use the new intervals.
-  void rewrite();
+  /// Return true if curli has been completely replaced, false if curli is still
+  /// intact, and needs to be spilled or split further.
+  bool rewrite();
 
   // ===--- High level methods ---===
 

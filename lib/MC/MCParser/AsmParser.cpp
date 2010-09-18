@@ -180,6 +180,7 @@ private:
   bool ParseDirectiveValue(unsigned Size); // ".byte", ".long", ...
   bool ParseDirectiveFill(); // ".fill"
   bool ParseDirectiveSpace(); // ".space"
+  bool ParseDirectiveZero(); // ".zero"
   bool ParseDirectiveSet(); // ".set"
   bool ParseDirectiveOrg(); // ".org"
   // ".align{,32}", ".p2align{,w,l}"
@@ -203,6 +204,9 @@ private:
   /// ParseEscapedString - Parse the current token as a string which may include
   /// escaped characters and return the string contents.
   bool ParseEscapedString(std::string &Data);
+
+  const MCExpr *ApplyModifierToExpr(const MCExpr *E,
+                                    MCSymbolRefExpr::VariantKind Variant);
 };
 
 /// \brief Generic implementations of directive handling, etc. which is shared
@@ -365,12 +369,8 @@ const AsmToken &AsmParser::Lex() {
 
 bool AsmParser::Run(bool NoInitialTextSection, bool NoFinalize) {
   // Create the initial section, if requested.
-  //
-  // FIXME: Target hook & command line option for initial section.
   if (!NoInitialTextSection)
-    Out.SwitchSection(Ctx.getMachOSection("__TEXT", "__text",
-                                      MCSectionMachO::S_ATTR_PURE_INSTRUCTIONS,
-                                      0, SectionKind::getText()));
+    Out.InitSections();
 
   // Prime the lexer.
   Lex();
@@ -488,8 +488,13 @@ bool AsmParser::ParsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
 
     // Lookup the symbol variant if used.
     MCSymbolRefExpr::VariantKind Variant = MCSymbolRefExpr::VK_None;
-    if (Split.first.size() != Identifier.size())
+    if (Split.first.size() != Identifier.size()) {
       Variant = MCSymbolRefExpr::getVariantKindForName(Split.second);
+      if (Variant == MCSymbolRefExpr::VK_Invalid) {
+        Variant = MCSymbolRefExpr::VK_None;
+        TokError("invalid variant '" + Split.second + "'");
+      }
+    }
 
     // If this is an absolute variable reference, substitute it now to preserve
     // semantics in the face of reassignment.
@@ -567,6 +572,55 @@ bool AsmParser::ParseExpression(const MCExpr *&Res) {
   return ParseExpression(Res, EndLoc);
 }
 
+const MCExpr *
+AsmParser::ApplyModifierToExpr(const MCExpr *E,
+                               MCSymbolRefExpr::VariantKind Variant) {
+  // Recurse over the given expression, rebuilding it to apply the given variant
+  // if there is exactly one symbol.
+  switch (E->getKind()) {
+  case MCExpr::Target:
+  case MCExpr::Constant:
+    return 0;
+
+  case MCExpr::SymbolRef: {
+    const MCSymbolRefExpr *SRE = cast<MCSymbolRefExpr>(E);
+
+    if (SRE->getKind() != MCSymbolRefExpr::VK_None) {
+      TokError("invalid variant on expression '" +
+               getTok().getIdentifier() + "' (already modified)");
+      return E;
+    }
+
+    return MCSymbolRefExpr::Create(&SRE->getSymbol(), Variant, getContext());
+  }
+
+  case MCExpr::Unary: {
+    const MCUnaryExpr *UE = cast<MCUnaryExpr>(E);
+    const MCExpr *Sub = ApplyModifierToExpr(UE->getSubExpr(), Variant);
+    if (!Sub)
+      return 0;
+    return MCUnaryExpr::Create(UE->getOpcode(), Sub, getContext());
+  }
+
+  case MCExpr::Binary: {
+    const MCBinaryExpr *BE = cast<MCBinaryExpr>(E);
+    const MCExpr *LHS = ApplyModifierToExpr(BE->getLHS(), Variant);
+    const MCExpr *RHS = ApplyModifierToExpr(BE->getRHS(), Variant);
+
+    if (!LHS && !RHS)
+      return 0;
+
+    if (!LHS) LHS = BE->getLHS();
+    if (!RHS) RHS = BE->getRHS();
+
+    return MCBinaryExpr::Create(BE->getOpcode(), LHS, RHS, getContext());
+  }
+  }
+
+  assert(0 && "Invalid expression kind!");
+  return 0;
+}
+
 /// ParseExpression - Parse an expression and return it.
 /// 
 ///  expr ::= expr +,- expr          -> lowest.
@@ -579,6 +633,31 @@ bool AsmParser::ParseExpression(const MCExpr *&Res, SMLoc &EndLoc) {
   Res = 0;
   if (ParsePrimaryExpr(Res, EndLoc) || ParseBinOpRHS(1, Res, EndLoc))
     return true;
+
+  // As a special case, we support 'a op b @ modifier' by rewriting the
+  // expression to include the modifier. This is inefficient, but in general we
+  // expect users to use 'a@modifier op b'.
+  if (Lexer.getKind() == AsmToken::At) {
+    Lex();
+
+    if (Lexer.isNot(AsmToken::Identifier))
+      return TokError("unexpected symbol modifier following '@'");
+
+    MCSymbolRefExpr::VariantKind Variant =
+      MCSymbolRefExpr::getVariantKindForName(getTok().getIdentifier());
+    if (Variant == MCSymbolRefExpr::VK_Invalid)
+      return TokError("invalid variant '" + getTok().getIdentifier() + "'");
+
+    const MCExpr *ModifiedRes = ApplyModifierToExpr(Res, Variant);
+    if (!ModifiedRes) {
+      return TokError("invalid modifier '" + getTok().getIdentifier() +
+                      "' (no symbols present)");
+      return true;
+    }
+     
+    Res = ModifiedRes;
+    Lex();
+  }
 
   // Try to constant fold it up front, if possible.
   int64_t Value;
@@ -613,7 +692,7 @@ static unsigned getBinOpPrecedence(AsmToken::TokenKind K,
   default:
     return 0;    // not a binop.
 
-    // Lowest Precedence: &&, ||
+    // Lowest Precedence: &&, ||, @
   case AsmToken::AmpAmp:
     Kind = MCBinaryExpr::LAnd;
     return 1;
@@ -875,6 +954,8 @@ bool AsmParser::ParseStatement() {
       return ParseDirectiveFill();
     if (IDVal == ".space")
       return ParseDirectiveSpace();
+    if (IDVal == ".zero")
+      return ParseDirectiveZero();
 
     // Symbol attribute directives
 
@@ -1353,6 +1434,25 @@ bool AsmParser::ParseDirectiveSpace() {
 
   // FIXME: Sometimes the fill expr is 'nop' if it isn't supplied, instead of 0.
   getStreamer().EmitFill(NumBytes, FillExpr, DEFAULT_ADDRSPACE);
+
+  return false;
+}
+
+/// ParseDirectiveZero
+///  ::= .zero expression
+bool AsmParser::ParseDirectiveZero() {
+  CheckForValidSection();
+
+  int64_t NumBytes;
+  if (ParseAbsoluteExpression(NumBytes))
+    return true;
+
+  if (getLexer().isNot(AsmToken::EndOfStatement))
+    return TokError("unexpected token in '.zero' directive");
+
+  Lex();
+
+  getStreamer().EmitFill(NumBytes, 0, DEFAULT_ADDRSPACE);
 
   return false;
 }

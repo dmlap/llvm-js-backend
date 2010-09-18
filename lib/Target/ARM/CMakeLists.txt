@@ -28,6 +28,7 @@ add_llvm_target(ARMCodeGen
   ARMISelLowering.cpp
   ARMInstrInfo.cpp
   ARMJITInfo.cpp
+  ARMMCCodeEmitter.cpp
   ARMLoadStoreOptimizer.cpp
   ARMMCAsmInfo.cpp
   ARMMCInstLower.cpp
@@ -37,7 +38,6 @@ add_llvm_target(ARMCodeGen
   ARMTargetMachine.cpp
   ARMTargetObjectFile.cpp
   NEONMoveFix.cpp
-  NEONPreAllocPass.cpp
   Thumb1InstrInfo.cpp
   Thumb1RegisterInfo.cpp
   Thumb2HazardRecognizer.cpp
@@ -47,13 +47,4 @@ add_llvm_target(ARMCodeGen
   Thumb2SizeReduction.cpp
   )
 
-target_link_libraries (LLVMARMCodeGen
-  LLVMARMInfo
-  LLVMAnalysis
-  LLVMAsmPrinter
-  LLVMCodeGen
-  LLVMCore
-  LLVMMC
-  LLVMSelectionDAG
-  LLVMTarget
-  )
+target_link_libraries (LLVMARMCodeGen LLVMARMAsmPrinter LLVMSelectionDAG)

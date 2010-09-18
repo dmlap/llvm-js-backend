@@ -337,14 +337,8 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
   case MachineOperand::MO_Register: {
     unsigned Reg = MO.getReg();
     assert(TargetRegisterInfo::isPhysicalRegister(Reg));
-    if (Modifier && strcmp(Modifier, "dregpair") == 0) {
-      unsigned DRegLo = TM.getRegisterInfo()->getSubReg(Reg, ARM::dsub_0);
-      unsigned DRegHi = TM.getRegisterInfo()->getSubReg(Reg, ARM::dsub_1);
-      O << '{'
-        << getRegisterName(DRegLo) << ", " << getRegisterName(DRegHi)
-        << '}';
-    } else if (Modifier && strcmp(Modifier, "lane") == 0) {
-      unsigned RegNum = ARMRegisterInfo::getRegisterNumbering(Reg);
+    if (Modifier && strcmp(Modifier, "lane") == 0) {
+      unsigned RegNum = getARMRegisterNumbering(Reg);
       unsigned DReg =
         TM.getRegisterInfo()->getMatchingSuperReg(Reg,
           RegNum & 1 ? ARM::ssub_1 : ARM::ssub_0, &ARM::DPR_VFP2RegClass);
@@ -1153,11 +1147,78 @@ void ARMAsmPrinter::EmitInstruction(const MachineInstr *MI) {
     OS << ']';
     OS << "+";
     printOperand(MI, NOps-2, OS);
-    OutStreamer.EmitRawText(OS.str());
-    return;
-  }
+  } else if (MI->getOpcode() == ARM::MOVs) {
+    // FIXME: Thumb variants?
+    const MachineOperand &Dst = MI->getOperand(0);
+    const MachineOperand &MO1 = MI->getOperand(1);
+    const MachineOperand &MO2 = MI->getOperand(2);
+    const MachineOperand &MO3 = MI->getOperand(3);
 
-  printInstruction(MI, OS);
+    OS << '\t' << ARM_AM::getShiftOpcStr(ARM_AM::getSORegShOp(MO3.getImm()));
+    printSBitModifierOperand(MI, 6, OS);
+    printPredicateOperand(MI, 4, OS);
+
+    OS << '\t' << getRegisterName(Dst.getReg())
+       << ", " << getRegisterName(MO1.getReg());
+
+    if (ARM_AM::getSORegShOp(MO3.getImm()) != ARM_AM::rrx) {
+      OS << ", ";
+
+      if (MO2.getReg()) {
+        OS << getRegisterName(MO2.getReg());
+        assert(ARM_AM::getSORegOffset(MO3.getImm()) == 0);
+      } else {
+        OS << "#" << ARM_AM::getSORegOffset(MO3.getImm());
+      }
+    }
+  } else
+  // A8.6.123 PUSH
+  if ((MI->getOpcode() == ARM::STM_UPD || MI->getOpcode() == ARM::t2STM_UPD) &&
+      MI->getOperand(0).getReg() == ARM::SP) {
+    const MachineOperand &MO1 = MI->getOperand(2);
+    if (ARM_AM::getAM4SubMode(MO1.getImm()) == ARM_AM::db) {
+      OS << '\t' << "push";
+      printPredicateOperand(MI, 3, OS);
+      OS << '\t';
+      printRegisterList(MI, 5, OS);
+    }
+  } else
+  // A8.6.122 POP
+  if ((MI->getOpcode() == ARM::LDM_UPD || MI->getOpcode() == ARM::t2LDM_UPD) &&
+      MI->getOperand(0).getReg() == ARM::SP) {
+    const MachineOperand &MO1 = MI->getOperand(2);
+    if (ARM_AM::getAM4SubMode(MO1.getImm()) == ARM_AM::ia) {
+      OS << '\t' << "pop";
+      printPredicateOperand(MI, 3, OS);
+      OS << '\t';
+      printRegisterList(MI, 5, OS);
+    }
+  } else
+  // A8.6.355 VPUSH
+  if ((MI->getOpcode() == ARM::VSTMS_UPD || MI->getOpcode() ==ARM::VSTMD_UPD) &&
+      MI->getOperand(0).getReg() == ARM::SP) {
+    const MachineOperand &MO1 = MI->getOperand(2);
+    if (ARM_AM::getAM4SubMode(MO1.getImm()) == ARM_AM::db) {
+      OS << '\t' << "vpush";
+      printPredicateOperand(MI, 3, OS);
+      OS << '\t';
+      printRegisterList(MI, 5, OS);
+    }
+  } else
+  // A8.6.354 VPOP
+  if ((MI->getOpcode() == ARM::VLDMS_UPD || MI->getOpcode() ==ARM::VLDMD_UPD) &&
+      MI->getOperand(0).getReg() == ARM::SP) {
+    const MachineOperand &MO1 = MI->getOperand(2);
+    if (ARM_AM::getAM4SubMode(MO1.getImm()) == ARM_AM::ia) {
+      OS << '\t' << "vpop";
+      printPredicateOperand(MI, 3, OS);
+      OS << '\t';
+      printRegisterList(MI, 5, OS);
+    }
+  } else
+    printInstruction(MI, OS);
+
+  // Output the instruction to the stream
   OutStreamer.EmitRawText(OS.str());
 
   // Make sure the instruction that follows TBB is 2-byte aligned.
@@ -1322,12 +1383,43 @@ void ARMAsmPrinter::EmitEndOfAsmFile(Module &M) {
 
 //===----------------------------------------------------------------------===//
 
+static MCSymbol *getPICLabel(const char *Prefix, unsigned FunctionNumber,
+                             unsigned LabelId, MCContext &Ctx) {
+
+  MCSymbol *Label = Ctx.GetOrCreateSymbol(Twine(Prefix)
+                       + "PC" + Twine(FunctionNumber) + "_" + Twine(LabelId));
+  return Label;
+}
+
 void ARMAsmPrinter::printInstructionThroughMCStreamer(const MachineInstr *MI) {
   ARMMCInstLower MCInstLowering(OutContext, *Mang, *this);
   switch (MI->getOpcode()) {
   case ARM::t2MOVi32imm:
     assert(0 && "Should be lowered by thumb2it pass");
   default: break;
+  case ARM::tPICADD: {
+    // This is a pseudo op for a label + instruction sequence, which looks like:
+    // LPC0:
+    //     add r0, pc
+    // This adds the address of LPC0 to r0.
+
+    // Emit the label.
+    OutStreamer.EmitLabel(getPICLabel(MAI->getPrivateGlobalPrefix(),
+                          getFunctionNumber(), MI->getOperand(2).getImm(),
+                          OutContext));
+
+    // Form and emit the add.
+    MCInst AddInst;
+    AddInst.setOpcode(ARM::tADDhirr);
+    AddInst.addOperand(MCOperand::CreateReg(MI->getOperand(0).getReg()));
+    AddInst.addOperand(MCOperand::CreateReg(MI->getOperand(0).getReg()));
+    AddInst.addOperand(MCOperand::CreateReg(ARM::PC));
+    // Add predicate operands.
+    AddInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+    AddInst.addOperand(MCOperand::CreateReg(0));
+    OutStreamer.EmitInstruction(AddInst);
+    return;
+  }
   case ARM::PICADD: { // FIXME: Remove asm string from td file.
     // This is a pseudo op for a label + instruction sequence, which looks like:
     // LPC0:
@@ -1335,21 +1427,68 @@ void ARMAsmPrinter::printInstructionThroughMCStreamer(const MachineInstr *MI) {
     // This adds the address of LPC0 to r0.
 
     // Emit the label.
-    // FIXME: MOVE TO SHARED PLACE.
-    unsigned Id = (unsigned)MI->getOperand(2).getImm();
-    const char *Prefix = MAI->getPrivateGlobalPrefix();
-    MCSymbol *Label =OutContext.GetOrCreateSymbol(Twine(Prefix)
-                         + "PC" + Twine(getFunctionNumber()) + "_" + Twine(Id));
-    OutStreamer.EmitLabel(Label);
+    OutStreamer.EmitLabel(getPICLabel(MAI->getPrivateGlobalPrefix(),
+                          getFunctionNumber(), MI->getOperand(2).getImm(),
+                          OutContext));
 
-
-    // Form and emit tha dd.
+    // Form and emit the add.
     MCInst AddInst;
     AddInst.setOpcode(ARM::ADDrr);
     AddInst.addOperand(MCOperand::CreateReg(MI->getOperand(0).getReg()));
     AddInst.addOperand(MCOperand::CreateReg(ARM::PC));
     AddInst.addOperand(MCOperand::CreateReg(MI->getOperand(1).getReg()));
+    // Add predicate operands.
+    AddInst.addOperand(MCOperand::CreateImm(MI->getOperand(3).getImm()));
+    AddInst.addOperand(MCOperand::CreateReg(MI->getOperand(4).getReg()));
+    // Add 's' bit operand (always reg0 for this)
+    AddInst.addOperand(MCOperand::CreateReg(0));
     OutStreamer.EmitInstruction(AddInst);
+    return;
+  }
+  case ARM::PICSTR:
+  case ARM::PICSTRB:
+  case ARM::PICSTRH:
+  case ARM::PICLDR:
+  case ARM::PICLDRB:
+  case ARM::PICLDRH:
+  case ARM::PICLDRSB:
+  case ARM::PICLDRSH: {
+    // This is a pseudo op for a label + instruction sequence, which looks like:
+    // LPC0:
+    //     OP r0, [pc, r0]
+    // The LCP0 label is referenced by a constant pool entry in order to get
+    // a PC-relative address at the ldr instruction.
+
+    // Emit the label.
+    OutStreamer.EmitLabel(getPICLabel(MAI->getPrivateGlobalPrefix(),
+                          getFunctionNumber(), MI->getOperand(2).getImm(),
+                          OutContext));
+
+    // Form and emit the load
+    unsigned Opcode;
+    switch (MI->getOpcode()) {
+    default:
+      llvm_unreachable("Unexpected opcode!");
+    case ARM::PICSTR:   Opcode = ARM::STR; break;
+    case ARM::PICSTRB:  Opcode = ARM::STRB; break;
+    case ARM::PICSTRH:  Opcode = ARM::STRH; break;
+    case ARM::PICLDR:   Opcode = ARM::LDR; break;
+    case ARM::PICLDRB:  Opcode = ARM::LDRB; break;
+    case ARM::PICLDRH:  Opcode = ARM::LDRH; break;
+    case ARM::PICLDRSB: Opcode = ARM::LDRSB; break;
+    case ARM::PICLDRSH: Opcode = ARM::LDRSH; break;
+    }
+    MCInst LdStInst;
+    LdStInst.setOpcode(Opcode);
+    LdStInst.addOperand(MCOperand::CreateReg(MI->getOperand(0).getReg()));
+    LdStInst.addOperand(MCOperand::CreateReg(ARM::PC));
+    LdStInst.addOperand(MCOperand::CreateReg(MI->getOperand(1).getReg()));
+    LdStInst.addOperand(MCOperand::CreateImm(0));
+    // Add predicate operands.
+    LdStInst.addOperand(MCOperand::CreateImm(MI->getOperand(3).getImm()));
+    LdStInst.addOperand(MCOperand::CreateReg(MI->getOperand(4).getReg()));
+    OutStreamer.EmitInstruction(LdStInst);
+
     return;
   }
   case ARM::CONSTPOOL_ENTRY: { // FIXME: Remove asm string from td file.
@@ -1418,7 +1557,7 @@ void ARMAsmPrinter::printInstructionThroughMCStreamer(const MachineInstr *MI) {
       V1 = MCOperand::CreateImm(ImmVal & 65535);
       V2 = MCOperand::CreateImm(ImmVal >> 16);
     } else if (MO.isGlobal()) {
-      MCSymbol *Symbol = MCInstLowering.GetGlobalAddressSymbol(MO);
+      MCSymbol *Symbol = MCInstLowering.GetGlobalAddressSymbol(MO.getGlobal());
       const MCSymbolRefExpr *SymRef1 =
         MCSymbolRefExpr::Create(Symbol,
                                 MCSymbolRefExpr::VK_ARM_LO16, OutContext);
@@ -1476,7 +1615,7 @@ static MCInstPrinter *createARMMCInstPrinter(const Target &T,
                                              unsigned SyntaxVariant,
                                              const MCAsmInfo &MAI) {
   if (SyntaxVariant == 0)
-    return new ARMInstPrinter(MAI, false);
+    return new ARMInstPrinter(MAI);
   return 0;
 }
 

@@ -51,20 +51,28 @@ public:
     AddDirectiveHandler<&ELFAsmParser::ParseDirectivePrevious>(".previous");
   }
 
+  // FIXME: Part of this logic is duplicated in the MCELFStreamer. What is
+  // the best way for us to get access to it?
   bool ParseSectionDirectiveData(StringRef, SMLoc) {
-    return ParseSectionSwitch(".data", MCSectionELF::SHT_PROGBITS,
+    bool ret =  ParseSectionSwitch(".data", MCSectionELF::SHT_PROGBITS,
                               MCSectionELF::SHF_WRITE |MCSectionELF::SHF_ALLOC,
                               SectionKind::getDataRel());
+    getStreamer().EmitCodeAlignment(4, 0);
+    return ret;
   }
   bool ParseSectionDirectiveText(StringRef, SMLoc) {
-    return ParseSectionSwitch(".text", MCSectionELF::SHT_PROGBITS,
+    bool ret = ParseSectionSwitch(".text", MCSectionELF::SHT_PROGBITS,
                               MCSectionELF::SHF_EXECINSTR |
                               MCSectionELF::SHF_ALLOC, SectionKind::getText());
+    getStreamer().EmitCodeAlignment(4, 0);
+    return ret;
   }
   bool ParseSectionDirectiveBSS(StringRef, SMLoc) {
-    return ParseSectionSwitch(".bss", MCSectionELF::SHT_NOBITS,
+    bool ret = ParseSectionSwitch(".bss", MCSectionELF::SHT_NOBITS,
                               MCSectionELF::SHF_WRITE |
                               MCSectionELF::SHF_ALLOC, SectionKind::getBSS());
+    getStreamer().EmitCodeAlignment(4, 0);
+    return ret;
   }
   bool ParseSectionDirectiveRoData(StringRef, SMLoc) {
     return ParseSectionSwitch(".rodata", MCSectionELF::SHT_PROGBITS,
@@ -110,6 +118,9 @@ public:
   bool ParseDirectiveSection(StringRef, SMLoc);
   bool ParseDirectiveSize(StringRef, SMLoc);
   bool ParseDirectivePrevious(StringRef, SMLoc);
+
+private:
+  bool ParseSectionName(StringRef &SectionName);
 };
 
 }
@@ -147,11 +158,43 @@ bool ELFAsmParser::ParseDirectiveSize(StringRef, SMLoc) {
   return false;
 }
 
+bool ELFAsmParser::ParseSectionName(StringRef &SectionName) {
+  // A section name can contain -, so we cannot just use
+  // ParseIdentifier.
+  SMLoc FirstLoc = getLexer().getLoc();
+  unsigned Size = 0;
+
+  for (;;) {
+    StringRef Tmp;
+    unsigned CurSize;
+
+    SMLoc PrevLoc = getLexer().getLoc();
+    if (getLexer().is(AsmToken::Minus)) {
+      CurSize = 1;
+      Lex(); // Consume the "-".
+    } else if (!getParser().ParseIdentifier(Tmp))
+      CurSize = Tmp.size();
+    else
+      break;
+
+    Size += CurSize;
+    SectionName = StringRef(FirstLoc.getPointer(), Size);
+
+    // Make sure the following token is adjacent.
+    if (PrevLoc.getPointer() + CurSize != getTok().getLoc().getPointer())
+      break;
+  }
+  if (Size == 0)
+    return true;
+
+  return false;
+}
+
 // FIXME: This is a work in progress.
 bool ELFAsmParser::ParseDirectiveSection(StringRef, SMLoc) {
   StringRef SectionName;
-  // FIXME: This doesn't parse section names like ".note.GNU-stack" correctly.
-  if (getParser().ParseIdentifier(SectionName))
+
+  if (ParseSectionName(SectionName))
     return TokError("expected identifier in directive");
 
   std::string FlagsStr;

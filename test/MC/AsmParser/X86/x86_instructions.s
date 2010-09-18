@@ -1,4 +1,4 @@
-// RUN: llvm-mc -triple x86_64-unknown-unknown %s > %t 2> %t.err
+// RUN: llvm-mc -triple x86_64-unknown-unknown -show-encoding %s > %t 2> %t.err
 // RUN: FileCheck < %t %s
 // RUN: FileCheck --check-prefix=CHECK-STDERR < %t.err %s
 
@@ -200,3 +200,108 @@ inw	%dx
 outb	$0x7f
 outw	%dx
 inl	%dx
+
+
+// PR8114
+// CHECK: outb	%al, %dx
+// CHECK: outw	%ax, %dx
+// CHECK: outl	%eax, %dx
+
+out %al, (%dx)
+out %ax, (%dx)
+outl %eax, (%dx)
+
+
+// rdar://8431422
+
+// CHECK: fxch	%st(1)
+// CHECK: fucom	%st(1)
+// CHECK: fucomp	%st(1)
+// CHECK: faddp	%st(1)
+// CHECK: faddp	%st(0)
+// CHECK: fsubp	%st(1)
+// CHECK: fsubrp	%st(1)
+// CHECK: fmulp	%st(1)
+// CHECK: fdivp	%st(1)
+// CHECK: fdivrp	%st(1)
+
+fxch
+fucom
+fucomp
+faddp
+faddp %st
+fsubp
+fsubrp
+fmulp
+fdivp
+fdivrp
+
+// CHECK: fcomi	%st(1), %st(0)
+// CHECK: fcomi	%st(2), %st(0)
+// CHECK: fucomi	%st(1), %st(0)
+// CHECK: fucomi	%st(2), %st(0)
+// CHECK: fucomi	%st(2), %st(0)
+
+fcomi
+fcomi	%st(2)
+fucomi
+fucomi	%st(2)
+fucomi	%st(2), %st
+
+// CHECK: fnstsw %ax
+// CHECK: fnstsw %ax
+// CHECK: fnstsw %ax
+// CHECK: fnstsw %ax
+
+fnstsw
+fnstsw %ax
+fnstsw %eax
+fnstsw %al
+
+// rdar://8431880
+// CHECK: rclb	$1, %bl
+// CHECK: rcll	$1, 3735928559(%ebx,%ecx,8)
+// CHECK: rcrl	$1, %ecx
+// CHECK: rcrl	$1, 305419896
+
+rcl	%bl
+rcll	0xdeadbeef(%ebx,%ecx,8)
+rcr	%ecx
+rcrl	0x12345678
+
+// rdar://8418316
+// CHECK: shldw	$1, %bx, %bx
+// CHECK: shldw	$1, %bx, %bx
+// CHECK: shrdw	$1, %bx, %bx
+// CHECK: shrdw	$1, %bx, %bx
+
+shld	%bx,%bx
+shld	$1, %bx,%bx
+shrd	%bx,%bx
+shrd	$1, %bx,%bx
+
+// CHECK: sldtl	%ecx
+// CHECK: encoding: [0x0f,0x00,0xc1]
+// CHECK: sldtw	%cx
+// CHECK: encoding: [0x66,0x0f,0x00,0xc1]
+
+sldt	%ecx
+sldt	%cx
+
+// CHECK: lcalll	*3135175374 
+// CHECK: ljmpl	*3135175374
+lcall	*0xbadeface
+ljmp	*0xbadeface
+
+
+// rdar://8444631
+// CHECK: enter	$31438, $0
+// CHECK: encoding: [0xc8,0xce,0x7a,0x00]
+// CHECK: enter	$31438, $1
+// CHECK: encoding: [0xc8,0xce,0x7a,0x01]
+// CHECK: enter	$31438, $127
+// CHECK: encoding: [0xc8,0xce,0x7a,0x7f]
+enter $0x7ace,$0
+enter $0x7ace,$1
+enter $0x7ace,$0x7f
+

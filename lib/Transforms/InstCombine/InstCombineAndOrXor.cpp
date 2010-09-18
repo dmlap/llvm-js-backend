@@ -1962,8 +1962,9 @@ Instruction *InstCombiner::visitOr(BinaryOperator &I) {
   // be simplified by a later pass either, so we try swapping the inner/outer
   // ORs in the hopes that we'll be able to simplify it this way.
   // (X|C) | V --> (X|V) | C
-  if (Op0->hasOneUse() && match(Op0, m_Or(m_Value(A), m_ConstantInt(C1)))) {
-    Value *Inner = Builder->CreateOr(Op0, Op1);
+  if (Op0->hasOneUse() && !isa<ConstantInt>(Op1) &&
+      match(Op0, m_Or(m_Value(A), m_ConstantInt(C1)))) {
+    Value *Inner = Builder->CreateOr(A, Op1);
     Inner->takeName(Op0);
     return BinaryOperator::CreateOr(Inner, C1);
   }

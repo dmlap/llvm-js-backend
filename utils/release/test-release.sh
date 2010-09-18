@@ -175,11 +175,11 @@ function configure_llvmCore() {
     case $Flavor in
         Release | Release-64 )
             Optimized="yes"
-            Assertions="yes"
-            ;;
-        Release-Asserts )
-            Optimized="yes"
             Assertions="no"
+            ;;
+        Release+Asserts )
+            Optimized="yes"
+            Assertions="yes"
             ;;
         Debug )
             Optimized="no"
@@ -307,7 +307,7 @@ if [ "$do_checkout" = "yes" ]; then
 fi
 
 (
-Flavors="Debug Release Release-Asserts"
+Flavors="Debug Release Release+Asserts"
 if [ "$do_64bit" = "yes" ]; then
     Flavors="$Flavors Release-64"
 fi

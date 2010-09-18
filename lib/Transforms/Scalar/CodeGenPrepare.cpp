@@ -736,43 +736,21 @@ bool CodeGenPrepare::OptimizeMemoryInst(Instruction *MemoryInst, Value *Addr,
 bool CodeGenPrepare::OptimizeInlineAsmInst(Instruction *I, CallSite CS,
                                            DenseMap<Value*,Value*> &SunkAddrs) {
   bool MadeChange = false;
-  InlineAsm *IA = cast<InlineAsm>(CS.getCalledValue());
 
-  // Do a prepass over the constraints, canonicalizing them, and building up the
-  // ConstraintOperands list.
-  std::vector<InlineAsm::ConstraintInfo>
-    ConstraintInfos = IA->ParseConstraints();
-
-  /// ConstraintOperands - Information about all of the constraints.
-  std::vector<TargetLowering::AsmOperandInfo> ConstraintOperands;
-  unsigned ArgNo = 0;   // ArgNo - The argument of the CallInst.
-  for (unsigned i = 0, e = ConstraintInfos.size(); i != e; ++i) {
-    ConstraintOperands.
-      push_back(TargetLowering::AsmOperandInfo(ConstraintInfos[i]));
-    TargetLowering::AsmOperandInfo &OpInfo = ConstraintOperands.back();
-
-    // Compute the value type for each operand.
-    switch (OpInfo.Type) {
-    case InlineAsm::isOutput:
-      if (OpInfo.isIndirect)
-        OpInfo.CallOperandVal = CS.getArgument(ArgNo++);
-      break;
-    case InlineAsm::isInput:
-      OpInfo.CallOperandVal = CS.getArgument(ArgNo++);
-      break;
-    case InlineAsm::isClobber:
-      // Nothing to do.
-      break;
-    }
-
+  std::vector<TargetLowering::AsmOperandInfo> TargetConstraints = TLI->ParseConstraints(CS);
+  unsigned ArgNo = 0;
+  for (unsigned i = 0, e = TargetConstraints.size(); i != e; ++i) {
+    TargetLowering::AsmOperandInfo &OpInfo = TargetConstraints[i];
+    
     // Compute the constraint code and ConstraintType to use.
     TLI->ComputeConstraintToUse(OpInfo, SDValue());
 
     if (OpInfo.ConstraintType == TargetLowering::C_Memory &&
         OpInfo.isIndirect) {
-      Value *OpVal = OpInfo.CallOperandVal;
+      Value *OpVal = const_cast<Value *>(CS.getArgument(ArgNo++));
       MadeChange |= OptimizeMemoryInst(I, OpVal, OpVal->getType(), SunkAddrs);
-    }
+    } else if (OpInfo.Type == InlineAsm::isInput)
+      ArgNo++;
   }
 
   return MadeChange;

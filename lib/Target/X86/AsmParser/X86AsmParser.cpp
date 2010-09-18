@@ -681,7 +681,8 @@ ParseInstruction(StringRef Name, SMLoc NameLoc,
     .Case("cmovzw",  "cmovew") .Case("cmovzl",  "cmovel")
     .Case("cmovzq",  "cmoveq") .Case("cmovz",   "cmove")
     .Case("fwait", "wait")
-    .Case("movzx", "movzb")
+    .Case("movzx", "movzb")  // FIXME: Not correct.
+    .Case("fildq", "fildll")
     .Default(Name);
 
   // FIXME: Hack to recognize cmp<comparison code>{ss,sd,ps,pd}.
@@ -813,7 +814,7 @@ ParseInstruction(StringRef Name, SMLoc NameLoc,
   if (getLexer().is(AsmToken::EndOfStatement))
     Parser.Lex(); // Consume the EndOfStatement
 
-  // FIXME: Hack to handle recognize s{hr,ar,hl} <op>, $1.  Canonicalize to
+  // FIXME: Hack to handle recognize s{hr,ar,hl} $1, <op>.  Canonicalize to
   // "shift <op>".
   if ((Name.startswith("shr") || Name.startswith("sar") ||
        Name.startswith("shl")) &&
@@ -825,6 +826,23 @@ ParseInstruction(StringRef Name, SMLoc NameLoc,
       Operands.erase(Operands.begin() + 1);
     }
   }
+  
+  // FIXME: Hack to handle recognize "rc[lr] <op>" -> "rcl $1, <op>".
+  if ((Name.startswith("rcl") || Name.startswith("rcr")) &&
+      Operands.size() == 2) {
+    const MCExpr *One = MCConstantExpr::Create(1, getParser().getContext());
+    Operands.push_back(X86Operand::CreateImm(One, NameLoc, NameLoc));
+    std::swap(Operands[1], Operands[2]);
+  }
+  
+  // FIXME: Hack to handle recognize "sh[lr]d op,op" -> "shld $1, op,op".
+  if ((Name.startswith("shld") || Name.startswith("shrd")) &&
+      Operands.size() == 3) {
+    const MCExpr *One = MCConstantExpr::Create(1, getParser().getContext());
+    Operands.insert(Operands.begin()+1,
+                    X86Operand::CreateImm(One, NameLoc, NameLoc));
+  }
+  
 
   // FIXME: Hack to handle recognize "in[bwl] <op>".  Canonicalize it to
   // "inb <op>, %al".
@@ -855,6 +873,20 @@ ParseInstruction(StringRef Name, SMLoc NameLoc,
     SMLoc Loc = Operands.back()->getEndLoc();
     Operands.push_back(X86Operand::CreateReg(Reg, Loc, Loc));
     std::swap(Operands[1], Operands[2]);
+  }
+  
+  // FIXME: Hack to handle "out[bwl]? %al, (%dx)" -> "outb %al, %dx".
+  if ((Name == "outb" || Name == "outw" || Name == "outl" || Name == "out") &&
+      Operands.size() == 3) {
+    X86Operand &Op = *(X86Operand*)Operands.back();
+    if (Op.isMem() && Op.Mem.SegReg == 0 &&
+        isa<MCConstantExpr>(Op.Mem.Disp) &&
+        cast<MCConstantExpr>(Op.Mem.Disp)->getValue() == 0 &&
+        Op.Mem.BaseReg == MatchRegisterName("dx") && Op.Mem.IndexReg == 0) {
+      SMLoc Loc = Op.getEndLoc();
+      Operands.back() = X86Operand::CreateReg(Op.Mem.BaseReg, Loc, Loc);
+      delete &Op;
+    }
   }
   
   // FIXME: Hack to handle "f{mul*,add*,sub*,div*} $op, st(0)" the same as
@@ -909,6 +941,74 @@ ParseInstruction(StringRef Name, SMLoc NameLoc,
       std::swap(Operands[1], Operands[2]);
     }
   
+  // The assembler accepts these instructions with no operand as a synonym for
+  // an instruction acting on st(1).  e.g. "fxch" -> "fxch %st(1)".
+  if ((Name == "fxch" || Name == "fucom" || Name == "fucomp" ||
+       Name == "faddp" || Name == "fsubp" || Name == "fsubrp" || 
+       Name == "fmulp" || Name == "fdivp" || Name == "fdivrp") &&
+      Operands.size() == 1) {
+    Operands.push_back(X86Operand::CreateReg(MatchRegisterName("st(1)"),
+                                             NameLoc, NameLoc));
+  }
+  
+  // The assembler accepts these instructions with two few operands as a synonym
+  // for taking %st(1),%st(0) or X, %st(0).
+  if ((Name == "fcomi" || Name == "fucomi") && Operands.size() < 3) {
+    if (Operands.size() == 1)
+      Operands.push_back(X86Operand::CreateReg(MatchRegisterName("st(1)"),
+                                               NameLoc, NameLoc));
+    Operands.push_back(X86Operand::CreateReg(MatchRegisterName("st(0)"),
+                                             NameLoc, NameLoc));
+  }
+  
+  // The assembler accepts various amounts of brokenness for fnstsw.
+  if (Name == "fnstsw") {
+    if (Operands.size() == 2 &&
+        static_cast<X86Operand*>(Operands[1])->isReg()) {
+      // "fnstsw al" and "fnstsw eax" -> "fnstw"
+      unsigned Reg = static_cast<X86Operand*>(Operands[1])->Reg.RegNo;
+      if (Reg == MatchRegisterName("eax") ||
+          Reg == MatchRegisterName("al")) {
+        delete Operands[1];
+        Operands.pop_back();
+      }
+    }
+
+    // "fnstw" -> "fnstw %ax"
+    if (Operands.size() == 1)
+      Operands.push_back(X86Operand::CreateReg(MatchRegisterName("ax"),
+                                               NameLoc, NameLoc));
+  }
+  
+  // jmp $42,$5 -> ljmp, similarly for call.
+  if ((Name.startswith("call") || Name.startswith("jmp")) &&
+      Operands.size() == 3 &&
+      static_cast<X86Operand*>(Operands[1])->isImm() &&
+      static_cast<X86Operand*>(Operands[2])->isImm()) {
+    const char *NewOpName = StringSwitch<const char *>(Name)
+      .Case("jmp", "ljmp")
+      .Case("jmpw", "ljmpw")
+      .Case("jmpl", "ljmpl")
+      .Case("jmpq", "ljmpq")
+      .Case("call", "lcall")
+      .Case("callw", "lcallw")
+      .Case("calll", "lcalll")
+      .Case("callq", "lcallq")
+    .Default(0);
+    if (NewOpName) {
+      delete Operands[0];
+      Operands[0] = X86Operand::CreateToken(NewOpName, NameLoc);
+      Name = NewOpName;
+    }
+  }
+  
+  // lcall  and ljmp  -> lcalll and ljmpl
+  if ((Name == "lcall" || Name == "ljmp") && Operands.size() == 3) {
+    delete Operands[0];
+    Operands[0] = X86Operand::CreateToken(Name == "lcall" ? "lcalll" : "ljmpl",
+                                          NameLoc);
+  }
+  
   return false;
 }
 
@@ -945,11 +1045,10 @@ bool X86ATTAsmParser::ParseDirectiveWord(unsigned Size, SMLoc L) {
 }
 
 
-bool
-X86ATTAsmParser::MatchInstruction(SMLoc IDLoc,
-                                  const SmallVectorImpl<MCParsedAsmOperand*>
-                                    &Operands,
-                                  MCInst &Inst) {
+bool X86ATTAsmParser::
+MatchInstruction(SMLoc IDLoc,
+                 const SmallVectorImpl<MCParsedAsmOperand*> &Operands,
+                 MCInst &Inst) {
   assert(!Operands.empty() && "Unexpect empty operand list!");
 
   bool WasOriginallyInvalidOperand = false;
@@ -1052,12 +1151,14 @@ X86ATTAsmParser::MatchInstruction(SMLoc IDLoc,
     // Recover location info for the operand if we know which was the problem.
     SMLoc ErrorLoc = IDLoc;
     if (OrigErrorInfo != ~0U) {
+      if (OrigErrorInfo >= Operands.size())
+        return Error(IDLoc, "too few operands for instruction");
+      
       ErrorLoc = ((X86Operand*)Operands[OrigErrorInfo])->getStartLoc();
       if (ErrorLoc == SMLoc()) ErrorLoc = IDLoc;
     }
 
-    Error(ErrorLoc, "invalid operand for instruction");
-    return true;
+    return Error(ErrorLoc, "invalid operand for instruction");
   }
   
   // If one instruction matched with a missing feature, report this as a
