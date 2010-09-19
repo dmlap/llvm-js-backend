@@ -8,8 +8,6 @@
 //===----------------------------------------------------------------------===//
 // This is the top level entry point for the PTX target.
 //===----------------------------------------------------------------------===//
-<<<<<<< HEAD
-=======
 
 //===----------------------------------------------------------------------===//
 // Target-independent interfaces
@@ -54,4 +52,3 @@ def PTXInstrInfo : InstrInfo;
 def PTX : Target {
   let InstructionSet = PTXInstrInfo;
 }
->>>>>>> git-svn

@@ -7,9 +7,9 @@ entry:
 ; CHECK: var
 ; CHECK: = _p(0,[]);
   %ptr = alloca i32
-; CHECK: = 3;
+; CHECK: {{[_$A-z0-9]+}}(3);
   store i32 3, i32* %ptr
-; CHECK: {{[_$A-z0-9]+}} = {{[_$A-z0-9]+}};
+; CHECK: {{[_$A-z0-9]+}} = {{[_$A-z0-9]+}}();
   %val = load i32* %ptr
   ret void
 }

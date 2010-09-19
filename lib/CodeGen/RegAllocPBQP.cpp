@@ -649,8 +649,6 @@ PBQP::Graph RegAllocPBQP::constructPBQPProblem() {
 
   BitVector ReservedRegs = tri->getReservedRegs(*mf);
 
-  BitVector ReservedRegs = tri->getReservedRegs(*mf);
-
   // Iterate over virtual register intervals to compute allowed sets...
   for (unsigned node = 0; node < node2LI.size(); ++node) {
 

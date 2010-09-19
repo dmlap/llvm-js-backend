@@ -149,6 +149,7 @@ MachineSinking::AllUsesDominatedByBlock(unsigned Reg,
   // This may leave a referencing dbg_value in the original block, before
   // the definition of the vreg.  Dwarf generator handles this although the
   // user might not get the right info at runtime.
+
   // PHI is in the successor BB. e.g.
   // BB#1: derived from LLVM BB %bb4.preheader
   //   Predecessors according to CFG: BB#0
@@ -426,7 +427,6 @@ bool MachineSinking::SinkInstruction(MachineInstr *MI, bool &SawStore) {
     } else {
       // Virtual register uses are always safe to sink.
       if (MO.isUse()) continue;
-      Defs.insert(Reg);
 
       // If it's not safe to move defs of the register class, then abort.
       if (!TII->isSafeToMoveRegClassDefs(MRI->getRegClass(Reg)))
