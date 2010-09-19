@@ -2,6 +2,41 @@ Target Independent Opportunities:
 
 //===---------------------------------------------------------------------===//
 
+<<<<<<< HEAD
+=======
+We should recognize idioms for add-with-carry and turn it into the appropriate
+intrinsics.  This example:
+
+unsigned add32carry(unsigned sum, unsigned x) {
+ unsigned z = sum + x;
+ if (sum + x < x)
+     z++;
+ return z;
+}
+
+Compiles to: clang t.c -S -o - -O3 -fomit-frame-pointer -m64 -mkernel
+
+_add32carry:                            ## @add32carry
+	addl	%esi, %edi
+	cmpl	%esi, %edi
+	sbbl	%eax, %eax
+	andl	$1, %eax
+	addl	%edi, %eax
+	ret
+
+with clang, but to:
+
+_add32carry:
+	leal	(%rsi,%rdi), %eax
+	cmpl	%esi, %eax
+	adcl	$0, %eax
+	ret
+
+with gcc.
+
+//===---------------------------------------------------------------------===//
+
+>>>>>>> git-svn
 Dead argument elimination should be enhanced to handle cases when an argument is
 dead to an externally visible function.  Though the argument can't be removed
 from the externally visible function, the caller doesn't need to pass it in.
@@ -1242,10 +1277,17 @@ void count_averages(int n) {
 which compiles into two loads instead of one in the loop.
 
 predcom-2.c is the same as predcom-1.c
+<<<<<<< HEAD
 
 predcom-3.c is very similar but needs loads feeding each other instead of
 store->load.
 
+=======
+
+predcom-3.c is very similar but needs loads feeding each other instead of
+store->load.
+
+>>>>>>> git-svn
 
 //===---------------------------------------------------------------------===//
 
@@ -1527,6 +1569,7 @@ foo:
 
 The arg promotion pass should make use of nocapture to make its alias analysis
 stuff much more precise.
+<<<<<<< HEAD
 
 //===---------------------------------------------------------------------===//
 
@@ -1572,6 +1615,53 @@ This can be generalized for other forms:
 
 //===---------------------------------------------------------------------===//
 
+=======
+
+//===---------------------------------------------------------------------===//
+
+The following functions should be optimized to use a select instead of a
+branch (from gcc PR40072):
+
+char char_int(int m) {if(m>7) return 0; return m;}
+int int_char(char m) {if(m>7) return 0; return m;}
+
+//===---------------------------------------------------------------------===//
+
+int func(int a, int b) { if (a & 0x80) b |= 0x80; else b &= ~0x80; return b; }
+
+Generates this:
+
+define i32 @func(i32 %a, i32 %b) nounwind readnone ssp {
+entry:
+  %0 = and i32 %a, 128                            ; <i32> [#uses=1]
+  %1 = icmp eq i32 %0, 0                          ; <i1> [#uses=1]
+  %2 = or i32 %b, 128                             ; <i32> [#uses=1]
+  %3 = and i32 %b, -129                           ; <i32> [#uses=1]
+  %b_addr.0 = select i1 %1, i32 %3, i32 %2        ; <i32> [#uses=1]
+  ret i32 %b_addr.0
+}
+
+However, it's functionally equivalent to:
+
+         b = (b & ~0x80) | (a & 0x80);
+
+Which generates this:
+
+define i32 @func(i32 %a, i32 %b) nounwind readnone ssp {
+entry:
+  %0 = and i32 %b, -129                           ; <i32> [#uses=1]
+  %1 = and i32 %a, 128                            ; <i32> [#uses=1]
+  %2 = or i32 %0, %1                              ; <i32> [#uses=1]
+  ret i32 %2
+}
+
+This can be generalized for other forms:
+
+     b = (b & ~0x80) | (a & 0x40) << 1;
+
+//===---------------------------------------------------------------------===//
+
+>>>>>>> git-svn
 These two functions produce different code. They shouldn't:
 
 #include <stdint.h>
@@ -1643,6 +1733,7 @@ static int foo(const char *X) { return strlen(X); }
 int bar() { return foo("abcd"); }
 
 //===---------------------------------------------------------------------===//
+<<<<<<< HEAD
 
 InstCombine should use SimplifyDemandedBits to remove the or instruction:
 
@@ -1652,6 +1743,17 @@ define i1 @test(i8 %x, i8 %y) {
   ret i1 %B
 }
 
+=======
+
+InstCombine should use SimplifyDemandedBits to remove the or instruction:
+
+define i1 @test(i8 %x, i8 %y) {
+  %A = or i8 %x, 1
+  %B = icmp ugt i8 %A, 3
+  ret i1 %B
+}
+
+>>>>>>> git-svn
 Currently instcombine calls SimplifyDemandedBits with either all bits or just
 the sign bit, if the comparison is obviously a sign test. In this case, we only
 need all but the bottom two bits from %A, and if we gave that mask to SDB it
