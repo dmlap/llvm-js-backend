@@ -5,7 +5,7 @@
 define void @memory() {
 entry:
 ; CHECK: var
-; CHECK: = [];
+; CHECK: = _p(0,[]);
   %ptr = alloca i32
 ; CHECK: = 3;
   store i32 3, i32* %ptr

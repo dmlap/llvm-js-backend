@@ -1102,6 +1102,15 @@ bool JsWriter::doInitialization(Module &M) {
   Out << "(function($w) {\n";
   Out << "$w[\"" << M.getModuleIdentifier() << "\"] = {};\n";
   Out << "var _ = $w[\"" << M.getModuleIdentifier() << "\"];\n";
+  Out << "function _p(x, o) {\n";
+  Out << "  var x = x, o = o, r = function() {\n";
+  Out << "    return o[x];\n";
+  Out << "  };\n";
+  Out << "  r.i = function() {\n";
+  Out << "    x++;\n";
+  Out << "  };\n";
+  Out << "  return r;\n";
+  Out << "}\n";
 
   // Keep track of which functions are static ctors/dtors so they can have
   // an attribute added to their prototypes.
@@ -1177,46 +1186,46 @@ bool JsWriter::doInitialization(Module &M) {
     Module::global_iterator I = M.global_begin(), E = M.global_end();
     for(;I != E; ++I) {
       if (!I->isDeclaration() && !getGlobalVariableClass(I) && !(I->hasLocalLinkage() || I->hasHiddenVisibility())) {
-	if (I->hasDLLImportLinkage()) {
-	  // can't import from DLLs
-	  llvm_unreachable(0);
-	}
-	if (I->hasDLLExportLinkage()) {
-	  // can't export to DLLs
-	  llvm_unreachable(0);
-	}
+        if (I->hasDLLImportLinkage()) {
+          // can't import from DLLs
+          llvm_unreachable(0);
+        }
+        if (I->hasDLLExportLinkage()) {
+          // can't export to DLLs
+          llvm_unreachable(0);
+        }
         if (I->isThreadLocal()) {
-	  // no support for thread locals
-	  llvm_unreachable(0);
-	}
-	Out << "\n/* Module Members */\n";
+          // no support for thread locals
+          llvm_unreachable(0);
+        }
+        Out << "\n/* Module Members */\n";
 
-	Out << "_." << GetValueName(I) << " = ";
-	writeOperand(I->getInitializer(), true);
-	Out << ";\n";
-	++I;
-	break;
+        Out << "var " << GetValueName(I) << " = _." << GetValueName(I) << " = ";
+        writeOperand(I->getInitializer(), true);
+        Out << ";\n";
+        ++I;
+        break;
       }
     }
     for (; I != E; ++I) {
       if (!I->isDeclaration() && !getGlobalVariableClass(I) && !(I->hasLocalLinkage() || I->hasHiddenVisibility())) {
-	if (I->hasDLLImportLinkage()) {
-	  // can't import from DLLs
-	  llvm_unreachable(0);
-	}
-	if (I->hasDLLExportLinkage()) {
-	  // can't export to DLLs
-	  llvm_unreachable(0);
-	}
+        if (I->hasDLLImportLinkage()) {
+          // can't import from DLLs
+          llvm_unreachable(0);
+        }
+        if (I->hasDLLExportLinkage()) {
+          // can't export to DLLs
+          llvm_unreachable(0);
+        }
         if (I->isThreadLocal()) {
-	  // no support for thread locals
-	  llvm_unreachable(0);
-	}
+          // no support for thread locals
+          llvm_unreachable(0);
+        }
 
-	Out << "_." << GetValueName(I) << " = ";
-	writeOperand(I->getInitializer(), true);
-	Out << ";\n";
-	continue;
+        Out << "_." << GetValueName(I) << " = ";
+        writeOperand(I->getInitializer(), true);
+        Out << ";\n";
+        continue;
       }
     }
   }
