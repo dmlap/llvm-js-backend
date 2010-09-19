@@ -1,0 +1,13 @@
+/Debug
+/Release
+/Release-Asserts
+/Makefile.common
+/config.log
+/config.status
+/mklib
+/Debug+Coverage-Asserts
+/Debug+Coverage
+/Release+Coverage
+/Debug+Checks
+/Debug+Asserts
+/Release+Asserts

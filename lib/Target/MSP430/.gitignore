@@ -1,0 +1,10 @@
+/Debug
+/Debug+Checks
+/Debug+Coverage
+/Debug+Coverage-Asserts
+/*.inc
+/Release
+/Release-Asserts
+/Release+Coverage
+/Debug+Asserts
+/Release+Asserts
