@@ -22,3 +22,5 @@
 /Debug+Checks
 /Debug+Asserts
 /Release+Asserts
+*~
+*.pyc
