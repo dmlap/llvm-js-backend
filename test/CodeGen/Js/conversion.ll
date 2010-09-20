@@ -1,5 +1,5 @@
 ; RUN: llvm-as < %s | llvm-dis > %t1
-; RUN: llc < %s -march=js -O0 -o conversion.js
+; RUN: llc < %s -march=js -O0 -o Output/conversion.js
 ; RUN: llc < %s -march=js -O0 | FileCheck %s
 
 define void @conversion() {

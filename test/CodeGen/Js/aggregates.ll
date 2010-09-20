@@ -1,7 +1,8 @@
 ; RUN: llvm-as < %s | llvm-dis > %t1
-; RUN: llc < %s -march=js -O0 -o aggregates.js
+; RUN: llc < %s -march=js -O0 -o Output/aggregates.js
 ; RUN: llc < %s -march=js -O0 | FileCheck %s
 
+; CHECK: _p("a");
 @STR = private constant [2 x i8] c"a\00"
 
 
@@ -15,7 +16,7 @@ entry:
   %2 = extractvalue { i32, i1 } { i32 7, i1 0 }, 1
 ; CHECK: = ([null][0]);
   %3 = extractvalue [1 x i32] [i32 undef], 0
-; CHECK: = (STR);
+; CHECK: = (STR)();
   %4 = getelementptr [2 x i8]* @STR
   %5 = load [2 x i8]* %4
 ; CHECK = [0]);

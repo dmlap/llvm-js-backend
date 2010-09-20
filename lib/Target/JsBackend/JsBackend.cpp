@@ -1102,12 +1102,12 @@ bool JsWriter::doInitialization(Module &M) {
   Out << "(function($w) {\n";
   Out << "$w[\"" << M.getModuleIdentifier() << "\"] = {};\n";
   Out << "var _ = $w[\"" << M.getModuleIdentifier() << "\"];\n";
-  Out << "function _p(x, o) {\n";
-  Out << "  var x = x, o = o, r = function() {\n";
-  Out << "    return o[x];\n";
+  Out << "function _p(o, x) {\n";
+  Out << "  var o = o === undefined? {} : o, x = x || 0, r = function(e) {\n";
+  Out << "    return o[(x += e || 0)];\n";
   Out << "  };\n";
-  Out << "  r.i = function() {\n";
-  Out << "    x++;\n";
+  Out << "  r.s = function(e) {\n";
+  Out << "    o[x] = e;\n";
   Out << "  };\n";
   Out << "  return r;\n";
   Out << "}\n";
@@ -1162,8 +1162,9 @@ bool JsWriter::doInitialization(Module &M) {
     for(;I != E; ++I) {
       if (!I->isDeclaration() && !getGlobalVariableClass(I) && (I->hasLocalLinkage() || I->hasHiddenVisibility())) {
 	Out << "\n/* Module Local Variables */\n";
-	Out << "var " << GetValueName(I) << " = ";
+	Out << "var " << GetValueName(I) << " = _p(";
 	writeOperand(I->getInitializer(), true);
+	Out << ")";
 	Found = true;
 	++I;
 	break;
@@ -1171,8 +1172,9 @@ bool JsWriter::doInitialization(Module &M) {
     }
     for (; I != E; ++I) {
       if (!I->isDeclaration() && !getGlobalVariableClass(I) && (I->hasLocalLinkage() || I->hasHiddenVisibility())) {      
-	Out << ", " << GetValueName(I) << " = ";
+	Out << ", " << GetValueName(I) << " = _p(";
 	writeOperand(I->getInitializer(), true);
+	Out << ")";
 	continue;
       }
     }
@@ -2031,7 +2033,8 @@ void JsWriter::visitCallInst(CallInst &I) {
     PrintedArg = true;
   }
 
-  CallSite::arg_iterator AI = I.op_begin()+1, AE = I.op_end();
+  CallSite CS(&I);
+  CallSite::arg_iterator AI = CS.arg_begin(), AE = CS.arg_end();
   unsigned ArgNo = 0;
   if (isStructRet) {   // Skip struct return argument.
     ++AI;
@@ -2042,10 +2045,11 @@ void JsWriter::visitCallInst(CallInst &I) {
   for (; AI != AE; ++AI, ++ArgNo) {
     if (PrintedArg) Out << ", ";
     // Check if the argument is expected to be passed by value.
-    if (I.paramHasAttr(ArgNo+1, Attribute::ByVal))
+    if (I.paramHasAttr(ArgNo+1, Attribute::ByVal)) {
       writeOperandDeref(*AI);
-    else
+    } else {
       writeOperand(*AI);
+    }
     PrintedArg = true;
   }
   Out << ')';
@@ -2343,6 +2347,7 @@ void JsWriter::visitInlineAsm(CallInst &CI) {
 }
 
 void JsWriter::visitAllocaInst(AllocaInst &I) {
+  Out <<"_p(";
   const Type* ElementType = I.getType()->getElementType();
   switch (ElementType->getTypeID()) {
   case Type::IntegerTyID:
@@ -2351,9 +2356,9 @@ void JsWriter::visitAllocaInst(AllocaInst &I) {
       break;
     }
   default:
-    Out << "[]";
     break;
   }
+  Out << ")";
 }
 
 void JsWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
@@ -2364,14 +2369,20 @@ void JsWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
     writeOperand(Ptr);
     return;
   }
-  Out << "(";
+  Out << "_p(";
   gep_type_iterator N = I;
   ++N;
   writeOperand(Ptr);
   for(; N != E; ++I, ++N) {
-    Out << "[";
-    writeOperand(I.getOperand());
-    Out << "]";
+    if(I->isPointerTy()) {
+      Out << "(";
+      writeOperand(I.getOperand());
+      Out << ")";
+    } else {
+      Out << "[";
+      writeOperand(I.getOperand());
+      Out << "]";
+    }
   }
   // unrolled last iteration
   Value *LastOp = I.getOperand();
@@ -2380,14 +2391,15 @@ void JsWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
     Out << ")";
     return;
   }
-  Out << "[";
+  Out << ",";
   writeOperand(I.getOperand());
-  Out << "])";
+  Out << ")";
 }
 
 void JsWriter::writeMemoryAccess(Value *Operand, const Type *OperandType,
                                 bool IsVolatile, unsigned Alignment) {
   writeOperand(Operand);
+  Out << "()";
 }
 
 void JsWriter::visitLoadInst(LoadInst &I) {
@@ -2397,9 +2409,7 @@ void JsWriter::visitLoadInst(LoadInst &I) {
 }
 
 void JsWriter::visitStoreInst(StoreInst &I) {
-  writeMemoryAccess(I.getPointerOperand(), I.getOperand(0)->getType(),
-                    I.isVolatile(), I.getAlignment());
-  Out << " = ";
+  Out << "_p.s(";
   Value *Operand = I.getOperand(0);
   Constant *BitMask = 0;
   if (const IntegerType* ITy = dyn_cast<IntegerType>(Operand->getType()))
@@ -2407,14 +2417,16 @@ void JsWriter::visitStoreInst(StoreInst &I) {
       // We have a bit width that doesn't match an even power-of-2 byte
       // size. Consequently we must & the value with the type's bit mask
       BitMask = ConstantInt::get(ITy, ITy->getBitMask());
-  if (BitMask)
+  if (BitMask) {
     Out << "((";
+  }
   writeOperand(Operand);
   if (BitMask) {
     Out << ") & ";
     printConstant(BitMask, false);
     Out << ")"; 
   }
+  Out << ")";
 }
 
 void JsWriter::visitGetElementPtrInst(GetElementPtrInst &I) {

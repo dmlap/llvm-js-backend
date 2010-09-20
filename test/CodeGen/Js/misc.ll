@@ -1,5 +1,5 @@
 ; RUN: llvm-as < %s | llvm-dis > %t1
-; RUN: llc < %s -march=js -O0 -o misc.js
+; RUN: llc < %s -march=js -O0 -o Output/misc.js
 ; RUN: llc < %s -march=js -O0 | FileCheck %s
 
 @X = constant float 1.5

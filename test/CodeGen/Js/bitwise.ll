@@ -1,5 +1,5 @@
 ; RUN: llvm-as < %s | llvm-dis > %t1
-; RUN: llc < %s -march=js -O0 -o bitwise.js
+; RUN: llc < %s -march=js -O0 -o Output/bitwise.js
 ; RUN: llc < %s -march=js -O0 | FileCheck %s
 
 define void @bitwise() {
