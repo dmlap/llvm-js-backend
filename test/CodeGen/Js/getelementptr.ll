@@ -9,8 +9,8 @@
 
 define i32* @getElementPtrTest(%ST* %s) {
 entry:
-; CHECK: (_p({{[_$A-z0-9]+}}(1)[2][1][3],2));
-  %reg = getelementptr %ST* %s, i32 1, i32 2, i32 1, i32 3, i32 2
+; CHECK: (_a({{[_$A-z0-9]+}}(0)[2][1][3],2));
+  %reg = getelementptr %ST* %s, i32 0, i32 2, i32 1, i32 3, i32 2
   ret i32* %reg
 }
 define i32 @main() nounwind {

@@ -13,14 +13,21 @@ target triple = "i386-pc-linux-gnu"
 ; CHECK: function main
 define i32 @main() nounwind {
 entry:
+; CHECK: = _p();
   %retval = alloca i32                            ; <i32*> [#uses=2]
-  %0 = alloca i32                                 ; <i32*> [#uses=2]
+; CHECK: = _p();
+  %X = alloca i32                                 ; <i32*> [#uses=2]
   %"alloca point" = bitcast i32 0 to i32          ; <i32> [#uses=0]
-  %1 = load i8** @hello, align 4                  ; <i8*> [#uses=1]
-  %2 = call i32 (i8*, ...)* @printf(i8* noalias %1) nounwind ; <i32> [#uses=0]
-  store i32 0, i32* %0, align 4
-  %3 = load i32* %0, align 4                      ; <i32> [#uses=1]
-  store i32 %3, i32* %retval, align 4
+; CHECK: = hello();
+  %0 = load i8** @hello, align 4                  ; <i8*> [#uses=1]
+; CHECK: = printf({{[_$A-z0-9]+}});
+  %1 = call i32 (i8*, ...)* @printf(i8* noalias %0) nounwind ; <i32> [#uses=0]
+; CHECK: X.s(0);
+  store i32 0, i32* %X, align 4
+; CHECK: X();
+  %2 = load i32* %X, align 4                      ; <i32> [#uses=1]
+; CHECK: retval.s({{[_$A-z0-9]+}});
+  store i32 %2, i32* %retval, align 4
   br label %return
 
 return:                                           ; preds = %entry

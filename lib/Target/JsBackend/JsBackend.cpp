@@ -1102,14 +1102,17 @@ bool JsWriter::doInitialization(Module &M) {
   Out << "(function($w) {\n";
   Out << "$w[\"" << M.getModuleIdentifier() << "\"] = {};\n";
   Out << "var _ = $w[\"" << M.getModuleIdentifier() << "\"];\n";
-  Out << "function _p(o, x) {\n";
-  Out << "  var o = o === undefined? {} : o, x = x || 0, r = function(e) {\n";
-  Out << "    return o[(x += e || 0)];\n";
+  Out << "function _a(o, x) {\n";
+  Out << "  var o = o, x = x || 0, r = function(e) {\n";
+  Out << "    return o[(x + e || x)];\n";
   Out << "  };\n";
   Out << "  r.s = function(e) {\n";
   Out << "    o[x] = e;\n";
   Out << "  };\n";
   Out << "  return r;\n";
+  Out << "}\n";
+  Out << "function _p(o, x) {\n";
+  Out << "  return _a(o === undefined? [] : [o], x);\n";
   Out << "}\n";
 
   // Keep track of which functions are static ctors/dtors so they can have
@@ -1202,9 +1205,9 @@ bool JsWriter::doInitialization(Module &M) {
         }
         Out << "\n/* Module Members */\n";
 
-        Out << "var " << GetValueName(I) << " = _." << GetValueName(I) << " = ";
+        Out << "var " << GetValueName(I) << " = _." << GetValueName(I) << " = _p(";
         writeOperand(I->getInitializer(), true);
-        Out << ";\n";
+        Out << ");\n";
         ++I;
         break;
       }
@@ -2369,7 +2372,7 @@ void JsWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
     writeOperand(Ptr);
     return;
   }
-  Out << "_p(";
+  Out << "_a(";
   gep_type_iterator N = I;
   ++N;
   writeOperand(Ptr);
@@ -2409,7 +2412,7 @@ void JsWriter::visitLoadInst(LoadInst &I) {
 }
 
 void JsWriter::visitStoreInst(StoreInst &I) {
-  Out << "_p.s(";
+  Out << GetValueName(I.getOperand(1)) << ".s(";
   Value *Operand = I.getOperand(0);
   Constant *BitMask = 0;
   if (const IntegerType* ITy = dyn_cast<IntegerType>(Operand->getType()))

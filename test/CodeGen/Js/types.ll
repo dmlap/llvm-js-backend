@@ -12,7 +12,7 @@
 @ps = private constant [3 x i8] c"ab\00"
 ; CHECK: ;
 
-; CHECK: _.cps = [ false, false ];
+; CHECK: _.cps = _p([ false, false ]);
 @cps = common global < { i1, i1 } > zeroinitializer
 ; CHECK: _.gv = [
 ; CHECK: ,
