@@ -4,3 +4,4 @@
 /Targets.def
 /AsmParsers.def
 /Disassemblers.def
+llvm-config.h
