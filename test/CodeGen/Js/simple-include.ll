@@ -10,7 +10,7 @@ target triple = "i386-pc-linux-gnu"
 @.str = private constant [7 x i8] c"hello\0A\00", align 1 ; <[7 x i8]*> [#uses=1]
 ; CHECK: var hello = _.hello = 
 
-; CHECK: _.main = function
+; CHECK: function main
 define i32 @main() nounwind {
 entry:
   %retval = alloca i32                            ; <i32*> [#uses=2]

@@ -5,7 +5,7 @@
 ; CHECK: (function($w) {
 ; CHECK-NEXT: $w["<stdin>"] = {};
 ; CHECK-NEXT: var _ = $w["<stdin>"];
-; CHECK: _.factorial = function factorial({{.*X}}) {
+; CHECK:function factorial({{.*X}}) {
 define i32 @factorial(i32 %X) nounwind readnone {
 ; CHECK: var {{[_A-z0-9]+, [_A-z0-9]+, [_A-z0-9]+, [_A-z0-9]+, [_A-z0-9]+}};
 

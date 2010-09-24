@@ -1312,7 +1312,7 @@ void JsWriter::printFunctionSignature(const Function *F, bool Prototype) {
     Out << "var " << GetValueName(F);
     return;
   } 
-  Out << "_." << GetValueName(F) << " = function " << GetValueName(F) << "(";
+  Out << "function " << GetValueName(F) << "(";
   if(!F->arg_empty()) {
     // print out arguments
     Function::const_arg_iterator AI = F->arg_begin(), AE = F->arg_end();
@@ -1399,7 +1399,7 @@ void JsWriter::printFunction(Function &F) {
 
   Out << Closing.str();
   Out << "};\n";
-  Out << "\n";
+  Out << "_." << GetValueName(&F) << " = " << GetValueName(&F) << ";\n";
 }
 
 void JsWriter::printLoop(Loop *L) {

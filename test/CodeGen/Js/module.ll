@@ -16,7 +16,7 @@
 ; CHECK: var {{[_$A-z0-9]+}} = _p("Hello World");
 @.str = private constant [12 x i8] c"Hello World\00", align 1 ; <[12 x i8]*> [#uses=1]
 
-; CHECK: _.main = function main() {
+; CHECK:function main() {
 define i32 @main() nounwind {
 entry:
 ; CHECK: printf((_p({{[_$A-z0-9]+}}(0))));
@@ -24,6 +24,7 @@ entry:
 ; CHECK: return 0;
   ret i32 0
 }
+; CHECK: _.main = main;
 
 declare i32 @printf(i8* nocapture, ...) nounwind
 ; CHECK: _.main();
