@@ -1,5 +1,5 @@
 ; RUN: llvm-as < %s | llvm-dis > %t1
-; RUN: llc < %s -march=js -O0 -o getelementptr.html
+; RUN: llc < %s -march=js -O0 -o Output/getelementptr.html
 ; RUN: llc < %s -march=js | FileCheck %s
 
 %RT = type { i8 , [4 x [3 x i32]], i8  }
