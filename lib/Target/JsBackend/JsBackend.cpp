@@ -2132,11 +2132,7 @@ bool JsWriter::visitBuiltinCall(CallInst &I, Intrinsic::ID ID,
     Out << ")";
     return true;
   case Intrinsic::stacksave:
-    // Emit this as: Val = 0; *((void**)&Val) = __builtin_stack_save()
-    // to work around GCC bugs (see PR1809).
-    Out << "0; *((void**)&" << GetValueName(&I)
-        << ") = __builtin_stack_save()";
-    return true;
+    return false;
   case Intrinsic::x86_sse_cmp_ss:
   case Intrinsic::x86_sse_cmp_ps:
   case Intrinsic::x86_sse2_cmp_sd:
