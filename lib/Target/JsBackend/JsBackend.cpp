@@ -176,9 +176,8 @@ namespace {
         // Already something with an address exposed.
         writeOperandInternal(Operand);
       } else {
-        Out << "*(";
         writeOperand(Operand);
-        Out << ")";
+        Out << "()";
       }
     }
     
@@ -259,7 +258,7 @@ namespace {
       const AllocaInst *AI = dyn_cast<AllocaInst>(V);
       if (!AI) return false;
       if (AI->isArrayAllocation())
-        return 0;   // FIXME: we can also inline fixed size array allocas!
+        return 0;
       if (AI->getParent() != &AI->getParent()->getParent()->getEntryBlock())
         return 0;
       return AI;
@@ -413,8 +412,6 @@ bool JsBackendNameAllUsedStructsAndMergeFunctions::runOnModule(Module &M) {
       
   // Loop over all external functions and globals.  If we have two with
   // identical names, merge them.
-  // FIXME: This code should disappear when we don't allow values with the same
-  // names when they have different types!
   std::map<std::string, GlobalValue*> ExtSymbols;
   for (Module::iterator I = M.begin(), E = M.end(); I != E;) {
     Function *GV = I++;
@@ -818,7 +815,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
   }
 
   case Type::ArrayTyID:
-    // Use C99 compound expression literal initializer syntax.
     if (ConstantArray *CA = dyn_cast<ConstantArray>(CPV)) {
       printConstantArray(CA, Static);
     } else {
@@ -856,7 +852,6 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
     break;
 
   case Type::StructTyID:
-    // Use C99 compound expression literal initializer syntax.
     if (isa<ConstantAggregateZero>(CPV) || isa<UndefValue>(CPV)) {
       const StructType *ST = cast<StructType>(CPV->getType());
       Out << '[';
@@ -1131,12 +1126,8 @@ bool JsWriter::doInitialization(Module &M) {
     }
   }
   
-  // First output all the declarations for the program, because C requires
-  // Functions & globals to be declared before they are used.
-  //
   if (!M.getModuleInlineAsm().empty()) {
-    Out << "/* Module asm statements */\n"
-        << "asm(";
+    Out << "/* Module asm statements */\n";
 
     // Split the string into lines, to make it easier to read the .ll file.
     std::string Asm = M.getModuleInlineAsm();
@@ -1154,8 +1145,7 @@ bool JsWriter::doInitialization(Module &M) {
     }
     Out << "\"";
     PrintEscapedString(std::string(Asm.begin()+CurPos, Asm.end()), Out);
-    Out << "\");\n"
-        << "/* End Module asm statements */\n";
+    Out << "/* End Module asm statements */\n";
   }
 
   // Output the module-level locals
@@ -1437,9 +1427,7 @@ void JsWriter::printBasicBlock(BasicBlock *BB) {
 }
 
 
-// Specific Instruction type classes... note that all of the casts are
-// necessary because we use the instruction classes as opaque types...
-//
+// Specific Instruction type classes...
 void JsWriter::visitReturnInst(ReturnInst &I) {
   // If this is a struct return function, return the temporary struct.
   bool isStructReturn = I.getParent()->getParent()->hasStructRetAttr();
@@ -1489,9 +1477,10 @@ void JsWriter::visitSwitchInst(SwitchInst &SI) {
 }
 
 void JsWriter::visitIndirectBrInst(IndirectBrInst &IBI) {
-  Out << "  goto *(void*)(";
-  writeOperand(IBI.getOperand(0));
-  Out << ");\n";
+#ifndef NDEBUG
+  errs() << "Indirect branch not supported by JSBackend" << IBI;
+#endif
+  llvm_unreachable(0);
 }
 
 void JsWriter::visitUnreachableInst(UnreachableInst &I) {
@@ -1508,8 +1497,6 @@ bool JsWriter::isGotoCodeNecessary(BasicBlock *From, BasicBlock *To) {
 
   if (llvm::next(Function::iterator(From)) != Function::iterator(To))
     return true;  // Not the direct successor, we need a goto.
-
-  //isa<SwitchInst>(From->getTerminator())
 
   if (LI->getLoopFor(From) != LI->getLoopFor(To))
     return true;
@@ -2006,18 +1993,6 @@ void JsWriter::visitCallInst(CallInst &I) {
   if (I.isTailCall()) Out << " /*tail*/ ";
   
   if (!WroteCallee) {
-    // GCC is a real PITA.  It does not permit codegening casts of functions to
-    // function pointers if they are in a call (it generates a trap instruction
-    // instead!).  We work around this by inserting a cast to void* in between
-    // the function and the function pointer cast.  Unfortunately, we can't just
-    // form the constant expression here, because the folder will immediately
-    // nuke it.
-    //
-    // Note finally, that this is completely unsafe.  ANSI C does not guarantee
-    // that void* and function pointers have the same size. :( To deal with this
-    // in the common case, we handle casts where the number of arguments passed
-    // match exactly.
-    //
     if (ConstantExpr *CE = dyn_cast<ConstantExpr>(Callee)) {
       if (CE->isCast()) {
         if (Function *RF = dyn_cast<Function>(CE->getOperand(0))) {
