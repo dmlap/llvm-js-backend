@@ -30,58 +30,18 @@
 #include <algorithm>
 using namespace llvm;
 
-// An example for liveAt():
-//
-// this = [1,4), liveAt(0) will return false. The instruction defining this
-// spans slots [0,3]. The interval belongs to an spilled definition of the
-// variable it represents. This is because slot 1 is used (def slot) and spans
-// up to slot 3 (store slot).
-//
-bool LiveInterval::liveAt(SlotIndex I) const {
-  Ranges::const_iterator r = std::upper_bound(ranges.begin(), ranges.end(), I);
-
-  if (r == ranges.begin())
-    return false;
-
-  --r;
-  return r->contains(I);
+// CompEnd - Compare LiveRange ends.
+namespace {
+struct CompEnd {
+  bool operator()(const LiveRange &A, const LiveRange &B) const {
+    return A.end < B.end;
+  }
+};
 }
 
-// liveBeforeAndAt - Check if the interval is live at the index and the index
-// just before it. If index is liveAt, check if it starts a new live range.
-// If it does, then check if the previous live range ends at index-1.
-bool LiveInterval::liveBeforeAndAt(SlotIndex I) const {
-  Ranges::const_iterator r = std::upper_bound(ranges.begin(), ranges.end(), I);
-
-  if (r == ranges.begin())
-    return false;
-
-  --r;
-  if (!r->contains(I))
-    return false;
-  if (I != r->start)
-    return true;
-  // I is the start of a live range. Check if the previous live range ends
-  // at I-1.
-  if (r == ranges.begin())
-    return false;
-  return r->end == I;
-}
-
-/// killedAt - Return true if a live range ends at index. Note that the kill
-/// point is not contained in the half-open live range. It is usually the
-/// getDefIndex() slot following its last use.
-bool LiveInterval::killedAt(SlotIndex I) const {
-  Ranges::const_iterator r = std::lower_bound(ranges.begin(), ranges.end(), I);
-
-  // Now r points to the first interval with start >= I, or ranges.end().
-  if (r == ranges.begin())
-    return false;
-
-  --r;
-  // Now r points to the last interval with end <= I.
-  // r->end is the kill point.
-  return r->end == I;
+LiveInterval::iterator LiveInterval::find(SlotIndex Pos) {
+  return std::upper_bound(begin(), end(), LiveRange(SlotIndex(), Pos, 0),
+                          CompEnd());
 }
 
 /// killedInRange - Return true if the interval has kills in [Start,End).
@@ -330,25 +290,14 @@ LiveInterval::addRangeFrom(LiveRange LR, iterator From) {
   return ranges.insert(it, LR);
 }
 
-/// isInOneLiveRange - Return true if the range specified is entirely in
-/// a single LiveRange of the live interval.
-bool LiveInterval::isInOneLiveRange(SlotIndex Start, SlotIndex End) {
-  Ranges::iterator I = std::upper_bound(ranges.begin(), ranges.end(), Start);
-  if (I == ranges.begin())
-    return false;
-  --I;
-  return I->containsRange(Start, End);
-}
-
 
 /// removeRange - Remove the specified range from this interval.  Note that
 /// the range must be in a single LiveRange in its entirety.
 void LiveInterval::removeRange(SlotIndex Start, SlotIndex End,
                                bool RemoveDeadValNo) {
   // Find the LiveRange containing this span.
-  Ranges::iterator I = std::upper_bound(ranges.begin(), ranges.end(), Start);
-  assert(I != ranges.begin() && "Range is not in interval!");
-  --I;
+  Ranges::iterator I = find(Start);
+  assert(I != ranges.end() && "Range is not in interval!");
   assert(I->containsRange(Start, End) && "Range is not entirely in interval!");
 
   // If the span we are removing is at the start of the LiveRange, adjust it.
@@ -403,32 +352,6 @@ void LiveInterval::removeValNo(VNInfo *ValNo) {
   } while (I != E);
   // Now that ValNo is dead, remove it.
   markValNoForDeletion(ValNo);
-}
-
-/// getLiveRangeContaining - Return the live range that contains the
-/// specified index, or null if there is none.
-LiveInterval::const_iterator
-LiveInterval::FindLiveRangeContaining(SlotIndex Idx) const {
-  const_iterator It = std::upper_bound(begin(), end(), Idx);
-  if (It != ranges.begin()) {
-    --It;
-    if (It->contains(Idx))
-      return It;
-  }
-
-  return end();
-}
-
-LiveInterval::iterator
-LiveInterval::FindLiveRangeContaining(SlotIndex Idx) {
-  iterator It = std::upper_bound(begin(), end(), Idx);
-  if (It != begin()) {
-    --It;
-    if (It->contains(Idx))
-      return It;
-  }
-
-  return end();
 }
 
 /// findDefinedVNInfo - Find the VNInfo defined by the specified
@@ -659,6 +582,9 @@ VNInfo* LiveInterval::MergeValueNumberInto(VNInfo *V1, VNInfo *V2) {
     }
   }
 
+  // Merge the relevant flags.
+  V2->mergeFlags(V1);
+
   // Now that V1 is dead, remove it.
   markValNoForDeletion(V1);
 
@@ -755,10 +681,7 @@ void LiveInterval::print(raw_ostream &OS, const TargetRegisterInfo *TRI) const {
       if (vni->isUnused()) {
         OS << "x";
       } else {
-        if (!vni->isDefAccurate() && !vni->isPHIDef())
-          OS << "?";
-        else
-          OS << vni->def;
+        OS << vni->def;
         if (vni->hasPHIKill())
           OS << "-phikill";
         if (vni->hasRedefByEC())

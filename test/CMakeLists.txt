@@ -18,7 +18,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 else() # Default for all other unix like systems.
   # CMake hardcodes the library locaction using rpath.
   # Therefore LD_LIBRARY_PATH is not required to run binaries in the
-  # build dir. We pass it anyways. 
+  # build dir. We pass it anyways.
   set(SHLIBPATH_VAR "LD_LIBRARY_PATH")
 endif()
 
@@ -52,7 +52,15 @@ if(PYTHONINTERP_FOUND)
   set(LLVM_TOOLS_DIR "${LLVM_TOOLS_BINARY_DIR}/${CMAKE_CFG_INTDIR}")
   set(LLVMGCCDIR "")
   set(PYTHON_EXECUTABLE ${PYTHON_EXECUTABLE})
-  set(LLVM_BUILD_MODE ${CMAKE_CFG_INTDIR})
+  if (CMAKE_CONFIGURATION_TYPES)
+    # FIXME: We have no idea. It could be any of them... So just output all of
+    # them.
+    set(LLVM_BUILD_MODE "${CMAKE_CONFIGURATION_TYPES}")
+  elseif (CMAKE_BUILD_TYPE)
+    set(LLVM_BUILD_MODE "${CMAKE_BUILD_TYPE}")
+  else()
+    set(LLVM_BUILD_MODE "None")
+  endif()
   set(ENABLE_SHARED ${LLVM_SHARED_LIBS_ENABLED})
   set(SHLIBPATH_VAR ${SHLIBPATH_VAR})
 

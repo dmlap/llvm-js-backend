@@ -27,6 +27,10 @@ static cl::opt<bool>
 UseMOVT("arm-use-movt",
         cl::init(true), cl::Hidden);
 
+static cl::opt<bool>
+StrictAlign("arm-strict-align", cl::Hidden,
+            cl::desc("Disallow all unaligned memory accesses"));
+
 ARMSubtarget::ARMSubtarget(const std::string &TT, const std::string &FS,
                            bool isT)
   : ARMArchVersion(V4)
@@ -47,6 +51,7 @@ ARMSubtarget::ARMSubtarget(const std::string &TT, const std::string &FS,
   , HasDataBarrier(false)
   , Pref32BitThumb(false)
   , FPOnlySP(false)
+  , AllowsUnalignedMem(false)
   , stackAlignment(4)
   , CPUString("generic")
   , TargetType(isELF) // Default to ELF unless otherwise specified.
@@ -122,6 +127,11 @@ ARMSubtarget::ARMSubtarget(const std::string &TT, const std::string &FS,
 
   if (!isThumb() || hasThumb2())
     PostRAScheduler = true;
+
+  // v6+ may or may not support unaligned mem access depending on the system
+  // configuration.
+  if (!StrictAlign && hasV6Ops() && isTargetDarwin())
+    AllowsUnalignedMem = true;
 }
 
 /// GVIsIndirectSymbol - true if the GV will be accessed via an indirect symbol.
@@ -173,6 +183,18 @@ ARMSubtarget::GVIsIndirectSymbol(const GlobalValue *GV,
   }
 
   return false;
+}
+
+unsigned ARMSubtarget::getMispredictionPenalty() const {
+  // If we have a reasonable estimate of the pipeline depth, then we can
+  // estimate the penalty of a misprediction based on that.
+  if (isCortexA8())
+    return 13;
+  else if (isCortexA9())
+    return 8;
+  
+  // Otherwise, just return a sensible default.
+  return 10;
 }
 
 bool ARMSubtarget::enablePostRAScheduler(

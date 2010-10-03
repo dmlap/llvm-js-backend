@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -18,7 +19,6 @@
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
-#include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCParser/AsmCond.h"
 #include "llvm/MC/MCParser/AsmLexer.h"
 #include "llvm/MC/MCParser/MCAsmParser.h"
@@ -148,8 +148,10 @@ private:
   void HandleMacroExit();
 
   void PrintMacroInstantiations();
-  void PrintMessage(SMLoc Loc, const std::string &Msg, const char *Type) const;
-    
+  void PrintMessage(SMLoc Loc, const Twine &Msg, const char *Type) const {
+    SrcMgr.PrintMessage(Loc, Msg, Type);
+  }
+
   /// EnterIncludeFile - Enter the specified file. This returns true on failure.
   bool EnterIncludeFile(const std::string &Filename);
 
@@ -178,6 +180,7 @@ private:
   // Directive Parsing.
   bool ParseDirectiveAscii(bool ZeroTerminated); // ".ascii", ".asciiz"
   bool ParseDirectiveValue(unsigned Size); // ".byte", ".long", ...
+  bool ParseDirectiveRealValue(const fltSemantics &); // ".single", ...
   bool ParseDirectiveFill(); // ".fill"
   bool ParseDirectiveSpace(); // ".space"
   bool ParseDirectiveZero(); // ".zero"
@@ -315,22 +318,17 @@ void AsmParser::PrintMacroInstantiations() {
 }
 
 void AsmParser::Warning(SMLoc L, const Twine &Msg) {
-  PrintMessage(L, Msg.str(), "warning");
+  PrintMessage(L, Msg, "warning");
   PrintMacroInstantiations();
 }
 
 bool AsmParser::Error(SMLoc L, const Twine &Msg) {
   HadError = true;
-  PrintMessage(L, Msg.str(), "error");
+  PrintMessage(L, Msg, "error");
   PrintMacroInstantiations();
   return true;
 }
 
-void AsmParser::PrintMessage(SMLoc Loc, const std::string &Msg, 
-                             const char *Type) const {
-  SrcMgr.PrintMessage(Loc, Msg, Type);
-}
-                  
 bool AsmParser::EnterIncludeFile(const std::string &Filename) {
   int NewBuf = SrcMgr.AddIncludeFile(Filename, Lexer.getLoc());
   if (NewBuf == -1)
@@ -700,44 +698,45 @@ static unsigned getBinOpPrecedence(AsmToken::TokenKind K,
     Kind = MCBinaryExpr::LOr;
     return 1;
 
-    // Low Precedence: +, -, ==, !=, <>, <, <=, >, >=
-  case AsmToken::Plus:
-    Kind = MCBinaryExpr::Add;
-    return 2;
-  case AsmToken::Minus:
-    Kind = MCBinaryExpr::Sub;
-    return 2;
-  case AsmToken::EqualEqual:
-    Kind = MCBinaryExpr::EQ;
-    return 2;
-  case AsmToken::ExclaimEqual:
-  case AsmToken::LessGreater:
-    Kind = MCBinaryExpr::NE;
-    return 2;
-  case AsmToken::Less:
-    Kind = MCBinaryExpr::LT;
-    return 2;
-  case AsmToken::LessEqual:
-    Kind = MCBinaryExpr::LTE;
-    return 2;
-  case AsmToken::Greater:
-    Kind = MCBinaryExpr::GT;
-    return 2;
-  case AsmToken::GreaterEqual:
-    Kind = MCBinaryExpr::GTE;
-    return 2;
-
-    // Intermediate Precedence: |, &, ^
+    
+    // Low Precedence: |, &, ^
     //
     // FIXME: gas seems to support '!' as an infix operator?
   case AsmToken::Pipe:
     Kind = MCBinaryExpr::Or;
-    return 3;
+    return 2;
   case AsmToken::Caret:
     Kind = MCBinaryExpr::Xor;
-    return 3;
+    return 2;
   case AsmToken::Amp:
     Kind = MCBinaryExpr::And;
+    return 2;
+      
+    // Intermediate Precedence: +, -, ==, !=, <>, <, <=, >, >=
+  case AsmToken::Plus:
+    Kind = MCBinaryExpr::Add;
+    return 3;
+  case AsmToken::Minus:
+    Kind = MCBinaryExpr::Sub;
+    return 3;
+  case AsmToken::EqualEqual:
+    Kind = MCBinaryExpr::EQ;
+    return 3;
+  case AsmToken::ExclaimEqual:
+  case AsmToken::LessGreater:
+    Kind = MCBinaryExpr::NE;
+    return 3;
+  case AsmToken::Less:
+    Kind = MCBinaryExpr::LT;
+    return 3;
+  case AsmToken::LessEqual:
+    Kind = MCBinaryExpr::LTE;
+    return 3;
+  case AsmToken::Greater:
+    Kind = MCBinaryExpr::GT;
+    return 3;
+  case AsmToken::GreaterEqual:
+    Kind = MCBinaryExpr::GTE;
     return 3;
 
     // Highest Precedence: *, /, %, <<, >>
@@ -925,6 +924,10 @@ bool AsmParser::ParseStatement() {
       return ParseDirectiveValue(4);
     if (IDVal == ".quad")
       return ParseDirectiveValue(8);
+    if (IDVal == ".single")
+      return ParseDirectiveRealValue(APFloat::IEEEsingle);
+    if (IDVal == ".double")
+      return ParseDirectiveRealValue(APFloat::IEEEdouble);
 
     if (IDVal == ".align") {
       bool IsPow2 = !getContext().getAsmInfo().getAlignmentIsInBytes();
@@ -961,6 +964,9 @@ bool AsmParser::ParseStatement() {
 
     if (IDVal == ".globl" || IDVal == ".global")
       return ParseDirectiveSymbolAttribute(MCSA_Global);
+    // ELF only? Should it be here?
+    if (IDVal == ".local")
+      return ParseDirectiveSymbolAttribute(MCSA_Local);
     if (IDVal == ".hidden")
       return ParseDirectiveSymbolAttribute(MCSA_Hidden);
     if (IDVal == ".indirect_symbol")
@@ -1040,14 +1046,9 @@ bool AsmParser::ParseStatement() {
   }
 
   // If parsing succeeded, match the instruction.
-  if (!HadError) {
-    MCInst Inst;
-    if (!getTargetParser().MatchInstruction(IDLoc, ParsedOperands, Inst)) {
-      // Emit the instruction on success.
-      Out.EmitInstruction(Inst);
-    } else
-      HadError = true;
-  }
+  if (!HadError)
+    HadError = getTargetParser().MatchAndEmitInstruction(IDLoc, ParsedOperands,
+                                                         Out);
 
   // Free any parsed operands.
   for (unsigned i = 0, e = ParsedOperands.size(); i != e; ++i)
@@ -1405,6 +1406,56 @@ bool AsmParser::ParseDirectiveValue(unsigned Size) {
   return false;
 }
 
+/// ParseDirectiveRealValue
+///  ::= (.single | .double) [ expression (, expression)* ]
+bool AsmParser::ParseDirectiveRealValue(const fltSemantics &Semantics) {
+  if (getLexer().isNot(AsmToken::EndOfStatement)) {
+    CheckForValidSection();
+
+    for (;;) {
+      // We don't truly support arithmetic on floating point expressions, so we
+      // have to manually parse unary prefixes.
+      bool IsNeg = false;
+      if (getLexer().is(AsmToken::Minus)) {
+        Lex();
+        IsNeg = true;
+      } else if (getLexer().is(AsmToken::Plus))
+        Lex();
+
+      if (getLexer().isNot(AsmToken::Integer) && 
+          getLexer().isNot(AsmToken::Real))
+        return TokError("unexpected token in directive");
+
+      // Convert to an APFloat.
+      APFloat Value(Semantics);
+      if (Value.convertFromString(getTok().getString(),
+                                  APFloat::rmNearestTiesToEven) ==
+          APFloat::opInvalidOp)
+        return TokError("invalid floating point literal");
+      if (IsNeg)
+        Value.changeSign();
+
+      // Consume the numeric token.
+      Lex();
+
+      // Emit the value as an integer.
+      APInt AsInt = Value.bitcastToAPInt();
+      getStreamer().EmitIntValue(AsInt.getLimitedValue(),
+                                 AsInt.getBitWidth() / 8, DEFAULT_ADDRSPACE);
+
+      if (getLexer().is(AsmToken::EndOfStatement))
+        break;
+      
+      if (getLexer().isNot(AsmToken::Comma))
+        return TokError("unexpected token in directive");
+      Lex();
+    }
+  }
+
+  Lex();
+  return false;
+}
+
 /// ParseDirectiveSpace
 ///  ::= .space expression [ , expression ]
 bool AsmParser::ParseDirectiveSpace() {
@@ -1645,7 +1696,7 @@ bool AsmParser::ParseDirectiveSymbolAttribute(MCSymbolAttr Attr) {
   }
 
   Lex();
-  return false;  
+  return false;
 }
 
 /// ParseDirectiveELFType
@@ -2005,7 +2056,7 @@ bool GenericAsmParser::ParseDirectiveLoc(StringRef, SMLoc DirectiveLoc) {
     Lex();
   }
 
-  unsigned Flags = 0;
+  unsigned Flags = DWARF2_LINE_DEFAULT_IS_STMT ? DWARF2_FLAG_IS_STMT : 0;
   unsigned Isa = 0;
   if (getLexer().isNot(AsmToken::EndOfStatement)) {
     for (;;) {

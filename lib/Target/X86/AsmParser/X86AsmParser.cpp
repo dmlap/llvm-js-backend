@@ -10,20 +10,21 @@
 #include "llvm/Target/TargetAsmParser.h"
 #include "X86.h"
 #include "X86Subtarget.h"
-#include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringSwitch.h"
-#include "llvm/ADT/Twine.h"
+#include "llvm/Target/TargetRegistry.h"
+#include "llvm/Target/TargetAsmParser.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCParser/MCAsmLexer.h"
 #include "llvm/MC/MCParser/MCAsmParser.h"
 #include "llvm/MC/MCParser/MCParsedAsmOperand.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSwitch.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetRegistry.h"
-#include "llvm/Target/TargetAsmParser.h"
 using namespace llvm;
 
 namespace {
@@ -35,7 +36,7 @@ class X86ATTAsmParser : public TargetAsmParser {
 
 protected:
   unsigned Is64Bit : 1;
-
+  
 private:
   MCAsmParser &getParser() const { return Parser; }
 
@@ -50,9 +51,9 @@ private:
 
   bool ParseDirectiveWord(unsigned Size, SMLoc L);
 
-  bool MatchInstruction(SMLoc IDLoc,
-                        const SmallVectorImpl<MCParsedAsmOperand*> &Operands,
-                        MCInst &Inst);
+  bool MatchAndEmitInstruction(SMLoc IDLoc,
+                               SmallVectorImpl<MCParsedAsmOperand*> &Operands,
+                               MCStreamer &Out);
 
   /// @name Auto-generated Matcher Functions
   /// {
@@ -65,7 +66,7 @@ private:
 public:
   X86ATTAsmParser(const Target &T, MCAsmParser &_Parser, TargetMachine &TM)
     : TargetAsmParser(T), Parser(_Parser), TM(TM) {
-
+      
     // Initialize the set of available features.
     setAvailableFeatures(ComputeAvailableFeatures(
                            &TM.getSubtarget<X86Subtarget>()));
@@ -373,14 +374,18 @@ bool X86ATTAsmParser::ParseRegister(unsigned &RegNo,
   // validation later, so maybe there is no need for this here.
   RegNo = MatchRegisterName(Tok.getString());
 
+  // If the match failed, try the register name as lowercase.
+  if (RegNo == 0)
+    RegNo = MatchRegisterName(LowercaseString(Tok.getString()));
+  
   // FIXME: This should be done using Requires<In32BitMode> and
   // Requires<In64BitMode> so "eiz" usage in 64-bit instructions
   // can be also checked.
   if (RegNo == X86::RIZ && !Is64Bit)
     return Error(Tok.getLoc(), "riz register in 64-bit mode only");
 
-  // Parse %st(1) and "%st" as "%st(0)"
-  if (RegNo == 0 && Tok.getString() == "st") {
+  // Parse "%st" as "%st(0)" and "%st(1)", which is multiple tokens.
+  if (RegNo == 0 && (Tok.getString() == "st" || Tok.getString() == "ST")) {
     RegNo = X86::ST0;
     EndLoc = Tok.getLoc();
     Parser.Lex(); // Eat 'st'
@@ -629,6 +634,15 @@ ParseInstruction(StringRef Name, SMLoc NameLoc,
     .Case("repnz", "repne")
     .Case("iret", "iretl")
     .Case("sysret", "sysretl")
+    .Case("cbw",  "cbtw")
+    .Case("cwd",  "cwtd")
+    .Case("cdq", "cltd")
+    .Case("cwde", "cwtl")
+    .Case("cdqe", "cltq")
+    .Case("smovb", "movsb")
+    .Case("smovw", "movsw")
+    .Case("smovl", "movsl")
+    .Case("smovq", "movsq")
     .Case("push", Is64Bit ? "pushq" : "pushl")
     .Case("pop", Is64Bit ? "popq" : "popl")
     .Case("pushf", Is64Bit ? "pushfq" : "pushfl")
@@ -680,6 +694,12 @@ ParseInstruction(StringRef Name, SMLoc NameLoc,
     .Case("cmovnzq", "cmovneq").Case("cmovnz",  "cmovne")
     .Case("cmovzw",  "cmovew") .Case("cmovzl",  "cmovel")
     .Case("cmovzq",  "cmoveq") .Case("cmovz",   "cmove")
+    // Floating point stack cmov aliases.
+    .Case("fcmovz", "fcmove")
+    .Case("fcmova", "fcmovnbe")
+    .Case("fcmovnae", "fcmovb")
+    .Case("fcmovna", "fcmovbe")
+    .Case("fcmovae", "fcmovnb")
     .Case("fwait", "wait")
     .Case("movzx", "movzb")  // FIXME: Not correct.
     .Case("fildq", "fildll")
@@ -899,7 +919,18 @@ ParseInstruction(StringRef Name, SMLoc NameLoc,
     delete Operands[2];
     Operands.erase(Operands.begin() + 2);
   }
-
+  
+  // FIXME: Hack to handle "f{mulp,addp} st(0), $op" the same as
+  // "f{mulp,addp} $op", since they commute.  We also allow fdivrp/fsubrp even
+  // though they don't commute, solely because gas does support this.
+  if ((Name=="fmulp" || Name=="faddp" || Name=="fsubrp" || Name=="fdivrp") &&
+      Operands.size() == 3 &&
+      static_cast<X86Operand*>(Operands[1])->isReg() &&
+      static_cast<X86Operand*>(Operands[1])->getReg() == X86::ST0) {
+    delete Operands[1];
+    Operands.erase(Operands.begin() + 1);
+  }
+  
   // FIXME: Hack to handle "imul <imm>, B" which is an alias for "imul <imm>, B,
   // B".
   if (Name.startswith("imul") && Operands.size() == 3 &&
@@ -1009,6 +1040,39 @@ ParseInstruction(StringRef Name, SMLoc NameLoc,
                                           NameLoc);
   }
   
+  // call foo is not ambiguous with callw.
+  if (Name == "call" && Operands.size() == 2) {
+    const char *NewName = Is64Bit ? "callq" : "calll";
+    delete Operands[0];
+    Operands[0] = X86Operand::CreateToken(NewName, NameLoc);
+    Name = NewName;
+  }
+  
+  // movsd -> movsl (when no operands are specified).
+  if (Name == "movsd" && Operands.size() == 1) {
+    delete Operands[0];
+    Operands[0] = X86Operand::CreateToken("movsl", NameLoc);
+  }
+  
+  // fstp <mem> -> fstps <mem>.  Without this, we'll default to fstpl due to
+  // suffix searching.
+  if (Name == "fstp" && Operands.size() == 2 &&
+      static_cast<X86Operand*>(Operands[1])->isMem()) {
+    delete Operands[0];
+    Operands[0] = X86Operand::CreateToken("fstps", NameLoc);
+  }
+  
+  
+  // "clr <reg>" -> "xor <reg>, <reg>".
+  if ((Name == "clrb" || Name == "clrw" || Name == "clrl" || Name == "clrq" ||
+       Name == "clr") && Operands.size() == 2 &&
+      static_cast<X86Operand*>(Operands[1])->isReg()) {
+    unsigned RegNo = static_cast<X86Operand*>(Operands[1])->getReg();
+    Operands.push_back(X86Operand::CreateReg(RegNo, NameLoc, NameLoc));
+    delete Operands[0];
+    Operands[0] = X86Operand::CreateToken("xor", NameLoc);
+  }
+  
   return false;
 }
 
@@ -1046,17 +1110,44 @@ bool X86ATTAsmParser::ParseDirectiveWord(unsigned Size, SMLoc L) {
 
 
 bool X86ATTAsmParser::
-MatchInstruction(SMLoc IDLoc,
-                 const SmallVectorImpl<MCParsedAsmOperand*> &Operands,
-                 MCInst &Inst) {
+MatchAndEmitInstruction(SMLoc IDLoc,
+                        SmallVectorImpl<MCParsedAsmOperand*> &Operands,
+                        MCStreamer &Out) {
   assert(!Operands.empty() && "Unexpect empty operand list!");
+  X86Operand *Op = static_cast<X86Operand*>(Operands[0]);
+  assert(Op->isToken() && "Leading operand should always be a mnemonic!");
 
+  // First, handle aliases that expand to multiple instructions.
+  // FIXME: This should be replaced with a real .td file alias mechanism.
+  if (Op->getToken() == "fstsw" || Op->getToken() == "fstcw" ||
+      Op->getToken() == "finit" || Op->getToken() == "fsave" ||
+      Op->getToken() == "fstenv") {
+    MCInst Inst;
+    Inst.setOpcode(X86::WAIT);
+    Out.EmitInstruction(Inst);
+
+    const char *Repl =
+      StringSwitch<const char*>(Op->getToken())
+        .Case("finit", "fninit")
+        .Case("fsave", "fnsave")
+        .Case("fstcw", "fnstcw")
+        .Case("fstenv", "fnstenv")
+        .Case("fstsw", "fnstsw")
+        .Default(0);
+    assert(Repl && "Unknown wait-prefixed instruction");
+    delete Operands[0];
+    Operands[0] = X86Operand::CreateToken(Repl, IDLoc);
+  }
+  
+  
   bool WasOriginallyInvalidOperand = false;
   unsigned OrigErrorInfo;
+  MCInst Inst;
   
   // First, try a direct match.
   switch (MatchInstructionImpl(Operands, Inst, OrigErrorInfo)) {
   case Match_Success:
+    Out.EmitInstruction(Inst);
     return false;
   case Match_MissingFeature:
     Error(IDLoc, "instruction requires a CPU feature not currently enabled");
@@ -1072,9 +1163,6 @@ MatchInstruction(SMLoc IDLoc,
   // valid prefixes, and we could just infer the right unambiguous
   // type. However, that requires substantially more matcher support than the
   // following hack.
-
-  X86Operand *Op = static_cast<X86Operand*>(Operands[0]);
-  assert(Op->isToken() && "Leading operand should always be a mnemonic!");
   
   // Change the operand to point to a temporary token.
   StringRef Base = Op->getToken();
@@ -1103,8 +1191,10 @@ MatchInstruction(SMLoc IDLoc,
   unsigned NumSuccessfulMatches =
     (MatchB == Match_Success) + (MatchW == Match_Success) +
     (MatchL == Match_Success) + (MatchQ == Match_Success);
-  if (NumSuccessfulMatches == 1)
+  if (NumSuccessfulMatches == 1) {
+    Out.EmitInstruction(Inst);
     return false;
+  }
 
   // Otherwise, the match failed, try to produce a decent error message.
 

@@ -651,13 +651,11 @@ defm Int_CVTSS2SI : sse12_cvt_sint<0x2D, VR128, GR32, int_x86_sse_cvtss2si,
                       f32mem, load, "cvtss2si">, XS;
 defm Int_CVTSS2SI64 : sse12_cvt_sint<0x2D, VR128, GR64, int_x86_sse_cvtss2si64,
                       f32mem, load, "cvtss2si{q}">, XS, REX_W;
-defm Int_CVTSD2SI : sse12_cvt_sint<0x2D, VR128, GR32, int_x86_sse2_cvtsd2si,
-                      f128mem, load, "cvtsd2si">, XD;
-defm Int_CVTSD2SI64 : sse12_cvt_sint<0x2D, VR128, GR64, int_x86_sse2_cvtsd2si64,
-                        f128mem, load, "cvtsd2si">, XD, REX_W;
+defm CVTSD2SI : sse12_cvt_sint<0x2D, VR128, GR32, int_x86_sse2_cvtsd2si,
+                f128mem, load, "cvtsd2si{l}">, XD;
+defm CVTSD2SI64 : sse12_cvt_sint<0x2D, VR128, GR64, int_x86_sse2_cvtsd2si64,
+                  f128mem, load, "cvtsd2si{q}">, XD, REX_W;
 
-defm CVTSD2SI64 : sse12_cvt_s_np<0x2D, VR128, GR64, f64mem, "cvtsd2si{q}">, XD,
-                        REX_W;
 
 let isAsmParserOnly = 1 in {
   defm Int_VCVTSI2SS : sse12_cvt_sint_3addr<0x2A, GR32, VR128,
@@ -932,9 +930,13 @@ def VCVTTPS2DQYrm : VSSI<0x5B, MRMSrcMem, (outs VR256:$dst), (ins f256mem:$src),
                       "cvttps2dq\t{$src, $dst|$dst, $src}", []>, VEX;
 }
 def CVTTPS2DQrr : SSI<0x5B, MRMSrcReg, (outs VR128:$dst), (ins VR128:$src),
-                      "cvttps2dq\t{$src, $dst|$dst, $src}", []>;
+                      "cvttps2dq\t{$src, $dst|$dst, $src}",
+                      [(set VR128:$dst,
+                            (int_x86_sse2_cvttps2dq VR128:$src))]>;
 def CVTTPS2DQrm : SSI<0x5B, MRMSrcMem, (outs VR128:$dst), (ins f128mem:$src),
-                      "cvttps2dq\t{$src, $dst|$dst, $src}", []>;
+                      "cvttps2dq\t{$src, $dst|$dst, $src}",
+                      [(set VR128:$dst,
+                            (int_x86_sse2_cvttps2dq (memop addr:$src)))]>;
 
 
 let isAsmParserOnly = 1 in {
@@ -949,16 +951,6 @@ def Int_VCVTTPS2DQrm : I<0x5B, MRMSrcMem, (outs VR128:$dst), (ins f128mem:$src),
                                            (memop addr:$src)))]>,
                       XS, VEX, Requires<[HasAVX]>;
 }
-def Int_CVTTPS2DQrr : I<0x5B, MRMSrcReg, (outs VR128:$dst), (ins VR128:$src),
-                        "cvttps2dq\t{$src, $dst|$dst, $src}",
-                        [(set VR128:$dst,
-                              (int_x86_sse2_cvttps2dq VR128:$src))]>,
-                      XS, Requires<[HasSSE2]>;
-def Int_CVTTPS2DQrm : I<0x5B, MRMSrcMem, (outs VR128:$dst), (ins f128mem:$src),
-                        "cvttps2dq\t{$src, $dst|$dst, $src}",
-                        [(set VR128:$dst, (int_x86_sse2_cvttps2dq
-                                           (memop addr:$src)))]>,
-                      XS, Requires<[HasSSE2]>;
 
 let isAsmParserOnly = 1 in {
 def Int_VCVTTPD2DQrr : VPDI<0xE6, MRMSrcReg, (outs VR128:$dst),
@@ -972,13 +964,13 @@ def Int_VCVTTPD2DQrm : VPDI<0xE6, MRMSrcMem, (outs VR128:$dst),
                           [(set VR128:$dst, (int_x86_sse2_cvttpd2dq
                                              (memop addr:$src)))]>, VEX;
 }
-def Int_CVTTPD2DQrr : PDI<0xE6, MRMSrcReg, (outs VR128:$dst), (ins VR128:$src),
-                          "cvttpd2dq\t{$src, $dst|$dst, $src}",
-                       [(set VR128:$dst, (int_x86_sse2_cvttpd2dq VR128:$src))]>;
-def Int_CVTTPD2DQrm : PDI<0xE6, MRMSrcMem, (outs VR128:$dst),(ins f128mem:$src),
-                          "cvttpd2dq\t{$src, $dst|$dst, $src}",
-                          [(set VR128:$dst, (int_x86_sse2_cvttpd2dq
-                                             (memop addr:$src)))]>;
+def CVTTPD2DQrr : PDI<0xE6, MRMSrcReg, (outs VR128:$dst), (ins VR128:$src),
+                      "cvttpd2dq\t{$src, $dst|$dst, $src}",
+                      [(set VR128:$dst, (int_x86_sse2_cvttpd2dq VR128:$src))]>;
+def CVTTPD2DQrm : PDI<0xE6, MRMSrcMem, (outs VR128:$dst),(ins f128mem:$src),
+                      "cvttpd2dq\t{$src, $dst|$dst, $src}",
+                      [(set VR128:$dst, (int_x86_sse2_cvttpd2dq
+                                        (memop addr:$src)))]>;
 
 let isAsmParserOnly = 1 in {
 // The assembler can recognize rr 256-bit instructions by seeing a ymm
@@ -1428,9 +1420,11 @@ let AddedComplexity = 10 in {
 /// sse12_extr_sign_mask - sse 1 & 2 unpack and interleave
 multiclass sse12_extr_sign_mask<RegisterClass RC, Intrinsic Int, string asm,
                                 Domain d> {
-  def rr : PI<0x50, MRMSrcReg, (outs GR32:$dst), (ins RC:$src),
-              !strconcat(asm, "\t{$src, $dst|$dst, $src}"),
+  def rr32 : PI<0x50, MRMSrcReg, (outs GR32:$dst), (ins RC:$src),
+                !strconcat(asm, "\t{$src, $dst|$dst, $src}"),
                      [(set GR32:$dst, (Int RC:$src))], d>;
+  def rr64 : PI<0x50, MRMSrcReg, (outs GR64:$dst), (ins RC:$src),
+                !strconcat(asm, "\t{$src, $dst|$dst, $src}"), [], d>, REX_W;
 }
 
 // Mask creation
@@ -3915,7 +3909,7 @@ def : Pat<(v2i64 (and (xor VR128:$src1, (bc_v2i64 (v16i8 immAllOnesV))),
 def : Pat<(v4f32 (sint_to_fp (v4i32 VR128:$src))),
           (Int_CVTDQ2PSrr VR128:$src)>, Requires<[HasSSE2]>;
 def : Pat<(v4i32 (fp_to_sint (v4f32 VR128:$src))),
-          (Int_CVTTPS2DQrr VR128:$src)>, Requires<[HasSSE2]>;
+          (CVTTPS2DQrr VR128:$src)>, Requires<[HasSSE2]>;
 
 // Use movaps / movups for SSE integer load / store (one byte shorter).
 let Predicates = [HasSSE1] in {
@@ -4373,7 +4367,7 @@ multiclass sse41_fp_unop_rm<bits<8> opcps, bits<8> opcpd, string OpcodeStr,
                             Intrinsic V4F32Int, Intrinsic V2F64Int> {
   // Intrinsic operation, reg.
   // Vector intrinsic operation, reg
-  def PSr_Int : SS4AIi8<opcps, MRMSrcReg,
+  def PSr : SS4AIi8<opcps, MRMSrcReg,
                     (outs RC:$dst), (ins RC:$src1, i32i8imm:$src2),
                     !strconcat(OpcodeStr,
                     "ps\t{$src2, $src1, $dst|$dst, $src1, $src2}"),
@@ -4381,7 +4375,7 @@ multiclass sse41_fp_unop_rm<bits<8> opcps, bits<8> opcpd, string OpcodeStr,
                     OpSize;
 
   // Vector intrinsic operation, mem
-  def PSm_Int : Ii8<opcps, MRMSrcMem,
+  def PSm : Ii8<opcps, MRMSrcMem,
                     (outs RC:$dst), (ins f256mem:$src1, i32i8imm:$src2),
                     !strconcat(OpcodeStr,
                     "ps\t{$src2, $src1, $dst|$dst, $src1, $src2}"),
@@ -4391,7 +4385,7 @@ multiclass sse41_fp_unop_rm<bits<8> opcps, bits<8> opcpd, string OpcodeStr,
                 Requires<[HasSSE41]>;
 
   // Vector intrinsic operation, reg
-  def PDr_Int : SS4AIi8<opcpd, MRMSrcReg,
+  def PDr : SS4AIi8<opcpd, MRMSrcReg,
                     (outs RC:$dst), (ins RC:$src1, i32i8imm:$src2),
                     !strconcat(OpcodeStr,
                     "pd\t{$src2, $src1, $dst|$dst, $src1, $src2}"),
@@ -4399,7 +4393,7 @@ multiclass sse41_fp_unop_rm<bits<8> opcps, bits<8> opcpd, string OpcodeStr,
                     OpSize;
 
   // Vector intrinsic operation, mem
-  def PDm_Int : SS4AIi8<opcpd, MRMSrcMem,
+  def PDm : SS4AIi8<opcpd, MRMSrcMem,
                     (outs RC:$dst), (ins f256mem:$src1, i32i8imm:$src2),
                     !strconcat(OpcodeStr,
                     "pd\t{$src2, $src1, $dst|$dst, $src1, $src2}"),
@@ -4412,28 +4406,28 @@ multiclass sse41_fp_unop_rm_avx_p<bits<8> opcps, bits<8> opcpd,
                    RegisterClass RC, X86MemOperand x86memop, string OpcodeStr> {
   // Intrinsic operation, reg.
   // Vector intrinsic operation, reg
-  def PSr : SS4AIi8<opcps, MRMSrcReg,
+  def PSr_AVX : SS4AIi8<opcps, MRMSrcReg,
                     (outs RC:$dst), (ins RC:$src1, i32i8imm:$src2),
                     !strconcat(OpcodeStr,
                     "ps\t{$src2, $src1, $dst|$dst, $src1, $src2}"),
                     []>, OpSize;
 
   // Vector intrinsic operation, mem
-  def PSm : Ii8<opcps, MRMSrcMem,
+  def PSm_AVX : Ii8<opcps, MRMSrcMem,
                     (outs RC:$dst), (ins x86memop:$src1, i32i8imm:$src2),
                     !strconcat(OpcodeStr,
                     "ps\t{$src2, $src1, $dst|$dst, $src1, $src2}"),
                     []>, TA, OpSize, Requires<[HasSSE41]>;
 
   // Vector intrinsic operation, reg
-  def PDr : SS4AIi8<opcpd, MRMSrcReg,
+  def PDr_AVX : SS4AIi8<opcpd, MRMSrcReg,
                     (outs RC:$dst), (ins RC:$src1, i32i8imm:$src2),
                     !strconcat(OpcodeStr,
                     "pd\t{$src2, $src1, $dst|$dst, $src1, $src2}"),
                     []>, OpSize;
 
   // Vector intrinsic operation, mem
-  def PDm : SS4AIi8<opcpd, MRMSrcMem,
+  def PDm_AVX : SS4AIi8<opcpd, MRMSrcMem,
                     (outs RC:$dst), (ins x86memop:$src1, i32i8imm:$src2),
                     !strconcat(OpcodeStr,
                     "pd\t{$src2, $src1, $dst|$dst, $src1, $src2}"),
@@ -4445,7 +4439,7 @@ multiclass sse41_fp_binop_rm<bits<8> opcss, bits<8> opcsd,
                             Intrinsic F32Int,
                             Intrinsic F64Int, bit Is2Addr = 1> {
   // Intrinsic operation, reg.
-  def SSr_Int : SS4AIi8<opcss, MRMSrcReg,
+  def SSr : SS4AIi8<opcss, MRMSrcReg,
         (outs VR128:$dst), (ins VR128:$src1, VR128:$src2, i32i8imm:$src3),
         !if(Is2Addr,
             !strconcat(OpcodeStr,
@@ -4456,7 +4450,7 @@ multiclass sse41_fp_binop_rm<bits<8> opcss, bits<8> opcsd,
         OpSize;
 
   // Intrinsic operation, mem.
-  def SSm_Int : SS4AIi8<opcss, MRMSrcMem,
+  def SSm : SS4AIi8<opcss, MRMSrcMem,
         (outs VR128:$dst), (ins VR128:$src1, ssmem:$src2, i32i8imm:$src3),
         !if(Is2Addr,
             !strconcat(OpcodeStr,
@@ -4468,7 +4462,7 @@ multiclass sse41_fp_binop_rm<bits<8> opcss, bits<8> opcsd,
         OpSize;
 
   // Intrinsic operation, reg.
-  def SDr_Int : SS4AIi8<opcsd, MRMSrcReg,
+  def SDr : SS4AIi8<opcsd, MRMSrcReg,
         (outs VR128:$dst), (ins VR128:$src1, VR128:$src2, i32i8imm:$src3),
         !if(Is2Addr,
             !strconcat(OpcodeStr,
@@ -4479,7 +4473,7 @@ multiclass sse41_fp_binop_rm<bits<8> opcss, bits<8> opcsd,
         OpSize;
 
   // Intrinsic operation, mem.
-  def SDm_Int : SS4AIi8<opcsd, MRMSrcMem,
+  def SDm : SS4AIi8<opcsd, MRMSrcMem,
         (outs VR128:$dst), (ins VR128:$src1, sdmem:$src2, i32i8imm:$src3),
         !if(Is2Addr,
             !strconcat(OpcodeStr,
@@ -4494,28 +4488,28 @@ multiclass sse41_fp_binop_rm<bits<8> opcss, bits<8> opcsd,
 multiclass sse41_fp_binop_rm_avx_s<bits<8> opcss, bits<8> opcsd,
                                    string OpcodeStr> {
   // Intrinsic operation, reg.
-  def SSr : SS4AIi8<opcss, MRMSrcReg,
+  def SSr_AVX : SS4AIi8<opcss, MRMSrcReg,
         (outs VR128:$dst), (ins VR128:$src1, VR128:$src2, i32i8imm:$src3),
         !strconcat(OpcodeStr,
                 "ss\t{$src3, $src2, $src1, $dst|$dst, $src1, $src2, $src3}"),
         []>, OpSize;
 
   // Intrinsic operation, mem.
-  def SSm : SS4AIi8<opcss, MRMSrcMem,
+  def SSm_AVX : SS4AIi8<opcss, MRMSrcMem,
         (outs VR128:$dst), (ins VR128:$src1, ssmem:$src2, i32i8imm:$src3),
         !strconcat(OpcodeStr,
                 "ss\t{$src3, $src2, $src1, $dst|$dst, $src1, $src2, $src3}"),
         []>, OpSize;
 
   // Intrinsic operation, reg.
-  def SDr : SS4AIi8<opcsd, MRMSrcReg,
+  def SDr_AVX : SS4AIi8<opcsd, MRMSrcReg,
         (outs VR128:$dst), (ins VR128:$src1, VR128:$src2, i32i8imm:$src3),
             !strconcat(OpcodeStr,
                 "sd\t{$src3, $src2, $src1, $dst|$dst, $src1, $src2, $src3}"),
         []>, OpSize;
 
   // Intrinsic operation, mem.
-  def SDm : SS4AIi8<opcsd, MRMSrcMem,
+  def SDm_AVX : SS4AIi8<opcsd, MRMSrcMem,
         (outs VR128:$dst), (ins VR128:$src1, sdmem:$src2, i32i8imm:$src3),
             !strconcat(OpcodeStr,
                 "sd\t{$src3, $src2, $src1, $dst|$dst, $src1, $src2, $src3}"),

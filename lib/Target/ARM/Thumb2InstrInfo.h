@@ -38,10 +38,11 @@ public:
   bool isLegalToSplitMBBAt(MachineBasicBlock &MBB,
                            MachineBasicBlock::iterator MBBI) const;
 
-  bool isProfitableToIfCvt(MachineBasicBlock &MBB, unsigned NumInstrs) const;
-  
+  bool isProfitableToIfCvt(MachineBasicBlock &MBB, unsigned NumInstrs,
+                           float Prediction, float Confidence) const;
   bool isProfitableToIfCvt(MachineBasicBlock &TMBB, unsigned NumTInstrs,
-                           MachineBasicBlock &FMBB, unsigned NumFInstrs) const;
+                           MachineBasicBlock &FMBB, unsigned NumFInstrs,
+                           float Prediction, float Confidence) const;
 
   void copyPhysReg(MachineBasicBlock &MBB,
                    MachineBasicBlock::iterator I, DebugLoc DL,

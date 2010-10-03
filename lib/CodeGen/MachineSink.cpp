@@ -35,10 +35,7 @@ using namespace llvm;
 static cl::opt<bool> 
 SplitEdges("machine-sink-split",
            cl::desc("Split critical edges during machine sinking"),
-           cl::init(false), cl::Hidden);
-static cl::opt<unsigned>
-SplitLimit("split-limit",
-           cl::init(~0u), cl::Hidden);
+           cl::init(true), cl::Hidden);
 
 STATISTIC(NumSunk,      "Number of machine instructions sunk");
 STATISTIC(NumSplit,     "Number of critical edges split");
@@ -86,11 +83,11 @@ namespace {
     MachineBasicBlock *SplitCriticalEdge(MachineInstr *MI,
                                          MachineBasicBlock *From,
                                          MachineBasicBlock *To,
-                                         bool AllPHIUse);
+                                         bool BreakPHIEdge);
     bool SinkInstruction(MachineInstr *MI, bool &SawStore);
     bool AllUsesDominatedByBlock(unsigned Reg, MachineBasicBlock *MBB,
                                  MachineBasicBlock *DefMBB,
-                                 bool &AllPHIUse, bool &LocalUse) const;
+                                 bool &BreakPHIEdge, bool &LocalUse) const;
     bool PerformTrivialForwardCoalescing(MachineInstr *MI,
                                          MachineBasicBlock *MBB);
   };
@@ -138,7 +135,8 @@ bool
 MachineSinking::AllUsesDominatedByBlock(unsigned Reg,
                                         MachineBasicBlock *MBB,
                                         MachineBasicBlock *DefMBB,
-                                        bool &AllPHIUse, bool &LocalUse) const {
+                                        bool &BreakPHIEdge,
+                                        bool &LocalUse) const {
   assert(TargetRegisterInfo::isVirtualRegister(Reg) &&
          "Only makes sense for vregs");
 
@@ -150,7 +148,10 @@ MachineSinking::AllUsesDominatedByBlock(unsigned Reg,
   // the definition of the vreg.  Dwarf generator handles this although the
   // user might not get the right info at runtime.
 
-  // PHI is in the successor BB. e.g.
+  // BreakPHIEdge is true if all the uses are in the successor MBB being sunken
+  // into and they are all PHI nodes. In this case, machine-sink must break
+  // the critical edge first. e.g.
+  //
   // BB#1: derived from LLVM BB %bb4.preheader
   //   Predecessors according to CFG: BB#0
   //     ...
@@ -162,9 +163,7 @@ MachineSinking::AllUsesDominatedByBlock(unsigned Reg,
   // BB#2: derived from LLVM BB %bb.nph
   //   Predecessors according to CFG: BB#0 BB#1
   //     %reg16386<def> = PHI %reg16434, <BB#0>, %reg16385, <BB#1>
-  //
-  // Machine sink should break the critical edge first.
-  AllPHIUse = true;
+  BreakPHIEdge = true;
   for (MachineRegisterInfo::use_nodbg_iterator
          I = MRI->use_nodbg_begin(Reg), E = MRI->use_nodbg_end();
        I != E; ++I) {
@@ -172,11 +171,11 @@ MachineSinking::AllUsesDominatedByBlock(unsigned Reg,
     MachineBasicBlock *UseBlock = UseInst->getParent();
     if (!(UseBlock == MBB && UseInst->isPHI() &&
           UseInst->getOperand(I.getOperandNo()+1).getMBB() == DefMBB)) {
-      AllPHIUse = false;
+      BreakPHIEdge = false;
       break;
     }
   }
-  if (AllPHIUse)
+  if (BreakPHIEdge)
     return true;
 
   for (MachineRegisterInfo::use_nodbg_iterator
@@ -282,7 +281,7 @@ bool MachineSinking::isWorthBreakingCriticalEdge(MachineInstr *MI,
   if (!CEBCandidates.insert(std::make_pair(From, To)))
     return true;
 
-  if (!(MI->isCopyLike() || MI->getDesc().isAsCheapAsAMove()))
+  if (!MI->isCopy() && !MI->getDesc().isAsCheapAsAMove())
     return true;
 
   // MI is cheap, we probably don't want to break the critical edge for it.
@@ -304,12 +303,12 @@ bool MachineSinking::isWorthBreakingCriticalEdge(MachineInstr *MI,
 MachineBasicBlock *MachineSinking::SplitCriticalEdge(MachineInstr *MI,
                                                      MachineBasicBlock *FromBB,
                                                      MachineBasicBlock *ToBB,
-                                                     bool AllPHIUse) {
+                                                     bool BreakPHIEdge) {
   if (!isWorthBreakingCriticalEdge(MI, FromBB, ToBB))
     return 0;
 
   // Avoid breaking back edge. From == To means backedge for single BB loop.
-  if (!SplitEdges || NumSplit == SplitLimit || FromBB == ToBB)
+  if (!SplitEdges || FromBB == ToBB)
     return 0;
 
   // Check for backedges of more "complex" loops.
@@ -356,7 +355,7 @@ MachineBasicBlock *MachineSinking::SplitCriticalEdge(MachineInstr *MI,
   //
   // There is no need to do this check if all the uses are PHI nodes. PHI
   // sources are only defined on the specific predecessor edges.
-  if (!AllPHIUse) {
+  if (!BreakPHIEdge) {
     for (MachineBasicBlock::pred_iterator PI = ToBB->pred_begin(),
            E = ToBB->pred_end(); PI != E; ++PI) {
       if (*PI == FromBB)
@@ -369,9 +368,18 @@ MachineBasicBlock *MachineSinking::SplitCriticalEdge(MachineInstr *MI,
   return FromBB->SplitCriticalEdge(ToBB, this);
 }
 
+static bool AvoidsSinking(MachineInstr *MI, MachineRegisterInfo *MRI) {
+  return MI->isInsertSubreg() || MI->isSubregToReg() || MI->isRegSequence();
+}
+
 /// SinkInstruction - Determine whether it is safe to sink the specified machine
 /// instruction out of its current block into a successor.
 bool MachineSinking::SinkInstruction(MachineInstr *MI, bool &SawStore) {
+  // Don't sink insert_subreg, subreg_to_reg, reg_sequence. These are meant to
+  // be close to the source to make it easier to coalesce.
+  if (AvoidsSinking(MI, MRI))
+    return false;
+
   // Check if it's safe to move the instruction.
   if (!MI->isSafeToMove(TII, AA, SawStore))
     return false;
@@ -392,7 +400,7 @@ bool MachineSinking::SinkInstruction(MachineInstr *MI, bool &SawStore) {
   // decide.
   MachineBasicBlock *SuccToSinkTo = 0;
 
-  bool AllPHIUse = false;
+  bool BreakPHIEdge = false;
   for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
     const MachineOperand &MO = MI->getOperand(i);
     if (!MO.isReg()) continue;  // Ignore non-register operands.
@@ -452,7 +460,7 @@ bool MachineSinking::SinkInstruction(MachineInstr *MI, bool &SawStore) {
         // must be sinkable to the same block.
         bool LocalUse = false;
         if (!AllUsesDominatedByBlock(Reg, SuccToSinkTo, ParentBlock,
-                                     AllPHIUse, LocalUse))
+                                     BreakPHIEdge, LocalUse))
           return false;
 
         continue;
@@ -464,7 +472,7 @@ bool MachineSinking::SinkInstruction(MachineInstr *MI, bool &SawStore) {
            E = ParentBlock->succ_end(); SI != E; ++SI) {
         bool LocalUse = false;
         if (AllUsesDominatedByBlock(Reg, *SI, ParentBlock,
-                                    AllPHIUse, LocalUse)) {
+                                    BreakPHIEdge, LocalUse)) {
           SuccToSinkTo = *SI;
           break;
         }
@@ -538,7 +546,7 @@ bool MachineSinking::SinkInstruction(MachineInstr *MI, bool &SawStore) {
       DEBUG(dbgs() << "Sinking along critical edge.\n");
     else {
       MachineBasicBlock *NewSucc =
-        SplitCriticalEdge(MI, ParentBlock, SuccToSinkTo, AllPHIUse);
+        SplitCriticalEdge(MI, ParentBlock, SuccToSinkTo, BreakPHIEdge);
       if (!NewSucc) {
         DEBUG(dbgs() << " *** PUNTING: Not legal or profitable to "
                         "break critical edge\n");
@@ -550,15 +558,17 @@ bool MachineSinking::SinkInstruction(MachineInstr *MI, bool &SawStore) {
               << " -- BB#" << SuccToSinkTo->getNumber() << '\n');
         SuccToSinkTo = NewSucc;
         ++NumSplit;
+        BreakPHIEdge = false;
       }
     }
   }
 
-  if (AllPHIUse) {
-    if (NumSplit == SplitLimit)
-      return false;
+  if (BreakPHIEdge) {
+    // BreakPHIEdge is true if all the uses are in the successor MBB being
+    // sunken into and they are all PHI nodes. In this case, machine-sink must
+    // break the critical edge first.
     MachineBasicBlock *NewSucc = SplitCriticalEdge(MI, ParentBlock,
-                                                   SuccToSinkTo, AllPHIUse);
+                                                   SuccToSinkTo, BreakPHIEdge);
     if (!NewSucc) {
       DEBUG(dbgs() << " *** PUNTING: Not legal or profitable to "
             "break critical edge\n");

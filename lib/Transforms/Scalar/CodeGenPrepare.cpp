@@ -31,6 +31,7 @@
 #include "llvm/Transforms/Utils/BuildLibCalls.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/Assembly/Writer.h"
 #include "llvm/Support/CallSite.h"
 #include "llvm/Support/CommandLine.h"
@@ -42,10 +43,12 @@
 using namespace llvm;
 using namespace llvm::PatternMatch;
 
+STATISTIC(NumElim,  "Number of blocks eliminated");
+
 static cl::opt<bool>
 CriticalEdgeSplit("cgp-critical-edge-splitting",
                   cl::desc("Split critical edges during codegen prepare"),
-                  cl::init(true), cl::Hidden);
+                  cl::init(false), cl::Hidden);
 
 namespace {
   class CodeGenPrepare : public FunctionPass {
@@ -302,6 +305,7 @@ void CodeGenPrepare::EliminateMostlyEmptyBlock(BasicBlock *BB) {
     PFI->removeEdge(ProfileInfo::getEdge(BB, DestBB));
   }
   BB->eraseFromParent();
+  ++NumElim;
 
   DEBUG(dbgs() << "AFTER:\n" << *DestBB << "\n\n\n");
 }
@@ -772,7 +776,9 @@ bool CodeGenPrepare::MoveExtToFormExtLoad(Instruction *I) {
   // If the load has other users and the truncate is not free, this probably
   // isn't worthwhile.
   if (!LI->hasOneUse() &&
-      TLI && !TLI->isTruncateFree(I->getType(), LI->getType()))
+      TLI && (TLI->isTypeLegal(TLI->getValueType(LI->getType())) ||
+              !TLI->isTypeLegal(TLI->getValueType(I->getType()))) &&
+      !TLI->isTruncateFree(I->getType(), LI->getType()))
     return false;
 
   // Check whether the target supports casts folded into loads.
@@ -796,7 +802,7 @@ bool CodeGenPrepare::MoveExtToFormExtLoad(Instruction *I) {
 bool CodeGenPrepare::OptimizeExtUses(Instruction *I) {
   BasicBlock *DefBB = I->getParent();
 
-  // If both result of the {s|z}xt and its source are live out, rewrite all
+  // If the result of a {s|z}ext and its source are both live out, rewrite all
   // other uses of the source with result of extension.
   Value *Src = I->getOperand(0);
   if (Src->hasOneUse())

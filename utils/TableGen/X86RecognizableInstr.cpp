@@ -368,12 +368,6 @@ RecognizableInstr::filter_ret RecognizableInstr::filter() const {
       (Name.find("to") != Name.npos)))
     return FILTER_WEAK;
 
-  // Filter out the intrinsic form of instructions that also have an llvm
-  // operator form.  FIXME this is temporary.
-  if (Name.find("irm") != Name.npos ||
-      Name.find("irr") != Name.npos)
-    return FILTER_WEAK;
-  
   return FILTER_NORMAL;
 }
   
@@ -835,10 +829,13 @@ OperandType RecognizableInstr::typeFromString(const std::string &s,
   TYPE("GR8",                 TYPE_R8)
   TYPE("VR128",               TYPE_XMM128)
   TYPE("f128mem",             TYPE_M128)
+  TYPE("f256mem",             TYPE_M256)
   TYPE("FR64",                TYPE_XMM64)
   TYPE("f64mem",              TYPE_M64FP)
+  TYPE("sdmem",               TYPE_M64FP)
   TYPE("FR32",                TYPE_XMM32)
   TYPE("f32mem",              TYPE_M32FP)
+  TYPE("ssmem",               TYPE_M32FP)
   TYPE("RST",                 TYPE_ST)
   TYPE("i128mem",             TYPE_M128)
   TYPE("i64i32imm_pcrel",     TYPE_REL64)
@@ -930,7 +927,10 @@ OperandEncoding RecognizableInstr::memoryEncodingFromString
   ENCODING("i32mem",          ENCODING_RM)
   ENCODING("i64mem",          ENCODING_RM)
   ENCODING("i8mem",           ENCODING_RM)
+  ENCODING("ssmem",           ENCODING_RM)
+  ENCODING("sdmem",           ENCODING_RM)
   ENCODING("f128mem",         ENCODING_RM)
+  ENCODING("f256mem",         ENCODING_RM)
   ENCODING("f64mem",          ENCODING_RM)
   ENCODING("f32mem",          ENCODING_RM)
   ENCODING("i128mem",         ENCODING_RM)

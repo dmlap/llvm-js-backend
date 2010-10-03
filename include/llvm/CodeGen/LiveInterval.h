@@ -39,25 +39,13 @@ namespace llvm {
   /// This class holds information about a machine level values, including
   /// definition and use points.
   ///
-  /// Care must be taken in interpreting the def index of the value. The
-  /// following rules apply:
-  ///
-  /// If the isDefAccurate() method returns false then def does not contain the
-  /// index of the defining MachineInstr, or even (necessarily) to a
-  /// MachineInstr at all. In general such a def index is not meaningful
-  /// and should not be used. The exception is that, for values originally
-  /// defined by PHI instructions, after PHI elimination def will contain the
-  /// index of the MBB in which the PHI originally existed. This can be used
-  /// to insert code (spills or copies) which deals with the value, which will
-  /// be live in to the block.
   class VNInfo {
   private:
     enum {
       HAS_PHI_KILL    = 1,
       REDEF_BY_EC     = 1 << 1,
       IS_PHI_DEF      = 1 << 2,
-      IS_UNUSED       = 1 << 3,
-      IS_DEF_ACCURATE = 1 << 4
+      IS_UNUSED       = 1 << 3
     };
 
     MachineInstr *copy;
@@ -73,10 +61,8 @@ namespace llvm {
     SlotIndex def;
 
     /// VNInfo constructor.
-    /// d is presumed to point to the actual defining instr. If it doesn't
-    /// setIsDefAccurate(false) should be called after construction.
     VNInfo(unsigned i, SlotIndex d, MachineInstr *c)
-      : copy(c), flags(IS_DEF_ACCURATE), id(i), def(d)
+      : copy(c), flags(0), id(i), def(d)
     { }
 
     /// VNInfo construtor, copies values from orig, except for the value number.
@@ -95,6 +81,11 @@ namespace llvm {
     unsigned getFlags() const { return flags; }
     void setFlags(unsigned flags) { this->flags = flags; }
 
+    /// Merge flags from another VNInfo
+    void mergeFlags(const VNInfo *VNI) {
+      flags = (flags | VNI->flags) & ~IS_UNUSED;
+    }
+
     /// For a register interval, if this VN was definied by a copy instr
     /// getCopy() returns a pointer to it, otherwise returns 0.
     /// For a stack interval the behaviour of this method is undefined.
@@ -103,6 +94,10 @@ namespace llvm {
     /// This method should not be called on stack intervals as it may lead to
     /// undefined behavior.
     void setCopy(MachineInstr *c) { copy = c; }
+
+    /// isDefByCopy - Return true when this value was defined by a copy-like
+    /// instruction as determined by MachineInstr::isCopyLike.
+    bool isDefByCopy() const { return copy != 0; }
 
     /// Returns true if one or more kills are PHI nodes.
     bool hasPHIKill() const { return flags & HAS_PHI_KILL; }
@@ -144,16 +139,6 @@ namespace llvm {
         flags |= IS_UNUSED;
       else
         flags &= ~IS_UNUSED;
-    }
-
-    /// Returns true if the def is accurate.
-    bool isDefAccurate() const { return flags & IS_DEF_ACCURATE; }
-    /// Set the "is def accurate" flag on this value.
-    void setIsDefAccurate(bool defAccurate) {
-      if (defAccurate)
-        flags |= IS_DEF_ACCURATE;
-      else
-        flags &= ~IS_DEF_ACCURATE;
     }
   };
 
@@ -271,6 +256,19 @@ namespace llvm {
       return I;
     }
 
+    /// find - Return an iterator pointing to the first range that ends after
+    /// Pos, or end(). This is the same as advanceTo(begin(), Pos), but faster
+    /// when searching large intervals.
+    ///
+    /// If Pos is contained in a LiveRange, that range is returned.
+    /// If Pos is in a hole, the following LiveRange is returned.
+    /// If Pos is beyond endIndex, end() is returned.
+    iterator find(SlotIndex Pos);
+
+    const_iterator find(SlotIndex Pos) const {
+      return const_cast<LiveInterval*>(this)->find(Pos);
+    }
+
     void clear() {
       valnos.clear();
       ranges.clear();
@@ -307,10 +305,9 @@ namespace llvm {
     /// getNextValue - Create a new value number and return it.  MIIdx specifies
     /// the instruction that defines the value number.
     VNInfo *getNextValue(SlotIndex def, MachineInstr *CopyMI,
-                       bool isDefAccurate, VNInfo::Allocator &VNInfoAllocator) {
+                         VNInfo::Allocator &VNInfoAllocator) {
       VNInfo *VNI =
         new (VNInfoAllocator) VNInfo((unsigned)valnos.size(), def, CopyMI);
-      VNI->setIsDefAccurate(isDefAccurate);
       valnos.push_back(VNI);
       return VNI;
     }
@@ -386,17 +383,18 @@ namespace llvm {
       return index >= endIndex();
     }
 
-    bool liveAt(SlotIndex index) const;
-
-    // liveBeforeAndAt - Check if the interval is live at the index and the
-    // index just before it. If index is liveAt, check if it starts a new live
-    // range.If it does, then check if the previous live range ends at index-1.
-    bool liveBeforeAndAt(SlotIndex index) const;
+    bool liveAt(SlotIndex index) const {
+      const_iterator r = find(index);
+      return r != end() && r->start <= index;
+    }
 
     /// killedAt - Return true if a live range ends at index. Note that the kill
     /// point is not contained in the half-open live range. It is usually the
     /// getDefIndex() slot following its last use.
-    bool killedAt(SlotIndex index) const;
+    bool killedAt(SlotIndex index) const {
+      const_iterator r = find(index.getUseIndex());
+      return r != end() && r->end == index;
+    }
 
     /// killedInRange - Return true if the interval has kills in [Start,End).
     /// Note that the kill point is considered the end of a live range, so it is
@@ -426,11 +424,15 @@ namespace llvm {
 
     /// FindLiveRangeContaining - Return an iterator to the live range that
     /// contains the specified index, or end() if there is none.
-    const_iterator FindLiveRangeContaining(SlotIndex Idx) const;
+    iterator FindLiveRangeContaining(SlotIndex Idx) {
+      iterator I = find(Idx);
+      return I != end() && I->start <= Idx ? I : end();
+    }
 
-    /// FindLiveRangeContaining - Return an iterator to the live range that
-    /// contains the specified index, or end() if there is none.
-    iterator FindLiveRangeContaining(SlotIndex Idx);
+    const_iterator FindLiveRangeContaining(SlotIndex Idx) const {
+      const_iterator I = find(Idx);
+      return I != end() && I->start <= Idx ? I : end();
+    }
 
     /// findDefinedVNInfo - Find the by the specified
     /// index (register interval) or defined
@@ -472,7 +474,10 @@ namespace llvm {
 
     /// isInOneLiveRange - Return true if the range specified is entirely in the
     /// a single LiveRange of the live interval.
-    bool isInOneLiveRange(SlotIndex Start, SlotIndex End);
+    bool isInOneLiveRange(SlotIndex Start, SlotIndex End) const {
+      const_iterator r = find(Start);
+      return r != end() && r->containsRange(Start, End);
+    }
 
     /// removeRange - Remove the specified range from this interval.  Note that
     /// the range must be a single LiveRange in its entirety.

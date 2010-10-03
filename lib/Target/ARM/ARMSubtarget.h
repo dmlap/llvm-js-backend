@@ -106,6 +106,11 @@ protected:
   /// precision.
   bool FPOnlySP;
 
+  /// AllowsUnalignedMem - If true, the subtarget allows unaligned memory
+  /// accesses for some types.  For details, see
+  /// ARMTargetLowering::allowsUnalignedMemoryAccesses().
+  bool AllowsUnalignedMem;
+
   /// stackAlignment - The minimum alignment known to hold of the stack frame on
   /// entry to the function and which must be maintained by every function.
   unsigned stackAlignment;
@@ -185,8 +190,12 @@ protected:
 
   bool useMovt() const { return UseMovt && hasV6T2Ops(); }
 
+  bool allowsUnalignedMem() const { return AllowsUnalignedMem; }
+
   const std::string & getCPUString() const { return CPUString; }
 
+  unsigned getMispredictionPenalty() const;
+  
   /// enablePostRAScheduler - True at 'More' optimization.
   bool enablePostRAScheduler(CodeGenOpt::Level OptLevel,
                              TargetSubtarget::AntiDepBreakMode& Mode,
@@ -204,6 +213,29 @@ protected:
   /// GVIsIndirectSymbol - true if the GV will be accessed via an indirect
   /// symbol.
   bool GVIsIndirectSymbol(const GlobalValue *GV, Reloc::Model RelocM) const;
+
+  /// getDataLayout() - returns the ARM/Thumb specific TargetLayout string
+  std::string getDataLayout() const {
+    if (isThumb()) {
+      if (isAPCS_ABI()) {
+        return std::string("e-p:32:32-f64:32:64-i64:32:64-"
+                           "i16:16:32-i8:8:32-i1:8:32-"
+                           "v128:32:128-v64:32:64-a:0:32-n32");
+      } else {
+        return std::string("e-p:32:32-f64:64:64-i64:64:64-"
+                           "i16:16:32-i8:8:32-i1:8:32-"
+                           "v128:64:128-v64:64:64-a:0:32-n32");
+      }
+    } else {
+      if (isAPCS_ABI()) {
+        return std::string("e-p:32:32-f64:32:64-i64:32:64-"
+                           "v128:32:128-v64:32:64-n32");
+      } else {
+        return std::string("e-p:32:32-f64:64:64-i64:64:64-"
+                           "v128:64:128-v64:64:64-n32");
+      }
+    }
+  }
 };
 } // End llvm namespace
 

@@ -12,10 +12,10 @@
 ; Stack allocation >= 4096 bytes will require call to __chkstk in the Windows ABI.
 define i32 @main4k() nounwind {
 entry:
-; WIN_X32:    call __chkstk
+; WIN_X32:    calll __chkstk
 ; WIN_X64:    call __chkstk
-; MINGW_X32:  call __alloca
-; MINGW_X64:  call _alloca
+; MINGW_X32:  calll __alloca
+; MINGW_X64:  callq _alloca
 ; LINUX-NOT:  call __chkstk
   %array4096 = alloca [4096 x i8], align 16       ; <[4096 x i8]*> [#uses=0]
   ret i32 0
@@ -26,7 +26,7 @@ entry:
 define i32 @main128() nounwind {
 entry:
 ; WIN_X32:       # BB#0:
-; WIN_X32-NOT:   call __chkstk
+; WIN_X32-NOT:   calll __chkstk
 ; WIN_X32:       ret
 
 ; WIN_X64:       # BB#0:
@@ -34,7 +34,7 @@ entry:
 ; WIN_X64:       ret
 
 ; MINGW_X64:     # BB#0:
-; MINGW_X64-NOT: call _alloca
+; MINGW_X64-NOT: callq _alloca
 ; MINGW_X64:     ret
 
 ; LINUX:         # BB#0:

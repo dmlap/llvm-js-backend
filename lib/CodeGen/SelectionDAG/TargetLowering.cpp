@@ -1916,8 +1916,7 @@ TargetLowering::SimplifySetCC(EVT VT, SDValue N0, SDValue N1,
                               DAG.getConstant(bestOffset, PtrType));
           unsigned NewAlign = MinAlign(Lod->getAlignment(), bestOffset);
           SDValue NewLoad = DAG.getLoad(newVT, dl, Lod->getChain(), Ptr,
-                                        Lod->getSrcValue(), 
-                                        Lod->getSrcValueOffset() + bestOffset,
+                                Lod->getPointerInfo().getWithOffset(bestOffset),
                                         false, false, NewAlign);
           return DAG.getSetCC(dl, VT, 
                               DAG.getNode(ISD::AND, dl, newVT, NewLoad,
@@ -2497,7 +2496,10 @@ TargetLowering::getConstraintType(const std::string &Constraint) const {
       return C_Memory;
     case 'i':    // Simple Integer or Relocatable Constant
     case 'n':    // Simple Integer
+    case 'E':    // Floating Point Constant
+    case 'F':    // Floating Point Constant
     case 's':    // Relocatable Constant
+    case 'p':    // Address.
     case 'X':    // Allow ANY value.
     case 'I':    // Target registers.
     case 'J':
@@ -2507,6 +2509,8 @@ TargetLowering::getConstraintType(const std::string &Constraint) const {
     case 'N':
     case 'O':
     case 'P':
+    case '<':
+    case '>':
       return C_Other;
     }
   }
@@ -2665,6 +2669,7 @@ std::vector<TargetLowering::AsmOperandInfo> TargetLowering::ParseConstraints(
   /// ConstraintOperands - Information about all of the constraints.
   std::vector<AsmOperandInfo> ConstraintOperands;
   const InlineAsm *IA = cast<InlineAsm>(CS.getCalledValue());
+  unsigned maCount = 0; // Largest number of multiple alternative constraints.
 
   // Do a prepass over the constraints, canonicalizing them, and building up the
   // ConstraintOperands list.
@@ -2677,6 +2682,10 @@ std::vector<TargetLowering::AsmOperandInfo> TargetLowering::ParseConstraints(
   for (unsigned i = 0, e = ConstraintInfos.size(); i != e; ++i) {
     ConstraintOperands.push_back(AsmOperandInfo(ConstraintInfos[i]));
     AsmOperandInfo &OpInfo = ConstraintOperands.back();
+
+    // Update multiple alternative constraint count.
+    if (OpInfo.multipleAlternatives.size() > maCount)
+      maCount = OpInfo.multipleAlternatives.size();
 
     EVT OpVT = MVT::Other;
 
@@ -2712,7 +2721,6 @@ std::vector<TargetLowering::AsmOperandInfo> TargetLowering::ParseConstraints(
 
   // If we have multiple alternative constraints, select the best alternative.
   if (ConstraintInfos.size()) {
-    unsigned maCount = ConstraintInfos[0].multipleAlternatives.size();
     if (maCount) {
       unsigned bestMAIndex = 0;
       int bestWeight = -1;
@@ -2728,8 +2736,6 @@ std::vector<TargetLowering::AsmOperandInfo> TargetLowering::ParseConstraints(
           AsmOperandInfo& OpInfo = ConstraintOperands[cIndex];
           if (OpInfo.Type == InlineAsm::isClobber)
             continue;
-          assert((OpInfo.multipleAlternatives.size() == maCount)
-            && "Constraint has inconsistent multiple alternative count.");
 
           // If this is an output operand with a matching input operand, look up the
           // matching input. If their types mismatch, e.g. one is an integer, the
@@ -2828,12 +2834,16 @@ static unsigned getConstraintGenerality(TargetLowering::ConstraintType CT) {
 /// and the current alternative constraint selected.
 int TargetLowering::getMultipleConstraintMatchWeight(
     AsmOperandInfo &info, int maIndex) const {
-  std::vector<std::string> &rCodes = info.multipleAlternatives[maIndex].Codes;
+  std::vector<std::string> *rCodes;
+  if (maIndex >= (int)info.multipleAlternatives.size())
+    rCodes = &info.Codes;
+  else
+    rCodes = &info.multipleAlternatives[maIndex].Codes;
   int BestWeight = -1;
 
   // Loop over the options, keeping track of the most general one.
-  for (unsigned i = 0, e = rCodes.size(); i != e; ++i) {
-    int weight = getSingleConstraintMatchWeight(info, rCodes[i].c_str());
+  for (unsigned i = 0, e = rCodes->size(); i != e; ++i) {
+    int weight = getSingleConstraintMatchWeight(info, (*rCodes)[i].c_str());
     if (weight > BestWeight)
       BestWeight = weight;
   }

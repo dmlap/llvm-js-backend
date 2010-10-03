@@ -25,7 +25,8 @@ def A8_NLSPipe : FuncUnit; // NEON LS pipe
 // Dual issue pipeline represented by A8_Pipe0 | A8_Pipe1
 //
 def CortexA8Itineraries : ProcessorItineraries<
-  [A8_Issue, A8_Pipe0, A8_Pipe1, A8_LdSt0, A8_LdSt1, A8_NPipe, A8_NLSPipe], [
+  [A8_Issue, A8_Pipe0, A8_Pipe1, A8_LdSt0, A8_LdSt1, A8_NPipe, A8_NLSPipe],
+  [], [
   // Two fully-pipelined integer ALU pipelines
   //
   // No operand cycles
@@ -35,12 +36,23 @@ def CortexA8Itineraries : ProcessorItineraries<
   InstrItinData<IIC_iALUi ,[InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2]>,
   InstrItinData<IIC_iALUr ,[InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2, 2]>,
   InstrItinData<IIC_iALUsi,[InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2, 1]>,
+  InstrItinData<IIC_iALUsir,[InstrStage<1,[A8_Pipe0, A8_Pipe1]>], [2, 1, 2]>,
   InstrItinData<IIC_iALUsr,[InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2, 1, 1]>,
+  //
+  // Bitwise Instructions that produce a result
+  InstrItinData<IIC_iBITi ,[InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2]>,
+  InstrItinData<IIC_iBITr ,[InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2, 2]>,
+  InstrItinData<IIC_iBITsi,[InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2, 1]>,
+  InstrItinData<IIC_iBITsr,[InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2, 1, 1]>,
   //
   // Unary Instructions that produce a result
   InstrItinData<IIC_iUNAr , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2]>,
   InstrItinData<IIC_iUNAsi, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 1]>,
-  InstrItinData<IIC_iUNAsr, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 1, 1]>,
+  //
+  // Zero and sign extension instructions
+  InstrItinData<IIC_iEXTr , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [1, 1]>,
+  InstrItinData<IIC_iEXTAr, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2, 1]>,
+  InstrItinData<IIC_iEXTAsr,[InstrStage<1, [A8_Pipe0, A8_Pipe1]>],[2, 2, 1, 1]>,
   //
   // Compare instructions
   InstrItinData<IIC_iCMPi , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2]>,
@@ -48,17 +60,31 @@ def CortexA8Itineraries : ProcessorItineraries<
   InstrItinData<IIC_iCMPsi, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 1]>,
   InstrItinData<IIC_iCMPsr, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 1, 1]>,
   //
+  // Test instructions
+  InstrItinData<IIC_iTSTi , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2]>,
+  InstrItinData<IIC_iTSTr , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2]>,
+  InstrItinData<IIC_iTSTsi, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 1]>,
+  InstrItinData<IIC_iTSTsr, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 1, 1]>,
+  //
   // Move instructions, unconditional
   InstrItinData<IIC_iMOVi , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [1]>,
   InstrItinData<IIC_iMOVr , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [1, 1]>,
   InstrItinData<IIC_iMOVsi, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [1, 1]>,
   InstrItinData<IIC_iMOVsr, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [1, 1, 1]>,
+  InstrItinData<IIC_iMOVix2,[InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                             InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2]>,
   //
   // Move instructions, conditional
   InstrItinData<IIC_iCMOVi , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2]>,
   InstrItinData<IIC_iCMOVr , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 1]>,
   InstrItinData<IIC_iCMOVsi, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 1]>,
   InstrItinData<IIC_iCMOVsr, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 1, 1]>,
+  //
+  // MVN instructions
+  InstrItinData<IIC_iMVNi , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [1]>,
+  InstrItinData<IIC_iMVNr , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [1, 1]>,
+  InstrItinData<IIC_iMVNsi, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [1, 1]>,
+  InstrItinData<IIC_iMVNsr, [InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [1, 1, 1]>,
 
   // Integer multiply pipeline
   // Result written in E5, but that is relative to the last cycle of multicycle,
@@ -82,38 +108,69 @@ def CortexA8Itineraries : ProcessorItineraries<
   // use A8_Issue to enforce the 1 load/store per cycle limit
   //
   // Immediate offset
-  InstrItinData<IIC_iLoadi   , [InstrStage<1, [A8_Issue], 0>,
-                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
-                                InstrStage<1, [A8_LdSt0]>], [3, 1]>,
+  InstrItinData<IIC_iLoad_i   , [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1]>,
+  InstrItinData<IIC_iLoad_bh_i, [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1]>,
+  InstrItinData<IIC_iLoad_d_i,  [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1]>,
   //
   // Register offset
-  InstrItinData<IIC_iLoadr   , [InstrStage<1, [A8_Issue], 0>,
-                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
-                                InstrStage<1, [A8_LdSt0]>], [3, 1, 1]>,
+  InstrItinData<IIC_iLoad_r   , [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1, 1]>,
+  InstrItinData<IIC_iLoad_bh_r, [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1, 1]>,
+  InstrItinData<IIC_iLoad_d_r , [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1, 1]>,
   //
   // Scaled register offset, issues over 2 cycles
-  InstrItinData<IIC_iLoadsi  , [InstrStage<2, [A8_Issue], 0>,
-                                InstrStage<1, [A8_Pipe0], 0>,
-                                InstrStage<1, [A8_Pipe1]>,
-                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
-                                InstrStage<1, [A8_LdSt0]>], [4, 1, 1]>,
+  InstrItinData<IIC_iLoad_si  , [InstrStage<2, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0], 0>,
+                                 InstrStage<1, [A8_Pipe1]>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [4, 1, 1]>,
+  InstrItinData<IIC_iLoad_bh_si,[InstrStage<2, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0], 0>,
+                                 InstrStage<1, [A8_Pipe1]>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [4, 1, 1]>,
   //
   // Immediate offset with update
-  InstrItinData<IIC_iLoadiu  , [InstrStage<1, [A8_Issue], 0>,
-                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
-                                InstrStage<1, [A8_LdSt0]>], [3, 2, 1]>,
+  InstrItinData<IIC_iLoad_iu  , [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 2, 1]>,
+  InstrItinData<IIC_iLoad_bh_iu,[InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 2, 1]>,
   //
   // Register offset with update
-  InstrItinData<IIC_iLoadru  , [InstrStage<1, [A8_Issue], 0>,
-                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
-                                InstrStage<1, [A8_LdSt0]>], [3, 2, 1, 1]>,
+  InstrItinData<IIC_iLoad_ru  , [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 2, 1, 1]>,
+  InstrItinData<IIC_iLoad_bh_ru,[InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 2, 1, 1]>,
+  InstrItinData<IIC_iLoad_d_ru, [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 2, 1, 1]>,
   //
   // Scaled register offset with update, issues over 2 cycles
-  InstrItinData<IIC_iLoadsiu , [InstrStage<2, [A8_Issue], 0>,
-                                InstrStage<1, [A8_Pipe0], 0>,
-                                InstrStage<1, [A8_Pipe1]>,
-                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
-                                InstrStage<1, [A8_LdSt0]>], [4, 3, 1, 1]>,
+  InstrItinData<IIC_iLoad_siu , [InstrStage<2, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0], 0>,
+                                 InstrStage<1, [A8_Pipe1]>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [4, 3, 1, 1]>,
+  InstrItinData<IIC_iLoad_bh_siu,[InstrStage<2, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0], 0>,
+                                 InstrStage<1, [A8_Pipe1]>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [4, 3, 1, 1]>,
   //
   // Load multiple
   InstrItinData<IIC_iLoadm   , [InstrStage<2, [A8_Issue], 0>,
@@ -131,43 +188,82 @@ def CortexA8Itineraries : ProcessorItineraries<
                                 InstrStage<1, [A8_LdSt0]>,
                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>]>,
 
+  //
+  // iLoadi + iALUr for t2LDRpci_pic.
+  InstrItinData<IIC_iLoadiALU, [InstrStage<1, [A8_Issue], 0>,
+                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                InstrStage<1, [A8_LdSt0]>,
+                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [4, 1]>,
+
+
   // Integer store pipeline
   //
   // use A8_Issue to enforce the 1 load/store per cycle limit
   //
   // Immediate offset
-  InstrItinData<IIC_iStorei  , [InstrStage<1, [A8_Issue], 0>,
-                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
-                                InstrStage<1, [A8_LdSt0]>], [3, 1]>,
+  InstrItinData<IIC_iStore_i  , [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1]>,
+  InstrItinData<IIC_iStore_bh_i,[InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1]>,
+  InstrItinData<IIC_iStore_d_i, [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1]>,
   //
   // Register offset
-  InstrItinData<IIC_iStorer  , [InstrStage<1, [A8_Issue], 0>,
-                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
-                                InstrStage<1, [A8_LdSt0]>], [3, 1, 1]>,
+  InstrItinData<IIC_iStore_r  , [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1, 1]>,
+  InstrItinData<IIC_iStore_bh_r,[InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1, 1]>,
+  InstrItinData<IIC_iStore_d_r, [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1, 1]>,
   //
   // Scaled register offset, issues over 2 cycles
-  InstrItinData<IIC_iStoresi , [InstrStage<2, [A8_Issue], 0>,
-                                InstrStage<1, [A8_Pipe0], 0>,
-                                InstrStage<1, [A8_Pipe1]>,
-                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
-                                InstrStage<1, [A8_LdSt0]>], [3, 1, 1]>,
+  InstrItinData<IIC_iStore_si , [InstrStage<2, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0], 0>,
+                                 InstrStage<1, [A8_Pipe1]>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1, 1]>,
+  InstrItinData<IIC_iStore_bh_si,[InstrStage<2, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0], 0>,
+                                 InstrStage<1, [A8_Pipe1]>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 1, 1]>,
   //
   // Immediate offset with update
-  InstrItinData<IIC_iStoreiu , [InstrStage<1, [A8_Issue], 0>,
-                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
-                                InstrStage<1, [A8_LdSt0]>], [2, 3, 1]>,
+  InstrItinData<IIC_iStore_iu , [InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [2, 3, 1]>,
+  InstrItinData<IIC_iStore_bh_iu,[InstrStage<1, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [2, 3, 1]>,
   //
   // Register offset with update
-  InstrItinData<IIC_iStoreru  , [InstrStage<1, [A8_Issue], 0>,
-                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
-                                InstrStage<1, [A8_LdSt0]>], [2, 3, 1, 1]>,
+  InstrItinData<IIC_iStore_ru  , [InstrStage<1, [A8_Issue], 0>,
+                                  InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                  InstrStage<1, [A8_LdSt0]>], [2, 3, 1, 1]>,
+  InstrItinData<IIC_iStore_bh_ru,[InstrStage<1, [A8_Issue], 0>,
+                                  InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                  InstrStage<1, [A8_LdSt0]>], [2, 3, 1, 1]>,
+  InstrItinData<IIC_iStore_d_ru, [InstrStage<1, [A8_Issue], 0>,
+                                  InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                  InstrStage<1, [A8_LdSt0]>], [2, 3, 1, 1]>,
   //
   // Scaled register offset with update, issues over 2 cycles
-  InstrItinData<IIC_iStoresiu, [InstrStage<2, [A8_Issue], 0>,
-                                InstrStage<1, [A8_Pipe0], 0>,
-                                InstrStage<1, [A8_Pipe1]>,
-                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
-                                InstrStage<1, [A8_LdSt0]>], [3, 3, 1, 1]>,
+  InstrItinData<IIC_iStore_siu, [InstrStage<2, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0], 0>,
+                                 InstrStage<1, [A8_Pipe1]>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 3, 1, 1]>,
+  InstrItinData<IIC_iStore_bh_siu,[InstrStage<2, [A8_Issue], 0>,
+                                 InstrStage<1, [A8_Pipe0], 0>,
+                                 InstrStage<1, [A8_Pipe1]>,
+                                 InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                                 InstrStage<1, [A8_LdSt0]>], [3, 3, 1, 1]>,
   //
   // Store multiple
   InstrItinData<IIC_iStorem  , [InstrStage<2, [A8_Issue], 0>,
@@ -288,7 +384,8 @@ def CortexA8Itineraries : ProcessorItineraries<
   InstrItinData<IIC_fpLoad32, [InstrStage<1, [A8_Issue], 0>,
                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
                                InstrStage<1, [A8_LdSt0], 0>,
-                               InstrStage<1, [A8_NLSPipe]>]>,
+                               InstrStage<1, [A8_NLSPipe]>],
+                              [2, 1]>,
   //
   // Double-precision FP Load
   // use A8_Issue to enforce the 1 load/store per cycle limit
@@ -297,7 +394,8 @@ def CortexA8Itineraries : ProcessorItineraries<
                                InstrStage<1, [A8_Pipe1]>,
                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
                                InstrStage<1, [A8_LdSt0], 0>,
-                               InstrStage<1, [A8_NLSPipe]>]>,
+                               InstrStage<1, [A8_NLSPipe]>],
+                              [2, 1]>,
   //
   // FP Load Multiple
   // use A8_Issue to enforce the 1 load/store per cycle limit
@@ -313,7 +411,8 @@ def CortexA8Itineraries : ProcessorItineraries<
   InstrItinData<IIC_fpStore32,[InstrStage<1, [A8_Issue], 0>,
                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
                                InstrStage<1, [A8_LdSt0], 0>,
-                               InstrStage<1, [A8_NLSPipe]>]>,
+                               InstrStage<1, [A8_NLSPipe]>],
+                              [1, 1]>,
   //
   // Double-precision FP Store
   // use A8_Issue to enforce the 1 load/store per cycle limit
@@ -322,7 +421,8 @@ def CortexA8Itineraries : ProcessorItineraries<
                                InstrStage<1, [A8_Pipe1]>,
                                InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
                                InstrStage<1, [A8_LdSt0], 0>,
-                               InstrStage<1, [A8_NLSPipe]>]>,
+                               InstrStage<1, [A8_NLSPipe]>],
+                              [1, 1]>,
   //
   // FP Store Multiple
   // use A8_Issue to enforce the 1 load/store per cycle limit
@@ -391,6 +491,10 @@ def CortexA8Itineraries : ProcessorItineraries<
   InstrItinData<IIC_VBINQ,    [InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
                                InstrStage<2, [A8_NPipe]>], [6, 2, 2]>,
   //
+  // Move
+  InstrItinData<IIC_VMOV,     [InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                               InstrStage<1, [A8_NPipe]>], [1, 1]>,
+  //
   // Move Immediate
   InstrItinData<IIC_VMOVImm,  [InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
                                InstrStage<1, [A8_NPipe]>], [3]>,
@@ -424,6 +528,10 @@ def CortexA8Itineraries : ProcessorItineraries<
   // Integer to Lane Move
   InstrItinData<IIC_VMOVISL , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
                                InstrStage<2, [A8_NLSPipe]>], [3, 1, 1]>,
+  //
+  // Vector narrow move
+  InstrItinData<IIC_VMOVN   , [InstrStage<1, [A8_Pipe0, A8_Pipe1]>,
+                               InstrStage<1, [A8_NPipe]>], [2, 1]>,
   //
   // Double-register Permute
   InstrItinData<IIC_VPERMD,   [InstrStage<1, [A8_Pipe0, A8_Pipe1]>,

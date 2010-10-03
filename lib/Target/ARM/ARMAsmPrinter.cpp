@@ -17,7 +17,7 @@
 #include "ARMBuildAttrs.h"
 #include "ARMAddressingModes.h"
 #include "ARMConstantPoolValue.h"
-#include "AsmPrinter/ARMInstPrinter.h"
+#include "InstPrinter/ARMInstPrinter.h"
 #include "ARMMachineFunctionInfo.h"
 #include "ARMMCInstLower.h"
 #include "ARMTargetMachine.h"
@@ -53,10 +53,6 @@
 #include <cctype>
 using namespace llvm;
 
-static cl::opt<bool>
-EnableMCInst("enable-arm-mcinst-printer", cl::Hidden,
-            cl::desc("enable experimental asmprinter gunk in the arm backend"));
-
 namespace llvm {
   namespace ARM {
     enum DW_ISA {
@@ -91,106 +87,8 @@ namespace {
       return "ARM Assembly Printer";
     }
 
-    void printInstructionThroughMCStreamer(const MachineInstr *MI);
-
-
     void printOperand(const MachineInstr *MI, int OpNum, raw_ostream &O,
                       const char *Modifier = 0);
-    void printSOImmOperand(const MachineInstr *MI, int OpNum, raw_ostream &O);
-    void printSOImm2PartOperand(const MachineInstr *MI, int OpNum,
-                                raw_ostream &O);
-    void printSORegOperand(const MachineInstr *MI, int OpNum,
-                           raw_ostream &O);
-    void printAddrMode2Operand(const MachineInstr *MI, int OpNum,
-                               raw_ostream &O);
-    void printAddrMode2OffsetOperand(const MachineInstr *MI, int OpNum,
-                                     raw_ostream &O);
-    void printAddrMode3Operand(const MachineInstr *MI, int OpNum,
-                               raw_ostream &O);
-    void printAddrMode3OffsetOperand(const MachineInstr *MI, int OpNum,
-                                     raw_ostream &O);
-    void printAddrMode4Operand(const MachineInstr *MI, int OpNum,raw_ostream &O,
-                               const char *Modifier = 0);
-    void printAddrMode5Operand(const MachineInstr *MI, int OpNum,raw_ostream &O,
-                               const char *Modifier = 0);
-    void printAddrMode6Operand(const MachineInstr *MI, int OpNum,
-                               raw_ostream &O);
-    void printAddrMode6OffsetOperand(const MachineInstr *MI, int OpNum,
-                                     raw_ostream &O);
-    void printAddrModePCOperand(const MachineInstr *MI, int OpNum,
-                                raw_ostream &O,
-                                const char *Modifier = 0);
-    void printBitfieldInvMaskImmOperand(const MachineInstr *MI, int OpNum,
-                                        raw_ostream &O);
-    void printMemBOption(const MachineInstr *MI, int OpNum,
-                         raw_ostream &O);
-    void printShiftImmOperand(const MachineInstr *MI, int OpNum,
-                              raw_ostream &O);
-
-    void printThumbS4ImmOperand(const MachineInstr *MI, int OpNum,
-                                raw_ostream &O);
-    void printThumbITMask(const MachineInstr *MI, int OpNum, raw_ostream &O);
-    void printThumbAddrModeRROperand(const MachineInstr *MI, int OpNum,
-                                     raw_ostream &O);
-    void printThumbAddrModeRI5Operand(const MachineInstr *MI, int OpNum,
-                                      raw_ostream &O,
-                                      unsigned Scale);
-    void printThumbAddrModeS1Operand(const MachineInstr *MI, int OpNum,
-                                     raw_ostream &O);
-    void printThumbAddrModeS2Operand(const MachineInstr *MI, int OpNum,
-                                     raw_ostream &O);
-    void printThumbAddrModeS4Operand(const MachineInstr *MI, int OpNum,
-                                     raw_ostream &O);
-    void printThumbAddrModeSPOperand(const MachineInstr *MI, int OpNum,
-                                     raw_ostream &O);
-
-    void printT2SOOperand(const MachineInstr *MI, int OpNum, raw_ostream &O);
-    void printT2AddrModeImm12Operand(const MachineInstr *MI, int OpNum,
-                                     raw_ostream &O);
-    void printT2AddrModeImm8Operand(const MachineInstr *MI, int OpNum,
-                                    raw_ostream &O);
-    void printT2AddrModeImm8s4Operand(const MachineInstr *MI, int OpNum,
-                                      raw_ostream &O);
-    void printT2AddrModeImm8OffsetOperand(const MachineInstr *MI, int OpNum,
-                                          raw_ostream &O);
-    void printT2AddrModeImm8s4OffsetOperand(const MachineInstr *MI, int OpNum,
-                                            raw_ostream &O) {}
-    void printT2AddrModeSoRegOperand(const MachineInstr *MI, int OpNum,
-                                     raw_ostream &O);
-
-    void printCPSOptionOperand(const MachineInstr *MI, int OpNum,
-                               raw_ostream &O) {}
-    void printMSRMaskOperand(const MachineInstr *MI, int OpNum,
-                             raw_ostream &O) {}
-    void printNegZeroOperand(const MachineInstr *MI, int OpNum,
-                             raw_ostream &O) {}
-    void printPredicateOperand(const MachineInstr *MI, int OpNum,
-                               raw_ostream &O);
-    void printMandatoryPredicateOperand(const MachineInstr *MI, int OpNum,
-                                        raw_ostream &O);
-    void printSBitModifierOperand(const MachineInstr *MI, int OpNum,
-                                  raw_ostream &O);
-    void printPCLabel(const MachineInstr *MI, int OpNum,
-                      raw_ostream &O);
-    void printRegisterList(const MachineInstr *MI, int OpNum,
-                           raw_ostream &O);
-    void printCPInstOperand(const MachineInstr *MI, int OpNum,
-                            raw_ostream &O,
-                            const char *Modifier);
-    void printJTBlockOperand(const MachineInstr *MI, int OpNum,
-                             raw_ostream &O);
-    void printJT2BlockOperand(const MachineInstr *MI, int OpNum,
-                              raw_ostream &O);
-    void printTBAddrMode(const MachineInstr *MI, int OpNum,
-                         raw_ostream &O);
-    void printNoHashImmediate(const MachineInstr *MI, int OpNum,
-                              raw_ostream &O);
-    void printVFPf32ImmOperand(const MachineInstr *MI, int OpNum,
-                               raw_ostream &O);
-    void printVFPf64ImmOperand(const MachineInstr *MI, int OpNum,
-                               raw_ostream &O);
-    void printNEONModImmOperand(const MachineInstr *MI, int OpNum,
-                                raw_ostream &O);
 
     virtual bool PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
                                  unsigned AsmVariant, const char *ExtraCode,
@@ -199,9 +97,8 @@ namespace {
                                        unsigned AsmVariant,
                                        const char *ExtraCode, raw_ostream &O);
 
-    void printInstruction(const MachineInstr *MI, raw_ostream &O); // autogen
-    static const char *getRegisterName(unsigned RegNo);
-
+    void EmitJumpTable(const MachineInstr *MI);
+    void EmitJump2Table(const MachineInstr *MI);
     virtual void EmitInstruction(const MachineInstr *MI);
     bool runOnMachineFunction(MachineFunction &F);
 
@@ -209,6 +106,8 @@ namespace {
     virtual void EmitFunctionEntryLabel();
     void EmitStartOfAsmFile(Module &M);
     void EmitEndOfAsmFile(Module &M);
+
+    void PrintDebugValueComment(const MachineInstr *MI, raw_ostream &OS);
 
     MachineLocation getDebugValueLocation(const MachineInstr *MI) const {
       MachineLocation Location;
@@ -233,6 +132,8 @@ namespace {
     MCSymbol *GetARMSetPICJumpTableLabel2(unsigned uid, unsigned uid2,
                                           const MachineBasicBlock *MBB) const;
     MCSymbol *GetARMJTIPICJumpTableLabel2(unsigned uid, unsigned uid2) const;
+
+    MCSymbol *GetARMSJLJEHLabel(void) const;
 
     /// EmitMachineConstantPoolValue - Print a machine constantpool value to
     /// the .s file.
@@ -296,8 +197,6 @@ namespace {
   };
 } // end of anonymous namespace
 
-#include "ARMGenAsmWriter.inc"
-
 void ARMAsmPrinter::EmitFunctionEntryLabel() {
   if (AFI->isThumbFunction()) {
     OutStreamer.EmitRawText(StringRef("\t.code\t16"));
@@ -316,7 +215,7 @@ void ARMAsmPrinter::EmitFunctionEntryLabel() {
   OutStreamer.EmitLabel(CurrentFnSym);
 }
 
-/// runOnMachineFunction - This uses the printInstruction()
+/// runOnMachineFunction - This uses the EmitInstruction()
 /// method to print assembly for each instruction.
 ///
 bool ARMAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
@@ -342,10 +241,10 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
       unsigned DReg =
         TM.getRegisterInfo()->getMatchingSuperReg(Reg,
           RegNum & 1 ? ARM::ssub_1 : ARM::ssub_0, &ARM::DPR_VFP2RegClass);
-      O << getRegisterName(DReg) << '[' << (RegNum & 1) << ']';
+      O << ARMInstPrinter::getRegisterName(DReg) << '[' << (RegNum & 1) << ']';
     } else {
       assert(!MO.getSubReg() && "Subregs should be eliminated!");
-      O << getRegisterName(Reg);
+      O << ARMInstPrinter::getRegisterName(Reg);
     }
     break;
   }
@@ -401,537 +300,7 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
   }
 }
 
-static void printSOImm(raw_ostream &O, int64_t V, bool VerboseAsm,
-                       const MCAsmInfo *MAI) {
-  // Break it up into two parts that make up a shifter immediate.
-  V = ARM_AM::getSOImmVal(V);
-  assert(V != -1 && "Not a valid so_imm value!");
-
-  unsigned Imm = ARM_AM::getSOImmValImm(V);
-  unsigned Rot = ARM_AM::getSOImmValRot(V);
-
-  // Print low-level immediate formation info, per
-  // A5.1.3: "Data-processing operands - Immediate".
-  if (Rot) {
-    O << "#" << Imm << ", " << Rot;
-    // Pretty printed version.
-    if (VerboseAsm) {
-      O << "\t" << MAI->getCommentString() << ' ';
-      O << (int)ARM_AM::rotr32(Imm, Rot);
-    }
-  } else {
-    O << "#" << Imm;
-  }
-}
-
-/// printSOImmOperand - SOImm is 4-bit rotate amount in bits 8-11 with 8-bit
-/// immediate in bits 0-7.
-void ARMAsmPrinter::printSOImmOperand(const MachineInstr *MI, int OpNum,
-                                      raw_ostream &O) {
-  const MachineOperand &MO = MI->getOperand(OpNum);
-  assert(MO.isImm() && "Not a valid so_imm value!");
-  printSOImm(O, MO.getImm(), isVerbose(), MAI);
-}
-
-/// printSOImm2PartOperand - SOImm is broken into two pieces using a 'mov'
-/// followed by an 'orr' to materialize.
-void ARMAsmPrinter::printSOImm2PartOperand(const MachineInstr *MI, int OpNum,
-                                           raw_ostream &O) {
-  const MachineOperand &MO = MI->getOperand(OpNum);
-  assert(MO.isImm() && "Not a valid so_imm value!");
-  unsigned V1 = ARM_AM::getSOImmTwoPartFirst(MO.getImm());
-  unsigned V2 = ARM_AM::getSOImmTwoPartSecond(MO.getImm());
-  printSOImm(O, V1, isVerbose(), MAI);
-  O << "\n\torr";
-  printPredicateOperand(MI, 2, O);
-  O << "\t";
-  printOperand(MI, 0, O);
-  O << ", ";
-  printOperand(MI, 0, O);
-  O << ", ";
-  printSOImm(O, V2, isVerbose(), MAI);
-}
-
-// so_reg is a 4-operand unit corresponding to register forms of the A5.1
-// "Addressing Mode 1 - Data-processing operands" forms.  This includes:
-//    REG 0   0           - e.g. R5
-//    REG REG 0,SH_OPC    - e.g. R5, ROR R3
-//    REG 0   IMM,SH_OPC  - e.g. R5, LSL #3
-void ARMAsmPrinter::printSORegOperand(const MachineInstr *MI, int Op,
-                                      raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(Op);
-  const MachineOperand &MO2 = MI->getOperand(Op+1);
-  const MachineOperand &MO3 = MI->getOperand(Op+2);
-
-  O << getRegisterName(MO1.getReg());
-
-  // Print the shift opc.
-  ARM_AM::ShiftOpc ShOpc = ARM_AM::getSORegShOp(MO3.getImm());
-  O << ", " << ARM_AM::getShiftOpcStr(ShOpc);
-  if (MO2.getReg()) {
-    O << ' ' << getRegisterName(MO2.getReg());
-    assert(ARM_AM::getSORegOffset(MO3.getImm()) == 0);
-  } else if (ShOpc != ARM_AM::rrx) {
-    O << " #" << ARM_AM::getSORegOffset(MO3.getImm());
-  }
-}
-
-void ARMAsmPrinter::printAddrMode2Operand(const MachineInstr *MI, int Op,
-                                          raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(Op);
-  const MachineOperand &MO2 = MI->getOperand(Op+1);
-  const MachineOperand &MO3 = MI->getOperand(Op+2);
-
-  if (!MO1.isReg()) {   // FIXME: This is for CP entries, but isn't right.
-    printOperand(MI, Op, O);
-    return;
-  }
-
-  O << "[" << getRegisterName(MO1.getReg());
-
-  if (!MO2.getReg()) {
-    if (ARM_AM::getAM2Offset(MO3.getImm())) // Don't print +0.
-      O << ", #"
-        << ARM_AM::getAddrOpcStr(ARM_AM::getAM2Op(MO3.getImm()))
-        << ARM_AM::getAM2Offset(MO3.getImm());
-    O << "]";
-    return;
-  }
-
-  O << ", "
-    << ARM_AM::getAddrOpcStr(ARM_AM::getAM2Op(MO3.getImm()))
-    << getRegisterName(MO2.getReg());
-
-  if (unsigned ShImm = ARM_AM::getAM2Offset(MO3.getImm()))
-    O << ", "
-      << ARM_AM::getShiftOpcStr(ARM_AM::getAM2ShiftOpc(MO3.getImm()))
-      << " #" << ShImm;
-  O << "]";
-}
-
-void ARMAsmPrinter::printAddrMode2OffsetOperand(const MachineInstr *MI, int Op,
-                                                raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(Op);
-  const MachineOperand &MO2 = MI->getOperand(Op+1);
-
-  if (!MO1.getReg()) {
-    unsigned ImmOffs = ARM_AM::getAM2Offset(MO2.getImm());
-    O << "#"
-      << ARM_AM::getAddrOpcStr(ARM_AM::getAM2Op(MO2.getImm()))
-      << ImmOffs;
-    return;
-  }
-
-  O << ARM_AM::getAddrOpcStr(ARM_AM::getAM2Op(MO2.getImm()))
-    << getRegisterName(MO1.getReg());
-
-  if (unsigned ShImm = ARM_AM::getAM2Offset(MO2.getImm()))
-    O << ", "
-      << ARM_AM::getShiftOpcStr(ARM_AM::getAM2ShiftOpc(MO2.getImm()))
-      << " #" << ShImm;
-}
-
-void ARMAsmPrinter::printAddrMode3Operand(const MachineInstr *MI, int Op,
-                                          raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(Op);
-  const MachineOperand &MO2 = MI->getOperand(Op+1);
-  const MachineOperand &MO3 = MI->getOperand(Op+2);
-
-  assert(TargetRegisterInfo::isPhysicalRegister(MO1.getReg()));
-  O << "[" << getRegisterName(MO1.getReg());
-
-  if (MO2.getReg()) {
-    O << ", "
-      << (char)ARM_AM::getAM3Op(MO3.getImm())
-      << getRegisterName(MO2.getReg())
-      << "]";
-    return;
-  }
-
-  if (unsigned ImmOffs = ARM_AM::getAM3Offset(MO3.getImm()))
-    O << ", #"
-      << ARM_AM::getAddrOpcStr(ARM_AM::getAM3Op(MO3.getImm()))
-      << ImmOffs;
-  O << "]";
-}
-
-void ARMAsmPrinter::printAddrMode3OffsetOperand(const MachineInstr *MI, int Op,
-                                                raw_ostream &O){
-  const MachineOperand &MO1 = MI->getOperand(Op);
-  const MachineOperand &MO2 = MI->getOperand(Op+1);
-
-  if (MO1.getReg()) {
-    O << (char)ARM_AM::getAM3Op(MO2.getImm())
-      << getRegisterName(MO1.getReg());
-    return;
-  }
-
-  unsigned ImmOffs = ARM_AM::getAM3Offset(MO2.getImm());
-  O << "#"
-    << ARM_AM::getAddrOpcStr(ARM_AM::getAM3Op(MO2.getImm()))
-    << ImmOffs;
-}
-
-void ARMAsmPrinter::printAddrMode4Operand(const MachineInstr *MI, int Op,
-                                          raw_ostream &O,
-                                          const char *Modifier) {
-  const MachineOperand &MO2 = MI->getOperand(Op+1);
-  ARM_AM::AMSubMode Mode = ARM_AM::getAM4SubMode(MO2.getImm());
-  if (Modifier && strcmp(Modifier, "submode") == 0) {
-    O << ARM_AM::getAMSubModeStr(Mode);
-  } else if (Modifier && strcmp(Modifier, "wide") == 0) {
-    ARM_AM::AMSubMode Mode = ARM_AM::getAM4SubMode(MO2.getImm());
-    if (Mode == ARM_AM::ia)
-      O << ".w";
-  } else {
-    printOperand(MI, Op, O);
-  }
-}
-
-void ARMAsmPrinter::printAddrMode5Operand(const MachineInstr *MI, int Op,
-                                          raw_ostream &O,
-                                          const char *Modifier) {
-  const MachineOperand &MO1 = MI->getOperand(Op);
-  const MachineOperand &MO2 = MI->getOperand(Op+1);
-
-  if (!MO1.isReg()) {   // FIXME: This is for CP entries, but isn't right.
-    printOperand(MI, Op, O);
-    return;
-  }
-
-  assert(TargetRegisterInfo::isPhysicalRegister(MO1.getReg()));
-
-  O << "[" << getRegisterName(MO1.getReg());
-
-  if (unsigned ImmOffs = ARM_AM::getAM5Offset(MO2.getImm())) {
-    O << ", #"
-      << ARM_AM::getAddrOpcStr(ARM_AM::getAM5Op(MO2.getImm()))
-      << ImmOffs*4;
-  }
-  O << "]";
-}
-
-void ARMAsmPrinter::printAddrMode6Operand(const MachineInstr *MI, int Op,
-                                          raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(Op);
-  const MachineOperand &MO2 = MI->getOperand(Op+1);
-
-  O << "[" << getRegisterName(MO1.getReg());
-  if (MO2.getImm()) {
-    // FIXME: Both darwin as and GNU as violate ARM docs here.
-    O << ", :" << (MO2.getImm() << 3);
-  }
-  O << "]";
-}
-
-void ARMAsmPrinter::printAddrMode6OffsetOperand(const MachineInstr *MI, int Op,
-                                                raw_ostream &O){
-  const MachineOperand &MO = MI->getOperand(Op);
-  if (MO.getReg() == 0)
-    O << "!";
-  else
-    O << ", " << getRegisterName(MO.getReg());
-}
-
-void ARMAsmPrinter::printAddrModePCOperand(const MachineInstr *MI, int Op,
-                                           raw_ostream &O,
-                                           const char *Modifier) {
-  if (Modifier && strcmp(Modifier, "label") == 0) {
-    printPCLabel(MI, Op+1, O);
-    return;
-  }
-
-  const MachineOperand &MO1 = MI->getOperand(Op);
-  assert(TargetRegisterInfo::isPhysicalRegister(MO1.getReg()));
-  O << "[pc, " << getRegisterName(MO1.getReg()) << "]";
-}
-
-void
-ARMAsmPrinter::printBitfieldInvMaskImmOperand(const MachineInstr *MI, int Op,
-                                              raw_ostream &O) {
-  const MachineOperand &MO = MI->getOperand(Op);
-  uint32_t v = ~MO.getImm();
-  int32_t lsb = CountTrailingZeros_32(v);
-  int32_t width = (32 - CountLeadingZeros_32 (v)) - lsb;
-  assert(MO.isImm() && "Not a valid bf_inv_mask_imm value!");
-  O << "#" << lsb << ", #" << width;
-}
-
-void
-ARMAsmPrinter::printMemBOption(const MachineInstr *MI, int OpNum,
-                               raw_ostream &O) {
-  unsigned val = MI->getOperand(OpNum).getImm();
-  O << ARM_MB::MemBOptToString(val);
-}
-
-void ARMAsmPrinter::printShiftImmOperand(const MachineInstr *MI, int OpNum,
-                                         raw_ostream &O) {
-  unsigned ShiftOp = MI->getOperand(OpNum).getImm();
-  ARM_AM::ShiftOpc Opc = ARM_AM::getSORegShOp(ShiftOp);
-  switch (Opc) {
-  case ARM_AM::no_shift:
-    return;
-  case ARM_AM::lsl:
-    O << ", lsl #";
-    break;
-  case ARM_AM::asr:
-    O << ", asr #";
-    break;
-  default:
-    assert(0 && "unexpected shift opcode for shift immediate operand");
-  }
-  O << ARM_AM::getSORegOffset(ShiftOp);
-}
-
 //===--------------------------------------------------------------------===//
-
-void ARMAsmPrinter::printThumbS4ImmOperand(const MachineInstr *MI, int Op,
-                                           raw_ostream &O) {
-  O << "#" <<  MI->getOperand(Op).getImm() * 4;
-}
-
-void
-ARMAsmPrinter::printThumbITMask(const MachineInstr *MI, int Op,
-                                raw_ostream &O) {
-  // (3 - the number of trailing zeros) is the number of then / else.
-  unsigned Mask = MI->getOperand(Op).getImm();
-  unsigned CondBit0 = Mask >> 4 & 1;
-  unsigned NumTZ = CountTrailingZeros_32(Mask);
-  assert(NumTZ <= 3 && "Invalid IT mask!");
-  for (unsigned Pos = 3, e = NumTZ; Pos > e; --Pos) {
-    bool T = ((Mask >> Pos) & 1) == CondBit0;
-    if (T)
-      O << 't';
-    else
-      O << 'e';
-  }
-}
-
-void
-ARMAsmPrinter::printThumbAddrModeRROperand(const MachineInstr *MI, int Op,
-                                           raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(Op);
-  const MachineOperand &MO2 = MI->getOperand(Op+1);
-  O << "[" << getRegisterName(MO1.getReg());
-  O << ", " << getRegisterName(MO2.getReg()) << "]";
-}
-
-void
-ARMAsmPrinter::printThumbAddrModeRI5Operand(const MachineInstr *MI, int Op,
-                                            raw_ostream &O,
-                                            unsigned Scale) {
-  const MachineOperand &MO1 = MI->getOperand(Op);
-  const MachineOperand &MO2 = MI->getOperand(Op+1);
-  const MachineOperand &MO3 = MI->getOperand(Op+2);
-
-  if (!MO1.isReg()) {   // FIXME: This is for CP entries, but isn't right.
-    printOperand(MI, Op, O);
-    return;
-  }
-
-  O << "[" << getRegisterName(MO1.getReg());
-  if (MO3.getReg())
-    O << ", " << getRegisterName(MO3.getReg());
-  else if (unsigned ImmOffs = MO2.getImm())
-    O << ", #" << ImmOffs * Scale;
-  O << "]";
-}
-
-void
-ARMAsmPrinter::printThumbAddrModeS1Operand(const MachineInstr *MI, int Op,
-                                           raw_ostream &O) {
-  printThumbAddrModeRI5Operand(MI, Op, O, 1);
-}
-void
-ARMAsmPrinter::printThumbAddrModeS2Operand(const MachineInstr *MI, int Op,
-                                           raw_ostream &O) {
-  printThumbAddrModeRI5Operand(MI, Op, O, 2);
-}
-void
-ARMAsmPrinter::printThumbAddrModeS4Operand(const MachineInstr *MI, int Op,
-                                           raw_ostream &O) {
-  printThumbAddrModeRI5Operand(MI, Op, O, 4);
-}
-
-void ARMAsmPrinter::printThumbAddrModeSPOperand(const MachineInstr *MI,int Op,
-                                                raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(Op);
-  const MachineOperand &MO2 = MI->getOperand(Op+1);
-  O << "[" << getRegisterName(MO1.getReg());
-  if (unsigned ImmOffs = MO2.getImm())
-    O << ", #" << ImmOffs*4;
-  O << "]";
-}
-
-//===--------------------------------------------------------------------===//
-
-// Constant shifts t2_so_reg is a 2-operand unit corresponding to the Thumb2
-// register with shift forms.
-// REG 0   0           - e.g. R5
-// REG IMM, SH_OPC     - e.g. R5, LSL #3
-void ARMAsmPrinter::printT2SOOperand(const MachineInstr *MI, int OpNum,
-                                     raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(OpNum);
-  const MachineOperand &MO2 = MI->getOperand(OpNum+1);
-
-  unsigned Reg = MO1.getReg();
-  assert(TargetRegisterInfo::isPhysicalRegister(Reg));
-  O << getRegisterName(Reg);
-
-  // Print the shift opc.
-  assert(MO2.isImm() && "Not a valid t2_so_reg value!");
-  ARM_AM::ShiftOpc ShOpc = ARM_AM::getSORegShOp(MO2.getImm());
-  O << ", " << ARM_AM::getShiftOpcStr(ShOpc);
-  if (ShOpc != ARM_AM::rrx)
-    O << " #" << ARM_AM::getSORegOffset(MO2.getImm());
-}
-
-void ARMAsmPrinter::printT2AddrModeImm12Operand(const MachineInstr *MI,
-                                                int OpNum,
-                                                raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(OpNum);
-  const MachineOperand &MO2 = MI->getOperand(OpNum+1);
-
-  O << "[" << getRegisterName(MO1.getReg());
-
-  unsigned OffImm = MO2.getImm();
-  if (OffImm)  // Don't print +0.
-    O << ", #" << OffImm;
-  O << "]";
-}
-
-void ARMAsmPrinter::printT2AddrModeImm8Operand(const MachineInstr *MI,
-                                               int OpNum,
-                                               raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(OpNum);
-  const MachineOperand &MO2 = MI->getOperand(OpNum+1);
-
-  O << "[" << getRegisterName(MO1.getReg());
-
-  int32_t OffImm = (int32_t)MO2.getImm();
-  // Don't print +0.
-  if (OffImm < 0)
-    O << ", #-" << -OffImm;
-  else if (OffImm > 0)
-    O << ", #" << OffImm;
-  O << "]";
-}
-
-void ARMAsmPrinter::printT2AddrModeImm8s4Operand(const MachineInstr *MI,
-                                                 int OpNum,
-                                                 raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(OpNum);
-  const MachineOperand &MO2 = MI->getOperand(OpNum+1);
-
-  O << "[" << getRegisterName(MO1.getReg());
-
-  int32_t OffImm = (int32_t)MO2.getImm() / 4;
-  // Don't print +0.
-  if (OffImm < 0)
-    O << ", #-" << -OffImm * 4;
-  else if (OffImm > 0)
-    O << ", #" << OffImm * 4;
-  O << "]";
-}
-
-void ARMAsmPrinter::printT2AddrModeImm8OffsetOperand(const MachineInstr *MI,
-                                                     int OpNum,
-                                                     raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(OpNum);
-  int32_t OffImm = (int32_t)MO1.getImm();
-  // Don't print +0.
-  if (OffImm < 0)
-    O << "#-" << -OffImm;
-  else if (OffImm > 0)
-    O << "#" << OffImm;
-}
-
-void ARMAsmPrinter::printT2AddrModeSoRegOperand(const MachineInstr *MI,
-                                                int OpNum,
-                                                raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(OpNum);
-  const MachineOperand &MO2 = MI->getOperand(OpNum+1);
-  const MachineOperand &MO3 = MI->getOperand(OpNum+2);
-
-  O << "[" << getRegisterName(MO1.getReg());
-
-  assert(MO2.getReg() && "Invalid so_reg load / store address!");
-  O << ", " << getRegisterName(MO2.getReg());
-
-  unsigned ShAmt = MO3.getImm();
-  if (ShAmt) {
-    assert(ShAmt <= 3 && "Not a valid Thumb2 addressing mode!");
-    O << ", lsl #" << ShAmt;
-  }
-  O << "]";
-}
-
-
-//===--------------------------------------------------------------------===//
-
-void ARMAsmPrinter::printPredicateOperand(const MachineInstr *MI, int OpNum,
-                                          raw_ostream &O) {
-  ARMCC::CondCodes CC = (ARMCC::CondCodes)MI->getOperand(OpNum).getImm();
-  if (CC != ARMCC::AL)
-    O << ARMCondCodeToString(CC);
-}
-
-void ARMAsmPrinter::printMandatoryPredicateOperand(const MachineInstr *MI,
-                                                   int OpNum,
-                                                   raw_ostream &O) {
-  ARMCC::CondCodes CC = (ARMCC::CondCodes)MI->getOperand(OpNum).getImm();
-  O << ARMCondCodeToString(CC);
-}
-
-void ARMAsmPrinter::printSBitModifierOperand(const MachineInstr *MI, int OpNum,
-                                             raw_ostream &O){
-  unsigned Reg = MI->getOperand(OpNum).getReg();
-  if (Reg) {
-    assert(Reg == ARM::CPSR && "Expect ARM CPSR register!");
-    O << 's';
-  }
-}
-
-void ARMAsmPrinter::printPCLabel(const MachineInstr *MI, int OpNum,
-                                 raw_ostream &O) {
-  int Id = (int)MI->getOperand(OpNum).getImm();
-  O << MAI->getPrivateGlobalPrefix()
-    << "PC" << getFunctionNumber() << "_" << Id;
-}
-
-void ARMAsmPrinter::printRegisterList(const MachineInstr *MI, int OpNum,
-                                      raw_ostream &O) {
-  O << "{";
-  for (unsigned i = OpNum, e = MI->getNumOperands(); i != e; ++i) {
-    if (MI->getOperand(i).isImplicit())
-      continue;
-    if ((int)i != OpNum) O << ", ";
-    printOperand(MI, i, O);
-  }
-  O << "}";
-}
-
-void ARMAsmPrinter::printCPInstOperand(const MachineInstr *MI, int OpNum,
-                                       raw_ostream &O, const char *Modifier) {
-  assert(Modifier && "This operand only works with a modifier!");
-  // There are two aspects to a CONSTANTPOOL_ENTRY operand, the label and the
-  // data itself.
-  if (!strcmp(Modifier, "label")) {
-    unsigned ID = MI->getOperand(OpNum).getImm();
-    OutStreamer.EmitLabel(GetCPISymbol(ID));
-  } else {
-    assert(!strcmp(Modifier, "cpentry") && "Unknown modifier for CPE");
-    unsigned CPI = MI->getOperand(OpNum).getIndex();
-
-    const MachineConstantPoolEntry &MCPE = MCP->getConstants()[CPI];
-
-    if (MCPE.isMachineConstantPoolEntry()) {
-      EmitMachineConstantPoolValue(MCPE.Val.MachineCPVal);
-    } else {
-      EmitGlobalConstant(MCPE.Val.ConstVal);
-    }
-  }
-}
 
 MCSymbol *ARMAsmPrinter::
 GetARMSetPICJumpTableLabel2(unsigned uid, unsigned uid2,
@@ -951,126 +320,12 @@ GetARMJTIPICJumpTableLabel2(unsigned uid, unsigned uid2) const {
   return OutContext.GetOrCreateSymbol(Name.str());
 }
 
-void ARMAsmPrinter::printJTBlockOperand(const MachineInstr *MI, int OpNum,
-                                        raw_ostream &O) {
-  assert(!Subtarget->isThumb2() && "Thumb2 should use double-jump jumptables!");
 
-  const MachineOperand &MO1 = MI->getOperand(OpNum);
-  const MachineOperand &MO2 = MI->getOperand(OpNum+1); // Unique Id
-
-  unsigned JTI = MO1.getIndex();
-  MCSymbol *JTISymbol = GetARMJTIPICJumpTableLabel2(JTI, MO2.getImm());
-  // Can't use EmitLabel until instprinter happens, label comes out in the wrong
-  // order.
-  O << "\n" << *JTISymbol << ":\n";
-
-  const char *JTEntryDirective = MAI->getData32bitsDirective();
-
-  const MachineJumpTableInfo *MJTI = MF->getJumpTableInfo();
-  const std::vector<MachineJumpTableEntry> &JT = MJTI->getJumpTables();
-  const std::vector<MachineBasicBlock*> &JTBBs = JT[JTI].MBBs;
-  bool UseSet= MAI->hasSetDirective() && TM.getRelocationModel() == Reloc::PIC_;
-  SmallPtrSet<MachineBasicBlock*, 8> JTSets;
-  for (unsigned i = 0, e = JTBBs.size(); i != e; ++i) {
-    MachineBasicBlock *MBB = JTBBs[i];
-    bool isNew = JTSets.insert(MBB);
-
-    if (UseSet && isNew) {
-      O << "\t.set\t"
-        << *GetARMSetPICJumpTableLabel2(JTI, MO2.getImm(), MBB) << ','
-        << *MBB->getSymbol() << '-' << *JTISymbol << '\n';
-    }
-
-    O << JTEntryDirective << ' ';
-    if (UseSet)
-      O << *GetARMSetPICJumpTableLabel2(JTI, MO2.getImm(), MBB);
-    else if (TM.getRelocationModel() == Reloc::PIC_)
-      O << *MBB->getSymbol() << '-' << *JTISymbol;
-    else
-      O << *MBB->getSymbol();
-
-    if (i != e-1)
-      O << '\n';
-  }
-}
-
-void ARMAsmPrinter::printJT2BlockOperand(const MachineInstr *MI, int OpNum,
-                                         raw_ostream &O) {
-  const MachineOperand &MO1 = MI->getOperand(OpNum);
-  const MachineOperand &MO2 = MI->getOperand(OpNum+1); // Unique Id
-  unsigned JTI = MO1.getIndex();
-
-  MCSymbol *JTISymbol = GetARMJTIPICJumpTableLabel2(JTI, MO2.getImm());
-
-  // Can't use EmitLabel until instprinter happens, label comes out in the wrong
-  // order.
-  O << "\n" << *JTISymbol << ":\n";
-
-  const MachineJumpTableInfo *MJTI = MF->getJumpTableInfo();
-  const std::vector<MachineJumpTableEntry> &JT = MJTI->getJumpTables();
-  const std::vector<MachineBasicBlock*> &JTBBs = JT[JTI].MBBs;
-  bool ByteOffset = false, HalfWordOffset = false;
-  if (MI->getOpcode() == ARM::t2TBB)
-    ByteOffset = true;
-  else if (MI->getOpcode() == ARM::t2TBH)
-    HalfWordOffset = true;
-
-  for (unsigned i = 0, e = JTBBs.size(); i != e; ++i) {
-    MachineBasicBlock *MBB = JTBBs[i];
-    if (ByteOffset)
-      O << MAI->getData8bitsDirective();
-    else if (HalfWordOffset)
-      O << MAI->getData16bitsDirective();
-
-    if (ByteOffset || HalfWordOffset)
-      O << '(' << *MBB->getSymbol() << "-" << *JTISymbol << ")/2";
-    else
-      O << "\tb.w " << *MBB->getSymbol();
-
-    if (i != e-1)
-      O << '\n';
-  }
-}
-
-void ARMAsmPrinter::printTBAddrMode(const MachineInstr *MI, int OpNum,
-                                    raw_ostream &O) {
-  O << "[pc, " << getRegisterName(MI->getOperand(OpNum).getReg());
-  if (MI->getOpcode() == ARM::t2TBH)
-    O << ", lsl #1";
-  O << ']';
-}
-
-void ARMAsmPrinter::printNoHashImmediate(const MachineInstr *MI, int OpNum,
-                                         raw_ostream &O) {
-  O << MI->getOperand(OpNum).getImm();
-}
-
-void ARMAsmPrinter::printVFPf32ImmOperand(const MachineInstr *MI, int OpNum,
-                                          raw_ostream &O) {
-  const ConstantFP *FP = MI->getOperand(OpNum).getFPImm();
-  O << '#' << FP->getValueAPF().convertToFloat();
-  if (isVerbose()) {
-    O << "\t\t" << MAI->getCommentString() << ' ';
-    WriteAsOperand(O, FP, /*PrintType=*/false);
-  }
-}
-
-void ARMAsmPrinter::printVFPf64ImmOperand(const MachineInstr *MI, int OpNum,
-                                          raw_ostream &O) {
-  const ConstantFP *FP = MI->getOperand(OpNum).getFPImm();
-  O << '#' << FP->getValueAPF().convertToDouble();
-  if (isVerbose()) {
-    O << "\t\t" << MAI->getCommentString() << ' ';
-    WriteAsOperand(O, FP, /*PrintType=*/false);
-  }
-}
-
-void ARMAsmPrinter::printNEONModImmOperand(const MachineInstr *MI, int OpNum,
-                                           raw_ostream &O) {
-  unsigned EncodedImm = MI->getOperand(OpNum).getImm();
-  unsigned EltBits;
-  uint64_t Val = ARM_AM::decodeNEONModImm(EncodedImm, EltBits);
-  O << "#0x" << utohexstr(Val);
+MCSymbol *ARMAsmPrinter::GetARMSJLJEHLabel(void) const {
+  SmallString<60> Name;
+  raw_svector_ostream(Name) << MAI->getPrivateGlobalPrefix() << "SJLJEH"
+    << getFunctionNumber();
+  return OutContext.GetOrCreateSymbol(Name.str());
 }
 
 bool ARMAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
@@ -1084,14 +339,16 @@ bool ARMAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
     default: return true;  // Unknown modifier.
     case 'a': // Print as a memory address.
       if (MI->getOperand(OpNum).isReg()) {
-        O << "[" << getRegisterName(MI->getOperand(OpNum).getReg()) << "]";
+        O << "["
+          << ARMInstPrinter::getRegisterName(MI->getOperand(OpNum).getReg())
+          << "]";
         return false;
       }
       // Fallthrough
     case 'c': // Don't print "#" before an immediate operand.
       if (!MI->getOperand(OpNum).isImm())
         return true;
-      printNoHashImmediate(MI, OpNum, O);
+      O << MI->getOperand(OpNum).getImm();
       return false;
     case 'P': // Print a VFP double precision register.
     case 'q': // Print a NEON quad precision register.
@@ -1118,113 +375,8 @@ bool ARMAsmPrinter::PrintAsmMemoryOperand(const MachineInstr *MI,
 
   const MachineOperand &MO = MI->getOperand(OpNum);
   assert(MO.isReg() && "unexpected inline asm memory operand");
-  O << "[" << getRegisterName(MO.getReg()) << "]";
+  O << "[" << ARMInstPrinter::getRegisterName(MO.getReg()) << "]";
   return false;
-}
-
-void ARMAsmPrinter::EmitInstruction(const MachineInstr *MI) {
-  if (EnableMCInst) {
-    printInstructionThroughMCStreamer(MI);
-    return;
-  }
-
-  if (MI->getOpcode() == ARM::CONSTPOOL_ENTRY)
-    EmitAlignment(2);
-
-  SmallString<128> Str;
-  raw_svector_ostream OS(Str);
-  if (MI->getOpcode() == ARM::DBG_VALUE) {
-    unsigned NOps = MI->getNumOperands();
-    assert(NOps==4);
-    OS << '\t' << MAI->getCommentString() << "DEBUG_VALUE: ";
-    // cast away const; DIetc do not take const operands for some reason.
-    DIVariable V(const_cast<MDNode *>(MI->getOperand(NOps-1).getMetadata()));
-    OS << V.getName();
-    OS << " <- ";
-    // Frame address.  Currently handles register +- offset only.
-    assert(MI->getOperand(0).isReg() && MI->getOperand(1).isImm());
-    OS << '['; printOperand(MI, 0, OS); OS << '+'; printOperand(MI, 1, OS);
-    OS << ']';
-    OS << "+";
-    printOperand(MI, NOps-2, OS);
-  } else if (MI->getOpcode() == ARM::MOVs) {
-    // FIXME: Thumb variants?
-    const MachineOperand &Dst = MI->getOperand(0);
-    const MachineOperand &MO1 = MI->getOperand(1);
-    const MachineOperand &MO2 = MI->getOperand(2);
-    const MachineOperand &MO3 = MI->getOperand(3);
-
-    OS << '\t' << ARM_AM::getShiftOpcStr(ARM_AM::getSORegShOp(MO3.getImm()));
-    printSBitModifierOperand(MI, 6, OS);
-    printPredicateOperand(MI, 4, OS);
-
-    OS << '\t' << getRegisterName(Dst.getReg())
-       << ", " << getRegisterName(MO1.getReg());
-
-    if (ARM_AM::getSORegShOp(MO3.getImm()) != ARM_AM::rrx) {
-      OS << ", ";
-
-      if (MO2.getReg()) {
-        OS << getRegisterName(MO2.getReg());
-        assert(ARM_AM::getSORegOffset(MO3.getImm()) == 0);
-      } else {
-        OS << "#" << ARM_AM::getSORegOffset(MO3.getImm());
-      }
-    }
-  } else
-  // A8.6.123 PUSH
-  if ((MI->getOpcode() == ARM::STM_UPD || MI->getOpcode() == ARM::t2STM_UPD) &&
-      MI->getOperand(0).getReg() == ARM::SP) {
-    const MachineOperand &MO1 = MI->getOperand(2);
-    if (ARM_AM::getAM4SubMode(MO1.getImm()) == ARM_AM::db) {
-      OS << '\t' << "push";
-      printPredicateOperand(MI, 3, OS);
-      OS << '\t';
-      printRegisterList(MI, 5, OS);
-    }
-  } else
-  // A8.6.122 POP
-  if ((MI->getOpcode() == ARM::LDM_UPD || MI->getOpcode() == ARM::t2LDM_UPD) &&
-      MI->getOperand(0).getReg() == ARM::SP) {
-    const MachineOperand &MO1 = MI->getOperand(2);
-    if (ARM_AM::getAM4SubMode(MO1.getImm()) == ARM_AM::ia) {
-      OS << '\t' << "pop";
-      printPredicateOperand(MI, 3, OS);
-      OS << '\t';
-      printRegisterList(MI, 5, OS);
-    }
-  } else
-  // A8.6.355 VPUSH
-  if ((MI->getOpcode() == ARM::VSTMS_UPD || MI->getOpcode() ==ARM::VSTMD_UPD) &&
-      MI->getOperand(0).getReg() == ARM::SP) {
-    const MachineOperand &MO1 = MI->getOperand(2);
-    if (ARM_AM::getAM4SubMode(MO1.getImm()) == ARM_AM::db) {
-      OS << '\t' << "vpush";
-      printPredicateOperand(MI, 3, OS);
-      OS << '\t';
-      printRegisterList(MI, 5, OS);
-    }
-  } else
-  // A8.6.354 VPOP
-  if ((MI->getOpcode() == ARM::VLDMS_UPD || MI->getOpcode() ==ARM::VLDMD_UPD) &&
-      MI->getOperand(0).getReg() == ARM::SP) {
-    const MachineOperand &MO1 = MI->getOperand(2);
-    if (ARM_AM::getAM4SubMode(MO1.getImm()) == ARM_AM::ia) {
-      OS << '\t' << "vpop";
-      printPredicateOperand(MI, 3, OS);
-      OS << '\t';
-      printRegisterList(MI, 5, OS);
-    }
-  } else
-    printInstruction(MI, OS);
-
-  // Output the instruction to the stream
-  OutStreamer.EmitRawText(OS.str());
-
-  // Make sure the instruction that follows TBB is 2-byte aligned.
-  // FIXME: Constant island pass should insert an "ALIGN" instruction instead.
-  if (MI->getOpcode() == ARM::t2TBB)
-    EmitAlignment(1);
 }
 
 void ARMAsmPrinter::EmitStartOfAsmFile(Module &M) {
@@ -1266,7 +418,7 @@ void ARMAsmPrinter::EmitStartOfAsmFile(Module &M) {
   }
 
   // Use unified assembler syntax.
-  OutStreamer.EmitRawText(StringRef("\t.syntax unified"));
+  OutStreamer.EmitAssemblerFlag(MCAF_SyntaxUnified);
 
   // Emit ARM Build Attributes
   if (Subtarget->isTargetELF()) {
@@ -1341,10 +493,10 @@ void ARMAsmPrinter::EmitEndOfAsmFile(Module &M) {
         else
           // Internal to current translation unit.
           //
-          // When we place the LSDA into the TEXT section, the type info pointers
-          // need to be indirect and pc-rel. We accomplish this by using NLPs.
-          // However, sometimes the types are local to the file. So we need to
-          // fill in the value for the NLP in those cases.
+          // When we place the LSDA into the TEXT section, the type info
+          // pointers need to be indirect and pc-rel. We accomplish this by
+          // using NLPs; however, sometimes the types are local to the file.
+          // We need to fill in the value for the NLP in those cases.
           OutStreamer.EmitValue(MCSymbolRefExpr::Create(MCSym.getPointer(),
                                                         OutContext),
                                 4/*size*/, 0/*addrspace*/);
@@ -1391,12 +543,136 @@ static MCSymbol *getPICLabel(const char *Prefix, unsigned FunctionNumber,
   return Label;
 }
 
-void ARMAsmPrinter::printInstructionThroughMCStreamer(const MachineInstr *MI) {
+void ARMAsmPrinter::EmitJumpTable(const MachineInstr *MI) {
+  unsigned Opcode = MI->getOpcode();
+  int OpNum = 1;
+  if (Opcode == ARM::BR_JTadd)
+    OpNum = 2;
+  else if (Opcode == ARM::BR_JTm)
+    OpNum = 3;
+
+  const MachineOperand &MO1 = MI->getOperand(OpNum);
+  const MachineOperand &MO2 = MI->getOperand(OpNum+1); // Unique Id
+  unsigned JTI = MO1.getIndex();
+
+  // Emit a label for the jump table.
+  MCSymbol *JTISymbol = GetARMJTIPICJumpTableLabel2(JTI, MO2.getImm());
+  OutStreamer.EmitLabel(JTISymbol);
+
+  // Emit each entry of the table.
+  const MachineJumpTableInfo *MJTI = MF->getJumpTableInfo();
+  const std::vector<MachineJumpTableEntry> &JT = MJTI->getJumpTables();
+  const std::vector<MachineBasicBlock*> &JTBBs = JT[JTI].MBBs;
+
+  for (unsigned i = 0, e = JTBBs.size(); i != e; ++i) {
+    MachineBasicBlock *MBB = JTBBs[i];
+    // Construct an MCExpr for the entry. We want a value of the form:
+    // (BasicBlockAddr - TableBeginAddr)
+    //
+    // For example, a table with entries jumping to basic blocks BB0 and BB1
+    // would look like:
+    // LJTI_0_0:
+    //    .word (LBB0 - LJTI_0_0)
+    //    .word (LBB1 - LJTI_0_0)
+    const MCExpr *Expr = MCSymbolRefExpr::Create(MBB->getSymbol(), OutContext);
+
+    if (TM.getRelocationModel() == Reloc::PIC_)
+      Expr = MCBinaryExpr::CreateSub(Expr, MCSymbolRefExpr::Create(JTISymbol,
+                                                                   OutContext),
+                                     OutContext);
+    OutStreamer.EmitValue(Expr, 4);
+  }
+}
+
+void ARMAsmPrinter::EmitJump2Table(const MachineInstr *MI) {
+  unsigned Opcode = MI->getOpcode();
+  int OpNum = (Opcode == ARM::t2BR_JT) ? 2 : 1;
+  const MachineOperand &MO1 = MI->getOperand(OpNum);
+  const MachineOperand &MO2 = MI->getOperand(OpNum+1); // Unique Id
+  unsigned JTI = MO1.getIndex();
+
+  // Emit a label for the jump table.
+  MCSymbol *JTISymbol = GetARMJTIPICJumpTableLabel2(JTI, MO2.getImm());
+  OutStreamer.EmitLabel(JTISymbol);
+
+  // Emit each entry of the table.
+  const MachineJumpTableInfo *MJTI = MF->getJumpTableInfo();
+  const std::vector<MachineJumpTableEntry> &JT = MJTI->getJumpTables();
+  const std::vector<MachineBasicBlock*> &JTBBs = JT[JTI].MBBs;
+  unsigned OffsetWidth = 4;
+  if (MI->getOpcode() == ARM::t2TBB)
+    OffsetWidth = 1;
+  else if (MI->getOpcode() == ARM::t2TBH)
+    OffsetWidth = 2;
+
+  for (unsigned i = 0, e = JTBBs.size(); i != e; ++i) {
+    MachineBasicBlock *MBB = JTBBs[i];
+    const MCExpr *MBBSymbolExpr = MCSymbolRefExpr::Create(MBB->getSymbol(),
+                                                      OutContext);
+    // If this isn't a TBB or TBH, the entries are direct branch instructions.
+    if (OffsetWidth == 4) {
+      MCInst BrInst;
+      BrInst.setOpcode(ARM::t2B);
+      BrInst.addOperand(MCOperand::CreateExpr(MBBSymbolExpr));
+      OutStreamer.EmitInstruction(BrInst);
+      continue;
+    }
+    // Otherwise it's an offset from the dispatch instruction. Construct an
+    // MCExpr for the entry. We want a value of the form:
+    // (BasicBlockAddr - TableBeginAddr) / 2
+    //
+    // For example, a TBB table with entries jumping to basic blocks BB0 and BB1
+    // would look like:
+    // LJTI_0_0:
+    //    .byte (LBB0 - LJTI_0_0) / 2
+    //    .byte (LBB1 - LJTI_0_0) / 2
+    const MCExpr *Expr =
+      MCBinaryExpr::CreateSub(MBBSymbolExpr,
+                              MCSymbolRefExpr::Create(JTISymbol, OutContext),
+                              OutContext);
+    Expr = MCBinaryExpr::CreateDiv(Expr, MCConstantExpr::Create(2, OutContext),
+                                   OutContext);
+    OutStreamer.EmitValue(Expr, OffsetWidth);
+  }
+
+  // Make sure the instruction that follows TBB is 2-byte aligned.
+  // FIXME: Constant island pass should insert an "ALIGN" instruction instead.
+  if (MI->getOpcode() == ARM::t2TBB)
+    EmitAlignment(1);
+}
+
+void ARMAsmPrinter::PrintDebugValueComment(const MachineInstr *MI,
+                                           raw_ostream &OS) {
+  unsigned NOps = MI->getNumOperands();
+  assert(NOps==4);
+  OS << '\t' << MAI->getCommentString() << "DEBUG_VALUE: ";
+  // cast away const; DIetc do not take const operands for some reason.
+  DIVariable V(const_cast<MDNode *>(MI->getOperand(NOps-1).getMetadata()));
+  OS << V.getName();
+  OS << " <- ";
+  // Frame address.  Currently handles register +- offset only.
+  assert(MI->getOperand(0).isReg() && MI->getOperand(1).isImm());
+  OS << '['; printOperand(MI, 0, OS); OS << '+'; printOperand(MI, 1, OS);
+  OS << ']';
+  OS << "+";
+  printOperand(MI, NOps-2, OS);
+}
+
+void ARMAsmPrinter::EmitInstruction(const MachineInstr *MI) {
   ARMMCInstLower MCInstLowering(OutContext, *Mang, *this);
   switch (MI->getOpcode()) {
   case ARM::t2MOVi32imm:
     assert(0 && "Should be lowered by thumb2it pass");
   default: break;
+  case ARM::DBG_VALUE: {
+    if (isVerbose() && OutStreamer.hasRawTextSupport()) {
+      SmallString<128> TmpStr;
+      raw_svector_ostream OS(TmpStr);
+      PrintDebugValueComment(MI, OS);
+      OutStreamer.EmitRawText(StringRef(OS.str()));
+    }
+    return;
+  }
   case ARM::tPICADD: {
     // This is a pseudo op for a label + instruction sequence, which looks like:
     // LPC0:
@@ -1420,7 +696,7 @@ void ARMAsmPrinter::printInstructionThroughMCStreamer(const MachineInstr *MI) {
     OutStreamer.EmitInstruction(AddInst);
     return;
   }
-  case ARM::PICADD: { // FIXME: Remove asm string from td file.
+  case ARM::PICADD: {
     // This is a pseudo op for a label + instruction sequence, which looks like:
     // LPC0:
     //     add r0, pc, r0
@@ -1491,7 +767,7 @@ void ARMAsmPrinter::printInstructionThroughMCStreamer(const MachineInstr *MI) {
 
     return;
   }
-  case ARM::CONSTPOOL_ENTRY: { // FIXME: Remove asm string from td file.
+  case ARM::CONSTPOOL_ENTRY: {
     /// CONSTPOOL_ENTRY - This instruction represents a floating constant pool
     /// in the function.  The first operand is the ID# for this instruction, the
     /// second is the index into the MachineConstantPool that this is, the third
@@ -1510,7 +786,8 @@ void ARMAsmPrinter::printInstructionThroughMCStreamer(const MachineInstr *MI) {
 
     return;
   }
-  case ARM::MOVi2pieces: { // FIXME: Remove asmstring from td file.
+  case ARM::MOVi2pieces: {
+    // FIXME: We'd like to remove the asm string in the .td file, but the
     // This is a hack that lowers as a two instruction sequence.
     unsigned DstReg = MI->getOperand(0).getReg();
     unsigned ImmVal = (unsigned)MI->getOperand(1).getImm();
@@ -1547,7 +824,8 @@ void ARMAsmPrinter::printInstructionThroughMCStreamer(const MachineInstr *MI) {
     }
     return;
   }
-  case ARM::MOVi32imm: { // FIXME: Remove asmstring from td file.
+  case ARM::MOVi32imm: {
+    // FIXME: We'd like to remove the asm string in the .td file, but the
     // This is a hack that lowers as a two instruction sequence.
     unsigned DstReg = MI->getOperand(0).getReg();
     const MachineOperand &MO = MI->getOperand(1);
@@ -1567,6 +845,7 @@ void ARMAsmPrinter::printInstructionThroughMCStreamer(const MachineInstr *MI) {
       V1 = MCOperand::CreateExpr(SymRef1);
       V2 = MCOperand::CreateExpr(SymRef2);
     } else {
+      // FIXME: External symbol?
       MI->dump();
       llvm_unreachable("cannot handle this operand");
     }
@@ -1598,6 +877,334 @@ void ARMAsmPrinter::printInstructionThroughMCStreamer(const MachineInstr *MI) {
       OutStreamer.EmitInstruction(TmpInst);
     }
 
+    return;
+  }
+  case ARM::t2TBB:
+  case ARM::t2TBH:
+  case ARM::t2BR_JT: {
+    // Lower and emit the instruction itself, then the jump table following it.
+    MCInst TmpInst;
+    MCInstLowering.Lower(MI, TmpInst);
+    OutStreamer.EmitInstruction(TmpInst);
+    EmitJump2Table(MI);
+    return;
+  }
+  case ARM::tBR_JTr:
+  case ARM::BR_JTr:
+  case ARM::BR_JTm:
+  case ARM::BR_JTadd: {
+    // Lower and emit the instruction itself, then the jump table following it.
+    MCInst TmpInst;
+    MCInstLowering.Lower(MI, TmpInst);
+    OutStreamer.EmitInstruction(TmpInst);
+    EmitJumpTable(MI);
+    return;
+  }
+  case ARM::TRAP: {
+    // Non-Darwin binutils don't yet support the "trap" mnemonic.
+    // FIXME: Remove this special case when they do.
+    if (!Subtarget->isTargetDarwin()) {
+      //.long 0xe7ffdefe @ trap
+      uint32_t Val = 0xe7ffdefeUL;
+      OutStreamer.AddComment("trap");
+      OutStreamer.EmitIntValue(Val, 4);
+      return;
+    }
+    break;
+  }
+  case ARM::tTRAP: {
+    // Non-Darwin binutils don't yet support the "trap" mnemonic.
+    // FIXME: Remove this special case when they do.
+    if (!Subtarget->isTargetDarwin()) {
+      //.short 57086 @ trap
+      uint16_t Val = 0xdefe;
+      OutStreamer.AddComment("trap");
+      OutStreamer.EmitIntValue(Val, 2);
+      return;
+    }
+    break;
+  }
+  case ARM::t2Int_eh_sjlj_setjmp:
+  case ARM::t2Int_eh_sjlj_setjmp_nofp:
+  case ARM::tInt_eh_sjlj_setjmp: {
+    // Two incoming args: GPR:$src, GPR:$val
+    // mov $val, pc
+    // adds $val, #7
+    // str $val, [$src, #4]
+    // movs r0, #0
+    // b 1f
+    // movs r0, #1
+    // 1:
+    unsigned SrcReg = MI->getOperand(0).getReg();
+    unsigned ValReg = MI->getOperand(1).getReg();
+    MCSymbol *Label = GetARMSJLJEHLabel();
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::tMOVgpr2tgpr);
+      TmpInst.addOperand(MCOperand::CreateReg(ValReg));
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::PC));
+      // 's' bit operand
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::CPSR));
+      OutStreamer.AddComment("eh_setjmp begin");
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::tADDi3);
+      TmpInst.addOperand(MCOperand::CreateReg(ValReg));
+      // 's' bit operand
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::CPSR));
+      TmpInst.addOperand(MCOperand::CreateReg(ValReg));
+      TmpInst.addOperand(MCOperand::CreateImm(7));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::tSTR);
+      TmpInst.addOperand(MCOperand::CreateReg(ValReg));
+      TmpInst.addOperand(MCOperand::CreateReg(SrcReg));
+      // The offset immediate is #4. The operand value is scaled by 4 for the
+      // tSTR instruction.
+      TmpInst.addOperand(MCOperand::CreateImm(1));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::tMOVi8);
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::R0));
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::CPSR));
+      TmpInst.addOperand(MCOperand::CreateImm(0));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      const MCExpr *SymbolExpr = MCSymbolRefExpr::Create(Label, OutContext);
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::tB);
+      TmpInst.addOperand(MCOperand::CreateExpr(SymbolExpr));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::tMOVi8);
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::R0));
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::CPSR));
+      TmpInst.addOperand(MCOperand::CreateImm(1));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.AddComment("eh_setjmp end");
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    OutStreamer.EmitLabel(Label);
+    return;
+  }
+
+  case ARM::Int_eh_sjlj_setjmp_nofp:
+  case ARM::Int_eh_sjlj_setjmp: {
+    // Two incoming args: GPR:$src, GPR:$val
+    // add $val, pc, #8
+    // str $val, [$src, #+4]
+    // mov r0, #0
+    // add pc, pc, #0
+    // mov r0, #1
+    unsigned SrcReg = MI->getOperand(0).getReg();
+    unsigned ValReg = MI->getOperand(1).getReg();
+
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::ADDri);
+      TmpInst.addOperand(MCOperand::CreateReg(ValReg));
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::PC));
+      TmpInst.addOperand(MCOperand::CreateImm(8));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      // 's' bit operand (always reg0 for this).
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.AddComment("eh_setjmp begin");
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::STR);
+      TmpInst.addOperand(MCOperand::CreateReg(ValReg));
+      TmpInst.addOperand(MCOperand::CreateReg(SrcReg));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      TmpInst.addOperand(MCOperand::CreateImm(4));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::MOVi);
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::R0));
+      TmpInst.addOperand(MCOperand::CreateImm(0));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      // 's' bit operand (always reg0 for this).
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::ADDri);
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::PC));
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::PC));
+      TmpInst.addOperand(MCOperand::CreateImm(0));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      // 's' bit operand (always reg0 for this).
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::MOVi);
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::R0));
+      TmpInst.addOperand(MCOperand::CreateImm(1));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      // 's' bit operand (always reg0 for this).
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.AddComment("eh_setjmp end");
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    return;
+  }
+  case ARM::Int_eh_sjlj_longjmp: {
+    // ldr sp, [$src, #8]
+    // ldr $scratch, [$src, #4]
+    // ldr r7, [$src]
+    // bx $scratch
+    unsigned SrcReg = MI->getOperand(0).getReg();
+    unsigned ScratchReg = MI->getOperand(1).getReg();
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::LDR);
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::SP));
+      TmpInst.addOperand(MCOperand::CreateReg(SrcReg));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      TmpInst.addOperand(MCOperand::CreateImm(8));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::LDR);
+      TmpInst.addOperand(MCOperand::CreateReg(ScratchReg));
+      TmpInst.addOperand(MCOperand::CreateReg(SrcReg));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      TmpInst.addOperand(MCOperand::CreateImm(4));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::LDR);
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::R7));
+      TmpInst.addOperand(MCOperand::CreateReg(SrcReg));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      TmpInst.addOperand(MCOperand::CreateImm(0));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::BRIND);
+      TmpInst.addOperand(MCOperand::CreateReg(ScratchReg));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    return;
+  }
+  case ARM::tInt_eh_sjlj_longjmp: {
+    // ldr $scratch, [$src, #8]
+    // mov sp, $scratch
+    // ldr $scratch, [$src, #4]
+    // ldr r7, [$src]
+    // bx $scratch
+    unsigned SrcReg = MI->getOperand(0).getReg();
+    unsigned ScratchReg = MI->getOperand(1).getReg();
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::tLDR);
+      TmpInst.addOperand(MCOperand::CreateReg(ScratchReg));
+      TmpInst.addOperand(MCOperand::CreateReg(SrcReg));
+      // The offset immediate is #8. The operand value is scaled by 4 for the
+      // tSTR instruction.
+      TmpInst.addOperand(MCOperand::CreateImm(2));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::tMOVtgpr2gpr);
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::SP));
+      TmpInst.addOperand(MCOperand::CreateReg(ScratchReg));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::tLDR);
+      TmpInst.addOperand(MCOperand::CreateReg(ScratchReg));
+      TmpInst.addOperand(MCOperand::CreateReg(SrcReg));
+      TmpInst.addOperand(MCOperand::CreateImm(1));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::tLDR);
+      TmpInst.addOperand(MCOperand::CreateReg(ARM::R7));
+      TmpInst.addOperand(MCOperand::CreateReg(SrcReg));
+      TmpInst.addOperand(MCOperand::CreateImm(0));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
+    {
+      MCInst TmpInst;
+      TmpInst.setOpcode(ARM::tBX_RET_vararg);
+      TmpInst.addOperand(MCOperand::CreateReg(ScratchReg));
+      // Predicate.
+      TmpInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
+      TmpInst.addOperand(MCOperand::CreateReg(0));
+      OutStreamer.EmitInstruction(TmpInst);
+    }
     return;
   }
   }

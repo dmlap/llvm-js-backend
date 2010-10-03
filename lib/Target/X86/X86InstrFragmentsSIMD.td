@@ -15,51 +15,8 @@
 // MMX Pattern Fragments
 //===----------------------------------------------------------------------===//
 
-def load_mmx : PatFrag<(ops node:$ptr), (v1i64 (load node:$ptr))>;
-
-def bc_v8i8  : PatFrag<(ops node:$in), (v8i8  (bitconvert node:$in))>;
-def bc_v4i16 : PatFrag<(ops node:$in), (v4i16 (bitconvert node:$in))>;
-def bc_v2i32 : PatFrag<(ops node:$in), (v2i32 (bitconvert node:$in))>;
-def bc_v1i64 : PatFrag<(ops node:$in), (v1i64 (bitconvert node:$in))>;
-
-//===----------------------------------------------------------------------===//
-// MMX Masks
-//===----------------------------------------------------------------------===//
-
-// MMX_SHUFFLE_get_shuf_imm xform function: convert vector_shuffle mask to
-// PSHUFW imm.
-def MMX_SHUFFLE_get_shuf_imm : SDNodeXForm<vector_shuffle, [{
-  return getI8Imm(X86::getShuffleSHUFImmediate(N));
-}]>;
-
-// Patterns for: vector_shuffle v1, v2, <2, 6, 3, 7, ...>
-def mmx_unpckh : PatFrag<(ops node:$lhs, node:$rhs),
-                         (vector_shuffle node:$lhs, node:$rhs), [{
-  return X86::isUNPCKHMask(cast<ShuffleVectorSDNode>(N));
-}]>;
-
-// Patterns for: vector_shuffle v1, v2, <0, 4, 2, 5, ...>
-def mmx_unpckl : PatFrag<(ops node:$lhs, node:$rhs),
-                         (vector_shuffle node:$lhs, node:$rhs), [{
-  return X86::isUNPCKLMask(cast<ShuffleVectorSDNode>(N));
-}]>;
-
-// Patterns for: vector_shuffle v1, <undef>, <0, 0, 1, 1, ...>
-def mmx_unpckh_undef : PatFrag<(ops node:$lhs, node:$rhs),
-                               (vector_shuffle node:$lhs, node:$rhs), [{
-  return X86::isUNPCKH_v_undef_Mask(cast<ShuffleVectorSDNode>(N));
-}]>;
-
-// Patterns for: vector_shuffle v1, <undef>, <2, 2, 3, 3, ...>
-def mmx_unpckl_undef : PatFrag<(ops node:$lhs, node:$rhs),
-                               (vector_shuffle node:$lhs, node:$rhs), [{
-  return X86::isUNPCKL_v_undef_Mask(cast<ShuffleVectorSDNode>(N));
-}]>;
-
-def mmx_pshufw : PatFrag<(ops node:$lhs, node:$rhs),
-                         (vector_shuffle node:$lhs, node:$rhs), [{
-  return X86::isPSHUFDMask(cast<ShuffleVectorSDNode>(N));
-}], MMX_SHUFFLE_get_shuf_imm>;
+def load_mmx : PatFrag<(ops node:$ptr), (x86mmx (load node:$ptr))>;
+def bc_mmx  : PatFrag<(ops node:$in), (x86mmx  (bitconvert node:$in))>;
 
 //===----------------------------------------------------------------------===//
 // SSE specific DAG Nodes.
@@ -102,7 +59,7 @@ def X86insrtps : SDNode<"X86ISD::INSERTPS",
 def X86vzmovl  : SDNode<"X86ISD::VZEXT_MOVL",
                  SDTypeProfile<1, 1, [SDTCisSameAs<0,1>]>>;
 def X86vzload  : SDNode<"X86ISD::VZEXT_LOAD", SDTLoad,
-                        [SDNPHasChain, SDNPMayLoad]>;
+                        [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
 def X86vshl    : SDNode<"X86ISD::VSHL",      SDTIntShiftOp>;
 def X86vshr    : SDNode<"X86ISD::VSRL",      SDTIntShiftOp>;
 def X86cmpps   : SDNode<"X86ISD::CMPPS",     SDTX86VFCMP>;
@@ -181,9 +138,11 @@ def X86Punpckhqdq : SDNode<"X86ISD::PUNPCKHQDQ", SDTShuff2Op>;
 // the top elements.  These are used for the SSE 'ss' and 'sd' instruction
 // forms.
 def sse_load_f32 : ComplexPattern<v4f32, 5, "SelectScalarSSELoad", [],
-                                  [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
+                                  [SDNPHasChain, SDNPMayLoad, SDNPMemOperand,
+                                   SDNPWantRoot]>;
 def sse_load_f64 : ComplexPattern<v2f64, 5, "SelectScalarSSELoad", [],
-                                  [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
+                                  [SDNPHasChain, SDNPMayLoad, SDNPMemOperand,
+                                   SDNPWantRoot]>;
 
 def ssmem : Operand<v4f32> {
   let PrintMethod = "printf32mem";
@@ -284,9 +243,7 @@ def memop64 : PatFrag<(ops node:$ptr), (load node:$ptr), [{
   return cast<LoadSDNode>(N)->getAlignment() >= 8;
 }]>;
 
-def memopv8i8  : PatFrag<(ops node:$ptr), (v8i8  (memop64 node:$ptr))>;
-def memopv4i16 : PatFrag<(ops node:$ptr), (v4i16 (memop64 node:$ptr))>;
-def memopv2i32 : PatFrag<(ops node:$ptr), (v2i32 (memop64 node:$ptr))>;
+def memopmmx  : PatFrag<(ops node:$ptr), (x86mmx  (memop64 node:$ptr))>;
 
 // MOVNT Support
 // Like 'store', but requires the non-temporal bit to be set

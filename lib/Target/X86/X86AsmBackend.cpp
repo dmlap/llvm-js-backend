@@ -36,6 +36,7 @@ static unsigned getFixupKindLog2Size(unsigned Kind) {
   case X86::reloc_pcrel_4byte:
   case X86::reloc_riprel_4byte:
   case X86::reloc_riprel_4byte_movq_load:
+  case X86::reloc_signed_4byte:
   case FK_Data_4: return 2;
   case FK_Data_8: return 3;
   }
@@ -191,6 +192,12 @@ public:
     : X86AsmBackend(T), OSType(_OSType) {
     HasAbsolutizedSet = true;
     HasScatteredSymbols = true;
+    HasReliableSymbolDifference = true;
+  }
+
+  virtual bool doesSectionRequireSymbols(const MCSection &Section) const {
+    const MCSectionELF &ES = static_cast<const MCSectionELF&>(Section);
+    return ES.getFlags() & MCSectionELF::SHF_MERGE;
   }
 
   bool isVirtualSection(const MCSection &Section) const {
@@ -204,6 +211,10 @@ public:
   ELFX86_32AsmBackend(const Target &T, Triple::OSType OSType)
     : ELFX86AsmBackend(T, OSType) {}
 
+  unsigned getPointerSize() const {
+    return 4;
+  }
+
   MCObjectWriter *createObjectWriter(raw_ostream &OS) const {
     return new ELFObjectWriter(OS, /*Is64Bit=*/false,
                                OSType,
@@ -216,6 +227,10 @@ class ELFX86_64AsmBackend : public ELFX86AsmBackend {
 public:
   ELFX86_64AsmBackend(const Target &T, Triple::OSType OSType)
     : ELFX86AsmBackend(T, OSType) {}
+
+  unsigned getPointerSize() const {
+    return 8;
+  }
 
   MCObjectWriter *createObjectWriter(raw_ostream &OS) const {
     return new ELFObjectWriter(OS, /*Is64Bit=*/true,
@@ -232,6 +247,13 @@ public:
     : X86AsmBackend(T)
     , Is64Bit(is64Bit) {
     HasScatteredSymbols = true;
+  }
+
+  unsigned getPointerSize() const {
+    if (Is64Bit)
+      return 8;
+    else
+      return 4;
   }
 
   MCObjectWriter *createObjectWriter(raw_ostream &OS) const {
@@ -265,6 +287,10 @@ public:
   DarwinX86_32AsmBackend(const Target &T)
     : DarwinX86AsmBackend(T) {}
 
+  unsigned getPointerSize() const {
+    return 4;
+  }
+
   MCObjectWriter *createObjectWriter(raw_ostream &OS) const {
     return new MachObjectWriter(OS, /*Is64Bit=*/false);
   }
@@ -275,6 +301,10 @@ public:
   DarwinX86_64AsmBackend(const Target &T)
     : DarwinX86AsmBackend(T) {
     HasReliableSymbolDifference = true;
+  }
+
+  unsigned getPointerSize() const {
+    return 8;
   }
 
   MCObjectWriter *createObjectWriter(raw_ostream &OS) const {

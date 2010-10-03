@@ -304,27 +304,36 @@ public:
   }
 
   /// isProfitableToIfCvt - Return true if it's profitable to first "NumInstrs"
-  /// of the specified basic block.
+  /// of the specified basic block, where the probability of the instructions
+  /// being executed is given by Probability, and Confidence is a measure
+  /// of our confidence that it will be properly predicted.
   virtual
-  bool isProfitableToIfCvt(MachineBasicBlock &MBB, unsigned NumInstrs) const {
+  bool isProfitableToIfCvt(MachineBasicBlock &MBB, unsigned NumInstrs,
+                           float Probability, float Confidence) const {
     return false;
   }
   
   /// isProfitableToIfCvt - Second variant of isProfitableToIfCvt, this one
   /// checks for the case where two basic blocks from true and false path
   /// of a if-then-else (diamond) are predicated on mutally exclusive
-  /// predicates.
+  /// predicates, where the probability of the true path being taken is given
+  /// by Probability, and Confidence is a measure of our confidence that it
+  /// will be properly predicted.
   virtual bool
   isProfitableToIfCvt(MachineBasicBlock &TMBB, unsigned NumTInstrs,
-                      MachineBasicBlock &FMBB, unsigned NumFInstrs) const {
+                      MachineBasicBlock &FMBB, unsigned NumFInstrs,
+                      float Probability, float Confidence) const {
     return false;
   }
 
   /// isProfitableToDupForIfCvt - Return true if it's profitable for
   /// if-converter to duplicate a specific number of instructions in the
-  /// specified MBB to enable if-conversion.
+  /// specified MBB to enable if-conversion, where the probability of the 
+  /// instructions being executed is given by Probability, and Confidence is
+  /// a measure of our confidence that it will be properly predicted.
   virtual bool
-  isProfitableToDupForIfCvt(MachineBasicBlock &MBB,unsigned NumInstrs) const {
+  isProfitableToDupForIfCvt(MachineBasicBlock &MBB, unsigned NumInstrs,
+                            float Probability, float Confidence) const {
     return false;
   }
   
@@ -581,7 +590,7 @@ public:
   /// in SrcReg and the value it compares against in CmpValue. Return true if
   /// the comparison instruction can be analyzed.
   virtual bool AnalyzeCompare(const MachineInstr *MI,
-                              unsigned &SrcReg, int &CmpValue) const {
+                              unsigned &SrcReg, int &Mask, int &Value) const {
     return false;
   }
 
@@ -589,8 +598,8 @@ public:
   /// into something more efficient. E.g., on ARM most instructions can set the
   /// flags register, obviating the need for a separate CMP. Update the iterator
   /// *only* if a transformation took place.
-  virtual bool OptimizeCompareInstr(MachineInstr * /*CmpInstr*/,
-                                    unsigned /*SrcReg*/, int /*CmpValue*/,
+  virtual bool OptimizeCompareInstr(MachineInstr *CmpInstr,
+                                    unsigned SrcReg, int Mask, int Value,
                                     MachineBasicBlock::iterator &) const {
     return false;
   }

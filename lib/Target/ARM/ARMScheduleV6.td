@@ -19,7 +19,7 @@ def V6_Pipe : FuncUnit; // pipeline
 // Scheduling information derived from "ARM1176JZF-S Technical Reference Manual"
 //
 def ARMV6Itineraries : ProcessorItineraries<
-  [V6_Pipe], [
+  [V6_Pipe], [], [
   //
   // No operand cycles
   InstrItinData<IIC_iALUx    , [InstrStage<1, [V6_Pipe]>]>,
@@ -30,10 +30,20 @@ def ARMV6Itineraries : ProcessorItineraries<
   InstrItinData<IIC_iALUsi   , [InstrStage<1, [V6_Pipe]>], [2, 2, 1]>,
   InstrItinData<IIC_iALUsr   , [InstrStage<2, [V6_Pipe]>], [3, 3, 2, 1]>,
   //
+  // Bitwise Instructions that produce a result
+  InstrItinData<IIC_iBITi    , [InstrStage<1, [V6_Pipe]>], [2, 2]>,
+  InstrItinData<IIC_iBITr    , [InstrStage<1, [V6_Pipe]>], [2, 2, 2]>,
+  InstrItinData<IIC_iBITsi   , [InstrStage<1, [V6_Pipe]>], [2, 2, 1]>,
+  InstrItinData<IIC_iBITsr   , [InstrStage<2, [V6_Pipe]>], [3, 3, 2, 1]>,
+  //
   // Unary Instructions that produce a result
   InstrItinData<IIC_iUNAr    , [InstrStage<1, [V6_Pipe]>], [2, 2]>,
   InstrItinData<IIC_iUNAsi   , [InstrStage<1, [V6_Pipe]>], [2, 1]>,
-  InstrItinData<IIC_iUNAsr   , [InstrStage<2, [V6_Pipe]>], [3, 2, 1]>,
+  //
+  // Zero and sign extension instructions
+  InstrItinData<IIC_iEXTr    , [InstrStage<1, [V6_Pipe]>], [1, 1]>,
+  InstrItinData<IIC_iEXTAr   , [InstrStage<1, [V6_Pipe]>], [2, 2, 1]>,
+  InstrItinData<IIC_iEXTAsr  , [InstrStage<2, [V6_Pipe]>], [3, 3, 2, 1]>,
   //
   // Compare instructions
   InstrItinData<IIC_iCMPi    , [InstrStage<1, [V6_Pipe]>], [2]>,
@@ -41,17 +51,31 @@ def ARMV6Itineraries : ProcessorItineraries<
   InstrItinData<IIC_iCMPsi   , [InstrStage<1, [V6_Pipe]>], [2, 1]>,
   InstrItinData<IIC_iCMPsr   , [InstrStage<2, [V6_Pipe]>], [3, 2, 1]>,
   //
+  // Test instructions
+  InstrItinData<IIC_iTSTi    , [InstrStage<1, [V6_Pipe]>], [2]>,
+  InstrItinData<IIC_iTSTr    , [InstrStage<1, [V6_Pipe]>], [2, 2]>,
+  InstrItinData<IIC_iTSTsi   , [InstrStage<1, [V6_Pipe]>], [2, 1]>,
+  InstrItinData<IIC_iTSTsr   , [InstrStage<2, [V6_Pipe]>], [3, 2, 1]>,
+  //
   // Move instructions, unconditional
   InstrItinData<IIC_iMOVi    , [InstrStage<1, [V6_Pipe]>], [2]>,
   InstrItinData<IIC_iMOVr    , [InstrStage<1, [V6_Pipe]>], [2, 2]>,
   InstrItinData<IIC_iMOVsi   , [InstrStage<1, [V6_Pipe]>], [2, 1]>,
   InstrItinData<IIC_iMOVsr   , [InstrStage<2, [V6_Pipe]>], [3, 2, 1]>,
+  InstrItinData<IIC_iMOVix2  , [InstrStage<1, [V6_Pipe]>,
+                                InstrStage<1, [V6_Pipe]>], [2]>,
   //
   // Move instructions, conditional
   InstrItinData<IIC_iCMOVi   , [InstrStage<1, [V6_Pipe]>], [3]>,
   InstrItinData<IIC_iCMOVr   , [InstrStage<1, [V6_Pipe]>], [3, 2]>,
   InstrItinData<IIC_iCMOVsi  , [InstrStage<1, [V6_Pipe]>], [3, 1]>,
   InstrItinData<IIC_iCMOVsr  , [InstrStage<1, [V6_Pipe]>], [4, 2, 1]>,
+  //
+  // MVN instructions
+  InstrItinData<IIC_iMVNi    , [InstrStage<1, [V6_Pipe]>], [2]>,
+  InstrItinData<IIC_iMVNr    , [InstrStage<1, [V6_Pipe]>], [2, 2]>,
+  InstrItinData<IIC_iMVNsi   , [InstrStage<1, [V6_Pipe]>], [2, 1]>,
+  InstrItinData<IIC_iMVNsr   , [InstrStage<2, [V6_Pipe]>], [3, 2, 1]>,
 
   // Integer multiply pipeline
   //
@@ -65,22 +89,31 @@ def ARMV6Itineraries : ProcessorItineraries<
   // Integer load pipeline
   //
   // Immediate offset
-  InstrItinData<IIC_iLoadi   , [InstrStage<1, [V6_Pipe]>], [4, 1]>,
+  InstrItinData<IIC_iLoad_i   , [InstrStage<1, [V6_Pipe]>], [4, 1]>,
+  InstrItinData<IIC_iLoad_bh_i, [InstrStage<1, [V6_Pipe]>], [4, 1]>,
+  InstrItinData<IIC_iLoad_d_i , [InstrStage<1, [V6_Pipe]>], [4, 1]>,
   //
   // Register offset
-  InstrItinData<IIC_iLoadr   , [InstrStage<1, [V6_Pipe]>], [4, 1, 1]>,
+  InstrItinData<IIC_iLoad_r   , [InstrStage<1, [V6_Pipe]>], [4, 1, 1]>,
+  InstrItinData<IIC_iLoad_bh_r, [InstrStage<1, [V6_Pipe]>], [4, 1, 1]>,
+  InstrItinData<IIC_iLoad_d_r , [InstrStage<1, [V6_Pipe]>], [4, 1, 1]>,
   //
   // Scaled register offset, issues over 2 cycles
-  InstrItinData<IIC_iLoadsi  , [InstrStage<2, [V6_Pipe]>], [5, 2, 1]>,
+  InstrItinData<IIC_iLoad_si   , [InstrStage<2, [V6_Pipe]>], [5, 2, 1]>,
+  InstrItinData<IIC_iLoad_bh_si, [InstrStage<2, [V6_Pipe]>], [5, 2, 1]>,
   //
   // Immediate offset with update
-  InstrItinData<IIC_iLoadiu  , [InstrStage<1, [V6_Pipe]>], [4, 2, 1]>,
+  InstrItinData<IIC_iLoad_iu   , [InstrStage<1, [V6_Pipe]>], [4, 2, 1]>,
+  InstrItinData<IIC_iLoad_bh_iu, [InstrStage<1, [V6_Pipe]>], [4, 2, 1]>,
   //
   // Register offset with update
-  InstrItinData<IIC_iLoadru  , [InstrStage<1, [V6_Pipe]>], [4, 2, 1, 1]>,
+  InstrItinData<IIC_iLoad_ru   , [InstrStage<1, [V6_Pipe]>], [4, 2, 1, 1]>,
+  InstrItinData<IIC_iLoad_bh_ru, [InstrStage<1, [V6_Pipe]>], [4, 2, 1, 1]>,
+  InstrItinData<IIC_iLoad_d_ru , [InstrStage<1, [V6_Pipe]>], [4, 2, 1, 1]>,
   //
   // Scaled register offset with update, issues over 2 cycles
-  InstrItinData<IIC_iLoadsiu , [InstrStage<2, [V6_Pipe]>], [5, 2, 2, 1]>,
+  InstrItinData<IIC_iLoad_siu,   [InstrStage<2, [V6_Pipe]>], [5, 2, 2, 1]>,
+  InstrItinData<IIC_iLoad_bh_siu,[InstrStage<2, [V6_Pipe]>], [5, 2, 2, 1]>,
 
   //
   // Load multiple
@@ -91,26 +124,39 @@ def ARMV6Itineraries : ProcessorItineraries<
   InstrItinData<IIC_iLoadmBr , [InstrStage<3, [V6_Pipe]>,
                                 InstrStage<1, [V6_Pipe]>]>,
 
+  //
+  // iLoadi + iALUr for t2LDRpci_pic.
+  InstrItinData<IIC_iLoadiALU, [InstrStage<1, [V6_Pipe]>,
+                                InstrStage<1, [V6_Pipe]>], [3, 1]>,
+
   // Integer store pipeline
   //
   // Immediate offset
-  InstrItinData<IIC_iStorei  , [InstrStage<1, [V6_Pipe]>], [2, 1]>,
+  InstrItinData<IIC_iStore_i   , [InstrStage<1, [V6_Pipe]>], [2, 1]>,
+  InstrItinData<IIC_iStore_bh_i, [InstrStage<1, [V6_Pipe]>], [2, 1]>,
+  InstrItinData<IIC_iStore_d_i , [InstrStage<1, [V6_Pipe]>], [2, 1]>,
   //
   // Register offset
-  InstrItinData<IIC_iStorer  , [InstrStage<1, [V6_Pipe]>], [2, 1, 1]>,
-
+  InstrItinData<IIC_iStore_r   , [InstrStage<1, [V6_Pipe]>], [2, 1, 1]>,
+  InstrItinData<IIC_iStore_bh_r, [InstrStage<1, [V6_Pipe]>], [2, 1, 1]>,
+  InstrItinData<IIC_iStore_d_r , [InstrStage<1, [V6_Pipe]>], [2, 1, 1]>,
   //
   // Scaled register offset, issues over 2 cycles
-  InstrItinData<IIC_iStoresi , [InstrStage<2, [V6_Pipe]>], [2, 2, 1]>,
+  InstrItinData<IIC_iStore_si   , [InstrStage<2, [V6_Pipe]>], [2, 2, 1]>,
+  InstrItinData<IIC_iStore_bh_si, [InstrStage<2, [V6_Pipe]>], [2, 2, 1]>,
   //
   // Immediate offset with update
-  InstrItinData<IIC_iStoreiu , [InstrStage<1, [V6_Pipe]>], [2, 2, 1]>,
+  InstrItinData<IIC_iStore_iu   , [InstrStage<1, [V6_Pipe]>], [2, 2, 1]>,
+  InstrItinData<IIC_iStore_bh_iu, [InstrStage<1, [V6_Pipe]>], [2, 2, 1]>,
   //
   // Register offset with update
-  InstrItinData<IIC_iStoreru , [InstrStage<1, [V6_Pipe]>], [2, 2, 1, 1]>,
+  InstrItinData<IIC_iStore_ru,   [InstrStage<1, [V6_Pipe]>], [2, 2, 1, 1]>,
+  InstrItinData<IIC_iStore_bh_ru,[InstrStage<1, [V6_Pipe]>], [2, 2, 1, 1]>,
+  InstrItinData<IIC_iStore_d_ru, [InstrStage<1, [V6_Pipe]>], [2, 2, 1, 1]>,
   //
   // Scaled register offset with update, issues over 2 cycles
-  InstrItinData<IIC_iStoresiu, [InstrStage<2, [V6_Pipe]>], [2, 2, 2, 1]>,
+  InstrItinData<IIC_iStore_siu,   [InstrStage<2, [V6_Pipe]>], [2, 2, 2, 1]>,
+  InstrItinData<IIC_iStore_bh_siu,[InstrStage<2, [V6_Pipe]>], [2, 2, 2, 1]>,
   //
   // Store multiple
   InstrItinData<IIC_iStorem   , [InstrStage<3, [V6_Pipe]>]>,
