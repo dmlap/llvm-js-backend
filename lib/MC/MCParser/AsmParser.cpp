@@ -1498,12 +1498,19 @@ bool AsmParser::ParseDirectiveZero() {
   if (ParseAbsoluteExpression(NumBytes))
     return true;
 
+  int64_t Val = 0;
+  if (getLexer().is(AsmToken::Comma)) {
+    Lex();
+    if (ParseAbsoluteExpression(Val))
+      return true;
+  }
+
   if (getLexer().isNot(AsmToken::EndOfStatement))
     return TokError("unexpected token in '.zero' directive");
 
   Lex();
 
-  getStreamer().EmitFill(NumBytes, 0, DEFAULT_ADDRSPACE);
+  getStreamer().EmitFill(NumBytes, Val, DEFAULT_ADDRSPACE);
 
   return false;
 }
@@ -1654,12 +1661,7 @@ bool AsmParser::ParseDirectiveAlign(bool IsPow2, unsigned ValueSize) {
 
   // Check whether we should use optimal code alignment for this .align
   // directive.
-  //
-  // FIXME: This should be using a target hook.
-  bool UseCodeAlign = false;
-  if (const MCSectionMachO *S = dyn_cast<MCSectionMachO>(
-        getStreamer().getCurrentSection()))
-    UseCodeAlign = S->hasAttribute(MCSectionMachO::S_ATTR_PURE_INSTRUCTIONS);
+  bool UseCodeAlign = getStreamer().getCurrentSection()->UseCodeAlign();
   if ((!HasFillExpr || Lexer.getMAI().getTextAlignFillValue() == FillExpr) &&
       ValueSize == 1 && UseCodeAlign) {
     getStreamer().EmitCodeAlignment(Alignment, MaxBytesToFill);
@@ -2036,7 +2038,7 @@ bool GenericAsmParser::ParseDirectiveLoc(StringRef, SMLoc DirectiveLoc) {
   int64_t FileNumber = getTok().getIntVal();
   if (FileNumber < 1)
     return TokError("file number less than one in '.loc' directive");
-  if (!getContext().ValidateDwarfFileNumber(FileNumber))
+  if (!getContext().isValidDwarfFileNumber(FileNumber))
     return TokError("unassigned file number in '.loc' directive");
   Lex();
 

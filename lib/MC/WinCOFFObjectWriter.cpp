@@ -186,7 +186,7 @@ public:
                                     bool IsPCRel,
                                     const MCFragment *DF) const;
 
-  void WriteObject(const MCAssembler &Asm, const MCAsmLayout &Layout);
+  void WriteObject(MCAssembler &Asm, const MCAsmLayout &Layout);
 };
 }
 
@@ -657,10 +657,11 @@ void WinCOFFObjectWriter::RecordRelocation(const MCAssembler &Asm,
   Reloc.Data.SymbolTableIndex = 0;
   Reloc.Data.VirtualAddress = Layout.getFragmentOffset(Fragment);
 
-  // turn relocations for temporary symbols into section relocations
+  // Turn relocations for temporary symbols into section relocations.
   if (coff_symbol->MCData->getSymbol().isTemporary()) {
     Reloc.Symb = coff_symbol->Section->Symbol;
-    FixedValue += Layout.getFragmentOffset(coff_symbol->MCData->Fragment);
+    FixedValue += Layout.getFragmentOffset(coff_symbol->MCData->Fragment)
+                + coff_symbol->MCData->getOffset();
   } else
     Reloc.Symb = coff_symbol;
 
@@ -703,7 +704,7 @@ bool WinCOFFObjectWriter::IsFixupFullyResolved(const MCAssembler &Asm,
   return false;
 }
 
-void WinCOFFObjectWriter::WriteObject(const MCAssembler &Asm,
+void WinCOFFObjectWriter::WriteObject(MCAssembler &Asm,
                                       const MCAsmLayout &Layout) {
   // Assign symbol and section indexes and offsets.
   Header.NumberOfSections = 0;

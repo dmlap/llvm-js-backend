@@ -68,41 +68,14 @@ void SplitAnalysis::analyzeUses() {
     MachineBasicBlock *MBB = MI->getParent();
     if (usingBlocks_[MBB]++)
       continue;
-    if (MachineLoop *Loop = loops_.getLoopFor(MBB))
+    for (MachineLoop *Loop = loops_.getLoopFor(MBB); Loop;
+         Loop = Loop->getParentLoop())
       usingLoops_[Loop]++;
   }
   DEBUG(dbgs() << "  counted "
                << usingInstrs_.size() << " instrs, "
                << usingBlocks_.size() << " blocks, "
                << usingLoops_.size()  << " loops.\n");
-}
-
-/// removeUse - Update statistics by noting that MI no longer uses curli.
-void SplitAnalysis::removeUse(const MachineInstr *MI) {
-  if (!usingInstrs_.erase(MI))
-    return;
-
-  // Decrement MBB count.
-  const MachineBasicBlock *MBB = MI->getParent();
-  BlockCountMap::iterator bi = usingBlocks_.find(MBB);
-  assert(bi != usingBlocks_.end() && "MBB missing");
-  assert(bi->second && "0 count in map");
-  if (--bi->second)
-    return;
-  // No more uses in MBB.
-  usingBlocks_.erase(bi);
-
-  // Decrement loop count.
-  MachineLoop *Loop = loops_.getLoopFor(MBB);
-  if (!Loop)
-    return;
-  LoopCountMap::iterator li = usingLoops_.find(Loop);
-  assert(li != usingLoops_.end() && "Loop missing");
-  assert(li->second && "0 count in map");
-  if (--li->second)
-    return;
-  // No more blocks in Loop.
-  usingLoops_.erase(li);
 }
 
 // Get three sets of basic blocks surrounding a loop: Blocks inside the loop,
@@ -250,12 +223,6 @@ const MachineLoop *SplitAnalysis::getBestSplitLoop() {
        E = usingLoops_.end(); I != E; ++I) {
     const MachineLoop *Loop = I->first;
     getLoopBlocks(Loop, Blocks);
-
-    // FIXME: We need an SSA updater to properly handle multiple exit blocks.
-    if (Blocks.Exits.size() > 1) {
-      DEBUG(dbgs() << "  multiple exits from " << *Loop);
-      continue;
-    }
 
     LoopPtrSet *LPS = 0;
     switch(analyzeLoopPeripheralUse(Blocks)) {
@@ -424,10 +391,14 @@ VNInfo *LiveIntervalMap::mapValue(const VNInfo *ParentVNI, SlotIndex Idx,
   // This may change during the DFS as we create new phi-defs.
   typedef DenseMap<MachineBasicBlock*, VNInfo*> MBBValueMap;
   MBBValueMap DomValue;
+  typedef SplitAnalysis::BlockPtrSet BlockPtrSet;
+  BlockPtrSet Visited;
 
-  for (idf_iterator<MachineBasicBlock*>
-         IDFI = idf_begin(IdxMBB),
-         IDFE = idf_end(IdxMBB); IDFI != IDFE;) {
+  // Iterate over IdxMBB predecessors in a depth-first order.
+  // Skip begin() since that is always IdxMBB.
+  for (idf_ext_iterator<MachineBasicBlock*, BlockPtrSet>
+         IDFI = llvm::next(idf_ext_begin(IdxMBB, Visited)),
+         IDFE = idf_ext_end(IdxMBB, Visited); IDFI != IDFE;) {
     MachineBasicBlock *MBB = *IDFI;
     SlotIndex End = lis_.getMBBEndIdx(MBB).getPrevSlot();
 
@@ -444,7 +415,10 @@ VNInfo *LiveIntervalMap::mapValue(const VNInfo *ParentVNI, SlotIndex Idx,
       continue;
     }
 
-    // Yes, VNI dominates MBB. Track the path back to IdxMBB, creating phi-defs
+    // Yes, VNI dominates MBB. Make sure we visit MBB again from other paths.
+    Visited.erase(MBB);
+
+    // Track the path back to IdxMBB, creating phi-defs
     // as needed along the way.
     for (unsigned PI = IDFI.getPathLength()-1; PI != 0; --PI) {
       // Start from MBB's immediate successor. End at IdxMBB.
@@ -521,7 +495,7 @@ VNInfo *LiveIntervalMap::extendTo(MachineBasicBlock *MBB, SlotIndex Idx) {
   if (I == li_->begin())
     return 0;
   --I;
-  if (I->start < lis_.getMBBStartIdx(MBB))
+  if (I->end <= lis_.getMBBStartIdx(MBB))
     return 0;
   if (I->end <= Idx)
     I->end = Idx.getNextSlot();
@@ -543,7 +517,7 @@ void LiveIntervalMap::addSimpleRange(SlotIndex Start, SlotIndex End,
 
   // ParentVNI is a complex value. We must map per MBB.
   MachineFunction::iterator MBB = lis_.getMBBFromIndex(Start);
-  MachineFunction::iterator MBBE = lis_.getMBBFromIndex(End);
+  MachineFunction::iterator MBBE = lis_.getMBBFromIndex(End.getPrevSlot());
 
   if (MBB == MBBE) {
     li_->addRange(LiveRange(Start, End, VNI));
@@ -703,23 +677,20 @@ void SplitEditor::leaveIntvAfter(SlotIndex Idx) {
   assert(openli_.getLI() && "openIntv not called before leaveIntvAfter");
 
   // The interval must be live beyond the instruction at Idx.
-  SlotIndex EndIdx = Idx.getNextIndex().getBaseIndex();
-  VNInfo *ParentVNI = curli_->getVNInfoAt(EndIdx);
+  VNInfo *ParentVNI = curli_->getVNInfoAt(Idx.getBoundaryIndex());
   if (!ParentVNI) {
     DEBUG(dbgs() << "    leaveIntvAfter " << Idx << ": not live\n");
     return;
   }
 
-  MachineInstr *MI = lis_.getInstructionFromIndex(Idx);
-  assert(MI && "leaveIntvAfter called with invalid index");
-
-  VNInfo *VNI = dupli_.defByCopyFrom(openli_.getLI()->reg, ParentVNI,
-                                     *MI->getParent(), MI);
+  MachineBasicBlock::iterator MII = lis_.getInstructionFromIndex(Idx);
+  MachineBasicBlock *MBB = MII->getParent();
+  VNInfo *VNI = dupli_.defByCopyFrom(openli_.getLI()->reg, ParentVNI, *MBB,
+                                     llvm::next(MII));
 
   // Finally we must make sure that openli is properly extended from Idx to the
   // new copy.
-  openli_.mapValue(ParentVNI, VNI->def.getUseIndex());
-
+  openli_.addSimpleRange(Idx.getBoundaryIndex(), VNI->def, ParentVNI);
   DEBUG(dbgs() << "    leaveIntvAfter " << Idx << ": " << *openli_.getLI()
                << '\n');
 }
@@ -744,8 +715,7 @@ void SplitEditor::leaveIntvAtTop(MachineBasicBlock &MBB) {
 
   // Finally we must make sure that openli is properly extended from Start to
   // the new copy.
-  openli_.mapValue(ParentVNI, VNI->def.getUseIndex());
-
+  openli_.addSimpleRange(Start, VNI->def, ParentVNI);
   DEBUG(dbgs() << "    leaveIntvAtTop at " << Start << ": " << *openli_.getLI()
                << '\n');
 }
@@ -799,8 +769,9 @@ SplitEditor::addTruncSimpleRange(SlotIndex Start, SlotIndex End, VNInfo *VNI) {
 
 /// rewrite - after all the new live ranges have been created, rewrite
 /// instructions using curli to use the new intervals.
-bool SplitEditor::rewrite() {
+void SplitEditor::rewrite() {
   assert(!openli_.getLI() && "Previous LI not closed before rewrite");
+  assert(dupli_.getLI() && "No dupli for rewrite. Noop spilt?");
 
   // First we need to fill in the live ranges in dupli.
   // If values were redefined, we need a full recoloring with SSA update.
@@ -866,23 +837,18 @@ bool SplitEditor::rewrite() {
         break;
       }
     }
-    if (LI) {
-      MO.setReg(LI->reg);
-      sa_.removeUse(MI);
-      DEBUG(dbgs() << "  rewrite " << Idx << '\t' << *MI);
-    }
+    MO.setReg(LI->reg);
+    DEBUG(dbgs() << "  rewrite " << Idx << '\t' << *MI);
   }
 
   // dupli_ goes in last, after rewriting.
-  if (dupli_.getLI()) {
-    if (dupli_.getLI()->empty()) {
-      DEBUG(dbgs() << "  dupli became empty?\n");
-      lis_.removeInterval(dupli_.getLI()->reg);
-      dupli_.reset(0);
-    } else {
-      dupli_.getLI()->RenumberValues(lis_);
-      intervals_.push_back(dupli_.getLI());
-    }
+  if (dupli_.getLI()->empty()) {
+    DEBUG(dbgs() << "  dupli became empty?\n");
+    lis_.removeInterval(dupli_.getLI()->reg);
+    dupli_.reset(0);
+  } else {
+    dupli_.getLI()->RenumberValues(lis_);
+    intervals_.push_back(dupli_.getLI());
   }
 
   // Calculate spill weight and allocation hints for new intervals.
@@ -894,7 +860,6 @@ bool SplitEditor::rewrite() {
     DEBUG(dbgs() << "  new interval " << mri_.getRegClass(li.reg)->getName()
                  << ":" << li << '\n');
   }
-  return dupli_.getLI();
 }
 
 
@@ -902,7 +867,7 @@ bool SplitEditor::rewrite() {
 //                               Loop Splitting
 //===----------------------------------------------------------------------===//
 
-bool SplitEditor::splitAroundLoop(const MachineLoop *Loop) {
+void SplitEditor::splitAroundLoop(const MachineLoop *Loop) {
   SplitAnalysis::LoopBlocks Blocks;
   sa_.getLoopBlocks(Loop, Blocks);
 
@@ -935,7 +900,7 @@ bool SplitEditor::splitAroundLoop(const MachineLoop *Loop) {
 
   // Done.
   closeIntv();
-  return rewrite();
+  rewrite();
 }
 
 
@@ -944,9 +909,8 @@ bool SplitEditor::splitAroundLoop(const MachineLoop *Loop) {
 //===----------------------------------------------------------------------===//
 
 /// splitSingleBlocks - Split curli into a separate live interval inside each
-/// basic block in Blocks. Return true if curli has been completely replaced,
-/// false if curli is still intact, and needs to be spilled or split further.
-bool SplitEditor::splitSingleBlocks(const SplitAnalysis::BlockPtrSet &Blocks) {
+/// basic block in Blocks.
+void SplitEditor::splitSingleBlocks(const SplitAnalysis::BlockPtrSet &Blocks) {
   DEBUG(dbgs() << "  splitSingleBlocks for " << Blocks.size() << " blocks.\n");
   // Determine the first and last instruction using curli in each block.
   typedef std::pair<SlotIndex,SlotIndex> IndexPair;
@@ -980,7 +944,7 @@ bool SplitEditor::splitSingleBlocks(const SplitAnalysis::BlockPtrSet &Blocks) {
     leaveIntvAfter(IP.second);
     closeIntv();
   }
-  return rewrite();
+  rewrite();
 }
 
 
@@ -1003,10 +967,8 @@ const MachineBasicBlock *SplitAnalysis::getBlockForInsideSplit() {
   return usingBlocks_.begin()->first;
 }
 
-/// splitInsideBlock - Split curli into multiple intervals inside MBB. Return
-/// true if curli has been completely replaced, false if curli is still
-/// intact, and needs to be spilled or split further.
-bool SplitEditor::splitInsideBlock(const MachineBasicBlock *MBB) {
+/// splitInsideBlock - Split curli into multiple intervals inside MBB.
+void SplitEditor::splitInsideBlock(const MachineBasicBlock *MBB) {
   SmallVector<SlotIndex, 32> Uses;
   Uses.reserve(sa_.usingInstrs_.size());
   for (SplitAnalysis::InstrPtrSet::const_iterator I = sa_.usingInstrs_.begin(),
@@ -1055,5 +1017,5 @@ bool SplitEditor::splitInsideBlock(const MachineBasicBlock *MBB) {
     closeIntv();
   }
 
-  return rewrite();
+  rewrite();
 }

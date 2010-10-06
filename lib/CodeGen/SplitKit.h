@@ -68,9 +68,6 @@ public:
   /// split.
   void analyze(const LiveInterval *li);
 
-  /// removeUse - Update statistics by noting that mi no longer uses curli.
-  void removeUse(const MachineInstr *mi);
-
   const LiveInterval *getCurLI() { return curli_; }
 
   /// clear - clear all data structures so SplitAnalysis is ready to analyze a
@@ -161,11 +158,6 @@ class LiveIntervalMap {
   // values not present (unknown/unmapped).
   ValueMap valueMap_;
 
-  // extendTo - Find the last li_ value defined in MBB at or before Idx. The
-  // parentli is assumed to be live at Idx. Extend the live range to include
-  // Idx. Return the found VNInfo, or NULL.
-  VNInfo *extendTo(MachineBasicBlock *MBB, SlotIndex Idx);
-
 public:
   LiveIntervalMap(LiveIntervals &lis,
                   const LiveInterval &parentli)
@@ -193,6 +185,11 @@ public:
   /// If simple is not NULL, *simple will indicate if ParentVNI is a simply
   /// mapped value.
   VNInfo *mapValue(const VNInfo *ParentVNI, SlotIndex Idx, bool *simple = 0);
+
+  // extendTo - Find the last li_ value defined in MBB at or before Idx. The
+  // parentli is assumed to be live at Idx. Extend the live range to include
+  // Idx. Return the found VNInfo, or NULL.
+  VNInfo *extendTo(MachineBasicBlock *MBB, SlotIndex Idx);
 
   /// isMapped - Return true is ParentVNI is a known mapped value. It may be a
   /// simple 1-1 mapping or a complex mapping to later defs.
@@ -312,26 +309,20 @@ public:
 
   /// rewrite - after all the new live ranges have been created, rewrite
   /// instructions using curli to use the new intervals.
-  /// Return true if curli has been completely replaced, false if curli is still
-  /// intact, and needs to be spilled or split further.
-  bool rewrite();
+  void rewrite();
 
   // ===--- High level methods ---===
 
   /// splitAroundLoop - Split curli into a separate live interval inside
-  /// the loop. Return true if curli has been completely replaced, false if
-  /// curli is still intact, and needs to be spilled or split further.
-  bool splitAroundLoop(const MachineLoop*);
+  /// the loop.
+  void splitAroundLoop(const MachineLoop*);
 
   /// splitSingleBlocks - Split curli into a separate live interval inside each
-  /// basic block in Blocks. Return true if curli has been completely replaced,
-  /// false if curli is still intact, and needs to be spilled or split further.
-  bool splitSingleBlocks(const SplitAnalysis::BlockPtrSet &Blocks);
+  /// basic block in Blocks.
+  void splitSingleBlocks(const SplitAnalysis::BlockPtrSet &Blocks);
 
-  /// splitInsideBlock - Split curli into multiple intervals inside MBB. Return
-  /// true if curli has been completely replaced, false if curli is still
-  /// intact, and needs to be spilled or split further.
-  bool splitInsideBlock(const MachineBasicBlock *);
+  /// splitInsideBlock - Split curli into multiple intervals inside MBB.
+  void splitInsideBlock(const MachineBasicBlock *);
 };
 
 }

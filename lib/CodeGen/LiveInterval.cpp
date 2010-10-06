@@ -40,6 +40,7 @@ struct CompEnd {
 }
 
 LiveInterval::iterator LiveInterval::find(SlotIndex Pos) {
+  assert(Pos.isValid() && "Cannot search for an invalid index");
   return std::upper_bound(begin(), end(), LiveRange(SlotIndex(), Pos, 0),
                           CompEnd());
 }
@@ -682,6 +683,8 @@ void LiveInterval::print(raw_ostream &OS, const TargetRegisterInfo *TRI) const {
         OS << "x";
       } else {
         OS << vni->def;
+        if (vni->isPHIDef())
+          OS << "-phidef";
         if (vni->hasPHIKill())
           OS << "-phikill";
         if (vni->hasRedefByEC())

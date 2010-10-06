@@ -20,6 +20,10 @@
 // CHECK-NEXT:   ])
 
 .zero 4
+.data
+
+.zero 1
+.align 4
 foo:
 .zero 8
 .long baz - foo

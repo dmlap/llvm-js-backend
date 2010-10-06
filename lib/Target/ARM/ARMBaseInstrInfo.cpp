@@ -230,7 +230,7 @@ ARMBaseInstrInfo::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
       MBB.addLiveIn(Reg);
 
     // Insert the spill to the stack frame. The register is killed at the spill
-    // 
+    //
     const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
     storeRegToStackSlot(MBB, MI, Reg, isKill,
                         CSI[i].getFrameIdx(), RC, TRI);
@@ -1205,7 +1205,7 @@ bool ARMBaseInstrInfo::isProfitableToIfCvt(MachineBasicBlock &MBB,
                                            float Confidence) const {
   if (!NumInstrs)
     return false;
-  
+
   // Use old-style heuristics
   if (OldARMIfCvt) {
     if (Subtarget.getCPUString() == "generic")
@@ -1215,18 +1215,18 @@ bool ARMBaseInstrInfo::isProfitableToIfCvt(MachineBasicBlock &MBB,
       return NumInstrs <= 3;
     return NumInstrs <= 2;
   }
-  
+
   // Attempt to estimate the relative costs of predication versus branching.
   float UnpredCost = Probability * NumInstrs;
   UnpredCost += 1.0; // The branch itself
   UnpredCost += (1.0 - Confidence) * Subtarget.getMispredictionPenalty();
-  
+
   float PredCost = NumInstrs;
-  
+
   return PredCost < UnpredCost;
-  
+
 }
-  
+
 bool ARMBaseInstrInfo::
 isProfitableToIfCvt(MachineBasicBlock &TMBB, unsigned NumT,
                     MachineBasicBlock &FMBB, unsigned NumF,
@@ -1238,14 +1238,14 @@ isProfitableToIfCvt(MachineBasicBlock &TMBB, unsigned NumT,
 
   if (!NumT || !NumF)
     return false;
-  
+
   // Attempt to estimate the relative costs of predication versus branching.
   float UnpredCost = Probability * NumT + (1.0 - Probability) * NumF;
   UnpredCost += 1.0; // The branch itself
   UnpredCost += (1.0 - Confidence) * Subtarget.getMispredictionPenalty();
-  
+
   float PredCost = NumT + NumF;
-  
+
   return PredCost < UnpredCost;
 }
 
@@ -1470,7 +1470,8 @@ static bool isSuitableForMask(MachineInstr *&MI, unsigned SrcReg,
     case ARM::COPY: {
       // Walk down one instruction which is potentially an 'and'.
       const MachineInstr &Copy = *MI;
-      MachineBasicBlock::iterator AND(next(MachineBasicBlock::iterator(MI)));
+      MachineBasicBlock::iterator AND(
+        llvm::next(MachineBasicBlock::iterator(MI)));
       if (AND == MI->getParent()->end()) return false;
       MI = AND;
       return isSuitableForMask(MI, Copy.getOperand(0).getReg(),
@@ -1637,7 +1638,7 @@ ARMBaseInstrInfo::getNumMicroOps(const MachineInstr *MI,
     } else {
       // Assume the worst.
       return NumRegs;
-    }      
+    }
   }
   }
 }
