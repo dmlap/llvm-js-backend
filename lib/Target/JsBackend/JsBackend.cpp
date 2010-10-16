@@ -2467,7 +2467,7 @@ void JsWriter::visitShuffleVectorInst(ShuffleVectorInst &SVI) {
 void JsWriter::visitInsertValueInst(InsertValueInst &IVI) {
   // Start by copying the entire aggregate value into the result variable.
   writeOperand(IVI.getOperand(0));
-  Out << ";\n  ";
+  Out << ";\n        ";
 
   // Then do the insert to update the field.
   Out << GetValueName(&IVI);
@@ -2475,10 +2475,7 @@ void JsWriter::visitInsertValueInst(InsertValueInst &IVI) {
        i != e; ++i) {
     const Type *IndexedTy =
       ExtractValueInst::getIndexedType(IVI.getOperand(0)->getType(), b, i+1);
-    if (IndexedTy->isArrayTy())
-      Out << ".array[" << *i << "]";
-    else
-      Out << ".field" << *i;
+    Out << "[" << *i << "]";
   }
   Out << " = ";
   writeOperand(IVI.getOperand(1));

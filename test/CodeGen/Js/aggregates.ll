@@ -21,5 +21,8 @@ entry:
   %5 = load [2 x i8]* %4
 ; CHECK = [0]);
   %6 = extractvalue [2 x i8] %5, 0
+; CHECK: = [5, 0.5];
+; CHECK: {{[_$A-z0-9]+}}[0] = 1;
+  %agg1 = insertvalue {i32, float} {i32 5, float 0.5}, i32 1, 0
   ret void
 }
