@@ -116,18 +116,28 @@ def ARMV6Itineraries : ProcessorItineraries<
   InstrItinData<IIC_iLoad_bh_siu,[InstrStage<2, [V6_Pipe]>], [5, 2, 2, 1]>,
 
   //
-  // Load multiple
-  InstrItinData<IIC_iLoadm   , [InstrStage<3, [V6_Pipe]>]>,
-
+  // Load multiple, def is the 5th operand.
+  InstrItinData<IIC_iLoad_m  , [InstrStage<3, [V6_Pipe]>], [1, 1, 1, 1, 4]>,
+  //
+  // Load multiple + update, defs are the 1st and 5th operands.
+  InstrItinData<IIC_iLoad_mu , [InstrStage<3, [V6_Pipe]>], [2, 1, 1, 1, 4]>,
   //
   // Load multiple plus branch
-  InstrItinData<IIC_iLoadmBr , [InstrStage<3, [V6_Pipe]>,
-                                InstrStage<1, [V6_Pipe]>]>,
+  InstrItinData<IIC_iLoad_mBr, [InstrStage<3, [V6_Pipe]>,
+                                InstrStage<1, [V6_Pipe]>], [1, 2, 1, 1, 4]>,
 
   //
   // iLoadi + iALUr for t2LDRpci_pic.
   InstrItinData<IIC_iLoadiALU, [InstrStage<1, [V6_Pipe]>,
                                 InstrStage<1, [V6_Pipe]>], [3, 1]>,
+
+  //
+  // Pop, def is the 3rd operand.
+  InstrItinData<IIC_iPop     , [InstrStage<3, [V6_Pipe]>], [1, 1, 4]>,
+  //
+  // Pop + branch, def is the 3rd operand.
+  InstrItinData<IIC_iPop_Br,   [InstrStage<3, [V6_Pipe]>,
+                                InstrStage<1, [V6_Pipe]>], [1, 2, 4]>,
 
   // Integer store pipeline
   //
@@ -159,7 +169,10 @@ def ARMV6Itineraries : ProcessorItineraries<
   InstrItinData<IIC_iStore_bh_siu,[InstrStage<2, [V6_Pipe]>], [2, 2, 2, 1]>,
   //
   // Store multiple
-  InstrItinData<IIC_iStorem   , [InstrStage<3, [V6_Pipe]>]>,
+  InstrItinData<IIC_iStore_m  , [InstrStage<3, [V6_Pipe]>]>,
+  //
+  // Store multiple + update
+  InstrItinData<IIC_iStore_mu , [InstrStage<3, [V6_Pipe]>], [2]>,
   
   // Branch
   //
@@ -241,7 +254,10 @@ def ARMV6Itineraries : ProcessorItineraries<
   InstrItinData<IIC_fpLoad64 , [InstrStage<1, [V6_Pipe]>], [5, 2, 2]>,
   //
   // FP Load Multiple
-  InstrItinData<IIC_fpLoadm , [InstrStage<3, [V6_Pipe]>]>,
+  InstrItinData<IIC_fpLoad_m , [InstrStage<3, [V6_Pipe]>], [2, 1, 1, 5]>,
+  //
+  // FP Load Multiple + update
+  InstrItinData<IIC_fpLoad_mu, [InstrStage<3, [V6_Pipe]>], [3, 2, 1, 1, 5]>,
   //
   // Single-precision FP Store
   InstrItinData<IIC_fpStore32 , [InstrStage<1, [V6_Pipe]>], [2, 2, 2]>,
@@ -251,5 +267,8 @@ def ARMV6Itineraries : ProcessorItineraries<
   InstrItinData<IIC_fpStore64 , [InstrStage<1, [V6_Pipe]>], [2, 2, 2]>,
   //
   // FP Store Multiple
-  InstrItinData<IIC_fpStorem , [InstrStage<3, [V6_Pipe]>]>
+  InstrItinData<IIC_fpStore_m, [InstrStage<3, [V6_Pipe]>], [2, 2, 2, 2]>,
+  //
+  // FP Store Multiple + update
+  InstrItinData<IIC_fpStore_mu,[InstrStage<3, [V6_Pipe]>], [3, 2, 2, 2, 2]>
 ]>;

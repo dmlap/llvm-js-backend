@@ -55,7 +55,8 @@ namespace llvm {
       FlagBlockByrefStruct = 1 << 4,
       FlagVirtual          = 1 << 5,
       FlagArtificial       = 1 << 6,
-      FlagExplicit         = 1 << 7
+      FlagExplicit         = 1 << 7,
+      FlagPrototyped       = 1 << 8
     };
   protected:
     const MDNode *DbgNode;
@@ -119,6 +120,7 @@ namespace llvm {
     bool isEnumerator() const;
     bool isType() const;
     bool isGlobal() const;
+    bool isUnspecifiedParameter() const;
   };
 
   /// DISubrange - This is used to represent ranges, for array bounds.
@@ -421,6 +423,12 @@ namespace llvm {
         return false;
       return (getUnsignedField(14) & FlagExplicit) != 0;
     }
+    /// isPrototyped - Return true if this subprogram is prototyped.
+    bool isPrototyped() const    { 
+      if (getVersion() <= llvm::LLVMDebugVersion8)
+        return false;
+      return (getUnsignedField(14) & FlagPrototyped) != 0;
+    }
 
     unsigned isOptimized() const;
 
@@ -625,6 +633,10 @@ namespace llvm {
     /// GetOrCreateSubrange - Create a descriptor for a value range.  This
     /// implicitly uniques the values returned.
     DISubrange GetOrCreateSubrange(int64_t Lo, int64_t Hi);
+
+    /// CreateUnspecifiedParameter - Create unspeicified type descriptor
+    /// for a subroutine type.
+    DIDescriptor CreateUnspecifiedParameter();
 
     /// CreateCompileUnit - Create a new descriptor for the specified compile
     /// unit.

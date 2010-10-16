@@ -58,6 +58,14 @@ static void SetBinding(MCSymbolData &SD, unsigned Binding) {
   SD.setFlags(OtherFlags | (Binding << ELF_STB_Shift));
 }
 
+static unsigned GetVisibility(MCSymbolData &SD) {
+  unsigned Visibility =
+    (SD.getFlags() & (0xf << ELF_STV_Shift)) >> ELF_STV_Shift;
+  assert(Visibility == ELF::STV_DEFAULT || Visibility == ELF::STV_INTERNAL ||
+         Visibility == ELF::STV_HIDDEN || Visibility == ELF::STV_PROTECTED);
+  return Visibility;
+}
+
 static bool isFixupKindX86PCRel(unsigned Kind) {
   switch (Kind) {
   default:
@@ -429,9 +437,23 @@ static uint64_t SymbolValue(MCSymbolData &Data, const MCAsmLayout &Layout) {
 
 void ELFObjectWriterImpl::WriteSymbol(MCDataFragment *F, ELFSymbolData &MSD,
                                       const MCAsmLayout &Layout) {
-  MCSymbolData &Data = *MSD.SymbolData;
-  uint8_t Info = (Data.getFlags() & 0xff);
-  uint8_t Other = ((Data.getFlags() & 0xf00) >> ELF_STV_Shift);
+  MCSymbolData &OrigData = *MSD.SymbolData;
+  MCSymbolData *AliasData = NULL;
+  if (OrigData.Symbol->isVariable()) {
+    const MCExpr *Value = OrigData.getSymbol().getVariableValue();
+    assert (Value->getKind() == MCExpr::SymbolRef && "Unimplemented");
+    const MCSymbolRefExpr *Ref = static_cast<const MCSymbolRefExpr*>(Value);
+    AliasData = &Layout.getAssembler().getSymbolData(Ref->getSymbol());
+  }
+  MCSymbolData &Data = AliasData ? *AliasData : OrigData;
+
+  uint8_t Binding = GetBinding(OrigData);
+  uint8_t Visibility = GetVisibility(OrigData);
+  uint8_t Type = GetType(Data);
+
+  uint8_t Info = (Binding << ELF_STB_Shift) | (Type << ELF_STT_Shift);
+  uint8_t Other = Visibility;
+
   uint64_t Value = SymbolValue(Data, Layout);
   uint64_t Size = 0;
   const MCExpr *ESize;
@@ -512,8 +534,9 @@ void ELFObjectWriterImpl::WriteSymbolTable(MCDataFragment *F,
   for (unsigned i = 0, e = ExternalSymbolData.size(); i != e; ++i) {
     ELFSymbolData &MSD = ExternalSymbolData[i];
     MCSymbolData &Data = *MSD.SymbolData;
-    assert((Data.getFlags() & ELF_STB_Global) &&
-           "External symbol requires STB_GLOBAL flag");
+    assert(((Data.getFlags() & ELF_STB_Global) ||
+            (Data.getFlags() & ELF_STB_Weak)) &&
+           "External symbol requires STB_GLOBAL or STB_WEAK flag");
     WriteSymbol(F, MSD, Layout);
     if (GetBinding(Data) == ELF::STB_LOCAL)
       LastLocalSymbolIndex++;
@@ -538,18 +561,18 @@ static bool ShouldRelocOnSymbol(const MCSymbolData &SD,
   const MCSectionELF &Section =
     static_cast<const MCSectionELF&>(Symbol.getSection());
 
-  if (Section.getFlags() & MCSectionELF::SHF_MERGE)
-    return Target.getConstant() != 0;
-
   if (SD.isExternal())
     return true;
 
-  const llvm::MCSymbolRefExpr& Ref = *Target.getSymA();
+  if (Section.getFlags() & MCSectionELF::SHF_MERGE)
+    return Target.getConstant() != 0;
+
+  MCSymbolRefExpr::VariantKind Kind = Target.getSymA()->getKind();
   const MCSectionELF &Sec2 =
     static_cast<const MCSectionELF&>(F.getParent()->getSection());
 
-  if (Ref.getKind() == MCSymbolRefExpr::VK_PLT &&
-      &Sec2 != &Section)
+  if (&Sec2 != &Section &&
+      (Kind == MCSymbolRefExpr::VK_PLT || Kind == MCSymbolRefExpr::VK_GOTPCREL))
     return true;
 
   return false;
@@ -647,6 +670,9 @@ void ELFObjectWriterImpl::RecordRelocation(const MCAssembler &Asm,
           break;
         case MCSymbolRefExpr::VK_GOT:
           Type = ELF::R_X86_64_GOT32;
+          break;
+        case llvm::MCSymbolRefExpr::VK_GOTPCREL:
+          Type = ELF::R_X86_64_GOTPCREL;
           break;
         default:
           llvm_unreachable("Unimplemented");
@@ -1102,7 +1128,7 @@ void ELFObjectWriterImpl::WriteObject(MCAssembler &Asm,
   // ... then all of the sections ...
   DenseMap<const MCSection*, uint64_t> SectionOffsetMap;
 
-  DenseMap<const MCSection*, uint8_t> SectionIndexMap;
+  DenseMap<const MCSection*, uint32_t> SectionIndexMap;
 
   unsigned Index = 1;
   for (MCAssembler::const_iterator it = Asm.begin(),

@@ -190,7 +190,7 @@ namespace {
 
 char MachineLICM::ID = 0;
 INITIALIZE_PASS(MachineLICM, "machinelicm",
-                "Machine Loop Invariant Code Motion", false, false);
+                "Machine Loop Invariant Code Motion", false, false)
 
 FunctionPass *llvm::createMachineLICMPass(bool PreRegAlloc) {
   return new MachineLICM(PreRegAlloc);
@@ -636,6 +636,10 @@ bool MachineLICM::IsProfitableToHoist(MachineInstr &MI) {
 }
 
 MachineInstr *MachineLICM::ExtractHoistableLoad(MachineInstr *MI) {
+  // Don't unfold simple loads.
+  if (MI->getDesc().canFoldAsLoad())
+    return 0;
+
   // If not, we may be able to unfold a load and hoist that.
   // First test whether the instruction is loading from an amenable
   // memory location.

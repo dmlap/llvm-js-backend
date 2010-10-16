@@ -1243,7 +1243,7 @@ defm t2PLI  : T2Ipl<1, 0, "pli">;
 
 let mayLoad = 1, neverHasSideEffects = 1, hasExtraDefRegAllocReq = 1 in {
 def t2LDM : T2XI<(outs), (ins addrmode4:$addr, pred:$p,
-                          reglist:$dsts, variable_ops), IIC_iLoadm,
+                          reglist:$dsts, variable_ops), IIC_iLoad_m,
                  "ldm${addr:submode}${p}${addr:wide}\t$addr, $dsts", []> {
   let Inst{31-27} = 0b11101;
   let Inst{26-25} = 0b00;
@@ -1254,7 +1254,8 @@ def t2LDM : T2XI<(outs), (ins addrmode4:$addr, pred:$p,
 }
 
 def t2LDM_UPD : T2XIt<(outs GPR:$wb), (ins addrmode4:$addr, pred:$p,
-                                       reglist:$dsts, variable_ops), IIC_iLoadm,
+                                       reglist:$dsts, variable_ops),
+                      IIC_iLoad_mu,
                       "ldm${addr:submode}${p}${addr:wide}\t$addr!, $dsts",
                       "$addr.addr = $wb", []> {
   let Inst{31-27} = 0b11101;
@@ -1268,7 +1269,7 @@ def t2LDM_UPD : T2XIt<(outs GPR:$wb), (ins addrmode4:$addr, pred:$p,
 
 let mayStore = 1, neverHasSideEffects = 1, hasExtraSrcRegAllocReq = 1 in {
 def t2STM : T2XI<(outs), (ins addrmode4:$addr, pred:$p,
-                          reglist:$srcs, variable_ops), IIC_iStorem,
+                          reglist:$srcs, variable_ops), IIC_iStore_m,
                  "stm${addr:submode}${p}${addr:wide}\t$addr, $srcs", []> {
   let Inst{31-27} = 0b11101;
   let Inst{26-25} = 0b00;
@@ -1280,7 +1281,7 @@ def t2STM : T2XI<(outs), (ins addrmode4:$addr, pred:$p,
 
 def t2STM_UPD : T2XIt<(outs GPR:$wb), (ins addrmode4:$addr, pred:$p,
                                        reglist:$srcs, variable_ops),
-                      IIC_iStorem,
+                      IIC_iStore_m,
                       "stm${addr:submode}${p}${addr:wide}\t$addr!, $srcs",
                       "$addr.addr = $wb", []> {
   let Inst{31-27} = 0b11101;
@@ -2226,6 +2227,17 @@ def t2MOVCCi : T2I<(outs rGPR:$dst), (ins rGPR:$false, t2_so_imm:$true),
   let Inst{15} = 0;
 }
 
+def t2MOVCCi16 : T2I<(outs rGPR:$dst), (ins rGPR:$false, i32imm:$src),
+                      IIC_iMOVi,
+                      "movw", "\t$dst, $src", []>,
+                      RegConstraint<"$false = $dst"> {
+  let Inst{31-27} = 0b11110;
+  let Inst{25} = 1;
+  let Inst{24-21} = 0b0010;
+  let Inst{20} = 0; // The S bit.
+  let Inst{15} = 0;
+}
+
 class T2I_movcc_sh<bits<2> opcod, dag oops, dag iops, InstrItinClass itin,
                    string opc, string asm, list<dag> pattern>
   : T2I<oops, iops, itin, opc, asm, pattern> {
@@ -2473,7 +2485,7 @@ let isReturn = 1, isTerminator = 1, isBarrier = 1, mayLoad = 1,
     hasExtraDefRegAllocReq = 1 in
   def t2LDM_RET : T2XIt<(outs GPR:$wb), (ins addrmode4:$addr, pred:$p,
                                          reglist:$dsts, variable_ops),
-                        IIC_iLoadmBr,
+                        IIC_iLoad_mBr,
                         "ldm${addr:submode}${p}${addr:wide}\t$addr!, $dsts",
                         "$addr.addr = $wb", []> {
   let Inst{31-27} = 0b11101;
@@ -2709,9 +2721,9 @@ def : T2Pat<(add rGPR:$LHS, t2_so_neg_imm2part:$RHS),
 // This is a single pseudo instruction to make it re-materializable.
 // FIXME: Remove this when we can do generalized remat.
 let isReMaterializable = 1 in
-def t2MOVi32imm : T2Ix2<(outs rGPR:$dst), (ins i32imm:$src), IIC_iMOVix2,
-                   "movw", "\t$dst, ${src:lo16}\n\tmovt${p}\t$dst, ${src:hi16}",
-                     [(set rGPR:$dst, (i32 imm:$src))]>;
+def t2MOVi32imm : PseudoInst<(outs rGPR:$dst), (ins i32imm:$src), IIC_iMOVix2,
+                            "", [(set rGPR:$dst, (i32 imm:$src))]>,
+                            Requires<[IsThumb, HasV6T2]>;
 
 // ConstantPool, GlobalAddress, and JumpTable
 def : T2Pat<(ARMWrapper  tglobaladdr :$dst), (t2LEApcrel tglobaladdr :$dst)>,

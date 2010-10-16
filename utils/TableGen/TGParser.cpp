@@ -17,7 +17,13 @@
 #include <algorithm>
 #include <sstream>
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/CommandLine.h"
 using namespace llvm;
+
+/// LLVMCHack - This is a temporary hack that changes how "(foo [1, 2, 3])"
+/// parses.
+/// FIXME: REMOVE THIS.
+static cl::opt<bool> LLVMCHack("llvmc-temp-hack", cl::ReallyHidden);
 
 //===----------------------------------------------------------------------===//
 // Support Code for the Semantic Actions.
@@ -1028,8 +1034,13 @@ Init *TGParser::ParseSimpleValue(Record *CurRec, RecTy *ItemType) {
     break;
   }
   case tgtok::CodeFragment:
-    R = new CodeInit(Lex.getCurStrVal()); Lex.Lex(); break;
-  case tgtok::question: R = new UnsetInit(); Lex.Lex(); break;
+    R = new CodeInit(Lex.getCurStrVal());
+    Lex.Lex();
+    break;
+  case tgtok::question:
+    R = new UnsetInit();
+    Lex.Lex();
+    break;
   case tgtok::Id: {
     SMLoc NameLoc = Lex.getLoc();
     std::string Name = Lex.getCurStrVal();
@@ -1208,14 +1219,19 @@ Init *TGParser::ParseSimpleValue(Record *CurRec, RecTy *ItemType) {
       return 0;
     }
 
-    Init *Operator = 0;
-    if (Lex.getCode() == tgtok::Id) {
-      Operator = ParseIDValue(CurRec);
-      if (Operator == 0) return 0;
-    } else {
-      Operator = ParseOperation(CurRec);
-      if (Operator == 0) return 0;
+    Init *Operator;
+    /// LLVMC Requires an old grammar and I don't know how to update it, placate
+    /// it in the short term by changing the grammar specifically for llvmc.
+    /// FIXME: REMOVE THIS.
+    if (!LLVMCHack)
+      Operator = ParseValue(CurRec);
+    else {
+      if (Lex.getCode() == tgtok::Id)
+        Operator = ParseIDValue(CurRec);
+      else
+        Operator = ParseOperation(CurRec);
     }
+    if (Operator == 0) return 0;
 
     // If the operator name is present, parse it.
     std::string OperatorName;
@@ -1241,7 +1257,6 @@ Init *TGParser::ParseSimpleValue(Record *CurRec, RecTy *ItemType) {
     Lex.Lex();  // eat the ')'
 
     return new DagInit(Operator, OperatorName, DagArgs);
-    break;
   }
 
   case tgtok::XCar:
@@ -1258,7 +1273,6 @@ Init *TGParser::ParseSimpleValue(Record *CurRec, RecTy *ItemType) {
   case tgtok::XForEach:
   case tgtok::XSubst: {  // Value ::= !ternop '(' Value ',' Value ',' Value ')'
     return ParseOperation(CurRec);
-    break;
   }
   }
 

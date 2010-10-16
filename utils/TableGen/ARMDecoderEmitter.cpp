@@ -240,7 +240,7 @@ typedef bit_value_t insn_t[BIT_WIDTH];
 /// the Filter/FilterChooser combo does not know how to distinguish among the
 /// Opcodes assigned.
 ///
-/// An example of a conflcit is 
+/// An example of a conflict is 
 ///
 /// Conflict:
 ///                     111101000.00........00010000....
@@ -801,7 +801,7 @@ void FilterChooser::emitTop(raw_ostream &o, unsigned &Indentation) {
 
   o << '\n';
 
-  o.indent(Indentation) << "static uint16_t decodeInstruction(field_t insn) {\n";
+  o.indent(Indentation) <<"static uint16_t decodeInstruction(field_t insn) {\n";
 
   ++Indentation; ++Indentation;
   // Emits code to decode the instructions.
@@ -1610,13 +1610,13 @@ bool ARMDecoderEmitter::ARMDEBackend::populateInstruction(
     // better off using the generic RSCri and RSCrs instructions.
     if (Name == "RSCSri" || Name == "RSCSrs") return false;
 
-    // MOVCCr, MOVCCs, MOVCCi, FCYPScc, FCYPDcc, FNEGScc, and FNEGDcc are used
-    // in the compiler to implement conditional moves.  We can ignore them in
-    // favor of their more generic versions of instructions.
-    // See also SDNode *ARMDAGToDAGISel::Select(SDValue Op).
-    if (Name == "MOVCCr" || Name == "MOVCCs" || Name == "MOVCCi" ||
-        Name == "FCPYScc" || Name == "FCPYDcc" ||
-        Name == "FNEGScc" || Name == "FNEGDcc")
+    // MOVCCr, MOVCCs, MOVCCi, MOVCCi16, FCYPScc, FCYPDcc, FNEGScc, and
+    // FNEGDcc are used in the compiler to implement conditional moves.
+    // We can ignore them in favor of their more generic versions of
+    // instructions. See also SDNode *ARMDAGToDAGISel::Select(SDValue Op).
+    if (Name == "MOVCCr"   || Name == "MOVCCs"  || Name == "MOVCCi" ||
+        Name == "MOVCCi16" || Name == "FCPYScc" || Name == "FCPYDcc" ||
+        Name == "FNEGScc"  || Name == "FNEGDcc")
       return false;
 
     // Ditto for VMOVDcc, VMOVScc, VNEGDcc, and VNEGScc.
@@ -1671,18 +1671,17 @@ bool ARMDecoderEmitter::ARMDEBackend::populateInstruction(
     // VREV64qf is equivalent to VREV64q32.
     if (Name == "VREV64df" || Name == "VREV64qf") return false;
 
-    // VDUPLNfd is equivalent to VDUPLN32d; VDUPfdf is specialized VDUPLN32d.
-    // VDUPLNfq is equivalent to VDUPLN32q; VDUPfqf is specialized VDUPLN32q.
+    // VDUPLNfd is equivalent to VDUPLN32d.
+    // VDUPLNfq is equivalent to VDUPLN32q.
     // VLD1df is equivalent to VLD1d32.
     // VLD1qf is equivalent to VLD1q32.
     // VLD2d64 is equivalent to VLD1q64.
     // VST1df is equivalent to VST1d32.
     // VST1qf is equivalent to VST1q32.
     // VST2d64 is equivalent to VST1q64.
-    if (Name == "VDUPLNfd" || Name == "VDUPfdf" ||
-        Name == "VDUPLNfq" || Name == "VDUPfqf" ||
-        Name == "VLD1df" || Name == "VLD1qf" || Name == "VLD2d64" ||
-        Name == "VST1df" || Name == "VST1qf" || Name == "VST2d64")
+    if (Name == "VDUPLNfd" || Name == "VDUPLNfq" ||
+        Name == "VLD1df"   || Name == "VLD1qf"   || Name == "VLD2d64" ||
+        Name == "VST1df"   || Name == "VST1qf"   || Name == "VST2d64")
       return false;
   } else if (TN == TARGET_THUMB) {
     if (!thumbInstruction(Form))
@@ -1735,6 +1734,7 @@ bool ARMDecoderEmitter::ARMDEBackend::populateInstruction(
     //   tLDRcp conflicts with tLDRspi
     //   tRestore conflicts with tLDRspi
     //   t2LEApcrelJT conflicts with t2LEApcrel
+    //   t2MOVCCi16 conflicts with tMOVi16
     if (Name == "tBfar" ||
         /* Name == "tCMNz" || */ Name == "tCMPzi8" || Name == "tCMPzr" ||
         Name == "tCMPzhir" || /* Name == "t2CMNzrr" || Name == "t2CMNzrs" ||
@@ -1742,7 +1742,7 @@ bool ARMDecoderEmitter::ARMDEBackend::populateInstruction(
         Name == "t2CMPzri" || Name == "tPOP_RET" || Name == "t2LDM_RET" ||
         Name == "tMOVCCi" || Name == "tMOVCCr" || Name == "tBR_JTr" ||
         Name == "tSpill" || Name == "tLDRcp" || Name == "tRestore" ||
-        Name == "t2LEApcrelJT")
+        Name == "t2LEApcrelJT" || Name == "t2MOVCCi16")
       return false;
   }
 

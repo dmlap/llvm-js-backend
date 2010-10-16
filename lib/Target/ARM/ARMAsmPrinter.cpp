@@ -21,6 +21,7 @@
 #include "ARMMachineFunctionInfo.h"
 #include "ARMMCInstLower.h"
 #include "ARMTargetMachine.h"
+#include "ARMTargetObjectFile.h"
 #include "llvm/Analysis/DebugInfo.h"
 #include "llvm/Constants.h"
 #include "llvm/Module.h"
@@ -30,7 +31,6 @@
 #include "llvm/CodeGen/MachineModuleInfoImpls.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
-#include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
@@ -107,6 +107,16 @@ namespace {
     void EmitStartOfAsmFile(Module &M);
     void EmitEndOfAsmFile(Module &M);
 
+  private:
+    // Helpers for EmitStartOfAsmFile() and EmitEndOfAsmFile()
+    void emitAttributes();
+    void emitTextAttribute(ARMBuildAttrs::SpecialAttr attr, StringRef v);
+    void emitAttribute(ARMBuildAttrs::AttrType attr, int v);
+
+    // Helper for ELF .o only
+    void emitARMAttributeSection();
+
+  public:
     void PrintDebugValueComment(const MachineInstr *MI, raw_ostream &OS);
 
     MachineLocation getDebugValueLocation(const MachineInstr *MI) const {
@@ -236,26 +246,18 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
   case MachineOperand::MO_Register: {
     unsigned Reg = MO.getReg();
     assert(TargetRegisterInfo::isPhysicalRegister(Reg));
-    if (Modifier && strcmp(Modifier, "lane") == 0) {
-      unsigned RegNum = getARMRegisterNumbering(Reg);
-      unsigned DReg =
-        TM.getRegisterInfo()->getMatchingSuperReg(Reg,
-          RegNum & 1 ? ARM::ssub_1 : ARM::ssub_0, &ARM::DPR_VFP2RegClass);
-      O << ARMInstPrinter::getRegisterName(DReg) << '[' << (RegNum & 1) << ']';
-    } else {
-      assert(!MO.getSubReg() && "Subregs should be eliminated!");
-      O << ARMInstPrinter::getRegisterName(Reg);
-    }
+    assert(!MO.getSubReg() && "Subregs should be eliminated!");
+    O << ARMInstPrinter::getRegisterName(Reg);
     break;
   }
   case MachineOperand::MO_Immediate: {
     int64_t Imm = MO.getImm();
     O << '#';
     if ((Modifier && strcmp(Modifier, "lo16") == 0) ||
-        (TF & ARMII::MO_LO16))
+        (TF == ARMII::MO_LO16))
       O << ":lower16:";
     else if ((Modifier && strcmp(Modifier, "hi16") == 0) ||
-             (TF & ARMII::MO_HI16))
+             (TF == ARMII::MO_HI16))
       O << ":upper16:";
     O << Imm;
     break;
@@ -264,9 +266,7 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
     O << *MO.getMBB()->getSymbol();
     return;
   case MachineOperand::MO_GlobalAddress: {
-    bool isCallOp = Modifier && !strcmp(Modifier, "call");
     const GlobalValue *GV = MO.getGlobal();
-
     if ((Modifier && strcmp(Modifier, "lo16") == 0) ||
         (TF & ARMII::MO_LO16))
       O << ":lower16:";
@@ -276,18 +276,13 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
     O << *Mang->getSymbol(GV);
 
     printOffset(MO.getOffset(), O);
-
-    if (isCallOp && Subtarget->isTargetELF() &&
-        TM.getRelocationModel() == Reloc::PIC_)
+    if (TF == ARMII::MO_PLT)
       O << "(PLT)";
     break;
   }
   case MachineOperand::MO_ExternalSymbol: {
-    bool isCallOp = Modifier && !strcmp(Modifier, "call");
     O << *GetExternalSymbolSymbol(MO.getSymbolName());
-
-    if (isCallOp && Subtarget->isTargetELF() &&
-        TM.getRelocationModel() == Reloc::PIC_)
+    if (TF == ARMII::MO_PLT)
       O << "(PLT)";
     break;
   }
@@ -422,45 +417,8 @@ void ARMAsmPrinter::EmitStartOfAsmFile(Module &M) {
 
   // Emit ARM Build Attributes
   if (Subtarget->isTargetELF()) {
-    // CPU Type
-    std::string CPUString = Subtarget->getCPUString();
-    if (CPUString != "generic")
-      OutStreamer.EmitRawText("\t.cpu " + Twine(CPUString));
 
-    // FIXME: Emit FPU type
-    if (Subtarget->hasVFP2())
-      OutStreamer.EmitRawText("\t.eabi_attribute " +
-                              Twine(ARMBuildAttrs::VFP_arch) + ", 2");
-
-    // Signal various FP modes.
-    if (!UnsafeFPMath) {
-      OutStreamer.EmitRawText("\t.eabi_attribute " +
-                              Twine(ARMBuildAttrs::ABI_FP_denormal) + ", 1");
-      OutStreamer.EmitRawText("\t.eabi_attribute " +
-                              Twine(ARMBuildAttrs::ABI_FP_exceptions) + ", 1");
-    }
-
-    if (NoInfsFPMath && NoNaNsFPMath)
-      OutStreamer.EmitRawText("\t.eabi_attribute " +
-                              Twine(ARMBuildAttrs::ABI_FP_number_model)+ ", 1");
-    else
-      OutStreamer.EmitRawText("\t.eabi_attribute " +
-                              Twine(ARMBuildAttrs::ABI_FP_number_model)+ ", 3");
-
-    // 8-bytes alignment stuff.
-    OutStreamer.EmitRawText("\t.eabi_attribute " +
-                            Twine(ARMBuildAttrs::ABI_align8_needed) + ", 1");
-    OutStreamer.EmitRawText("\t.eabi_attribute " +
-                            Twine(ARMBuildAttrs::ABI_align8_preserved) + ", 1");
-
-    // Hard float.  Use both S and D registers and conform to AAPCS-VFP.
-    if (Subtarget->isAAPCS_ABI() && FloatABIType == FloatABI::Hard) {
-      OutStreamer.EmitRawText("\t.eabi_attribute " +
-                              Twine(ARMBuildAttrs::ABI_HardFP_use) + ", 3");
-      OutStreamer.EmitRawText("\t.eabi_attribute " +
-                              Twine(ARMBuildAttrs::ABI_VFP_args) + ", 1");
-    }
-    // FIXME: Should we signal R9 usage?
+    emitAttributes();
   }
 }
 
@@ -530,6 +488,92 @@ void ARMAsmPrinter::EmitEndOfAsmFile(Module &M) {
     // linker can safely perform dead code stripping.  Since LLVM never
     // generates code that does this, it is always safe to set.
     OutStreamer.EmitAssemblerFlag(MCAF_SubsectionsViaSymbols);
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// Helper routines for EmitStartOfAsmFile() and EmitEndOfAsmFile()
+// FIXME:
+// The following seem like one-off assembler flags, but they actually need
+// to appear in the .ARM.attributes section in ELF.
+// Instead of subclassing the MCELFStreamer, we do the work here.
+
+void ARMAsmPrinter::emitAttributes() {
+
+  emitARMAttributeSection();
+
+  std::string CPUString = Subtarget->getCPUString();
+  emitTextAttribute(ARMBuildAttrs::SEL_CPU, CPUString);
+
+  // FIXME: Emit FPU type
+  if (Subtarget->hasVFP2())
+    emitAttribute(ARMBuildAttrs::VFP_arch, 2);
+
+  // Signal various FP modes.
+  if (!UnsafeFPMath) {
+    emitAttribute(ARMBuildAttrs::ABI_FP_denormal, 1);
+    emitAttribute(ARMBuildAttrs::ABI_FP_exceptions, 1);
+  }
+
+  if (NoInfsFPMath && NoNaNsFPMath)
+    emitAttribute(ARMBuildAttrs::ABI_FP_number_model, 1);
+  else
+    emitAttribute(ARMBuildAttrs::ABI_FP_number_model, 3);
+
+  // 8-bytes alignment stuff.
+  emitAttribute(ARMBuildAttrs::ABI_align8_needed, 1);
+  emitAttribute(ARMBuildAttrs::ABI_align8_preserved, 1);
+
+  // Hard float.  Use both S and D registers and conform to AAPCS-VFP.
+  if (Subtarget->isAAPCS_ABI() && FloatABIType == FloatABI::Hard) {
+    emitAttribute(ARMBuildAttrs::ABI_HardFP_use, 3);
+    emitAttribute(ARMBuildAttrs::ABI_VFP_args, 1);
+  }
+  // FIXME: Should we signal R9 usage?
+}
+
+void ARMAsmPrinter::emitARMAttributeSection() {
+  // <format-version>
+  // [ <section-length> "vendor-name"
+  // [ <file-tag> <size> <attribute>*
+  //   | <section-tag> <size> <section-number>* 0 <attribute>*
+  //   | <symbol-tag> <size> <symbol-number>* 0 <attribute>*
+  //   ]+
+  // ]*
+
+  if (OutStreamer.hasRawTextSupport())
+    return;
+
+  const ARMElfTargetObjectFile &TLOFELF =
+    static_cast<const ARMElfTargetObjectFile &>
+    (getObjFileLowering());
+
+  OutStreamer.SwitchSection(TLOFELF.getAttributesSection());
+  // Fixme: Still more to do here.
+}
+
+void ARMAsmPrinter::emitAttribute(ARMBuildAttrs::AttrType attr, int v) {
+  if (OutStreamer.hasRawTextSupport()) {
+    OutStreamer.EmitRawText("\t.eabi_attribute " +
+                            Twine(attr) + ", " + Twine(v));
+
+  } else {
+    assert(0 && "ELF .ARM.attributes unimplemented");
+  }
+}
+
+void ARMAsmPrinter::emitTextAttribute(ARMBuildAttrs::SpecialAttr attr,
+                                      StringRef val) {
+  switch (attr) {
+  default: assert(0 && "Unimplemented ARMBuildAttrs::SpecialAttr"); break;
+  case ARMBuildAttrs::SEL_CPU:
+    if (OutStreamer.hasRawTextSupport()) {
+      if (val != "generic") {
+        OutStreamer.EmitRawText("\t.cpu " + val);
+      }
+    } else {
+      // FIXME: ELF
+    }
   }
 }
 

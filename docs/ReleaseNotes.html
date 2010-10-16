@@ -269,7 +269,7 @@ support new platforms, new languages, new architectures, and new features.
 
 <div class="doc_text">
 <p>
-<a href="http://libc++.llvm.org/">libc++</a> is another new member of the LLVM
+<a href="http://libcxx.llvm.org/">libc++</a> is another new member of the LLVM
 family.  It is an implementation of the C++ standard library, written from the
 ground up to specifically target the forthcoming C++'0X standard and focus on
 delivering great performance.</p>
@@ -673,7 +673,7 @@ release includes a few major enhancements and additions to the optimizers:</p>
     be 13 in one of the predecessors of a block.  It does this in conjunction
     with the new LazyValueInfo analysis pass.</li>
 <li>The new RegionInfo analysis pass identifies single-entry single-exit regions
-    in the CFG.  You can play with it with the "opt -regions analyze" or
+    in the CFG.  You can play with it with the "opt -regions -analyze" or
     "opt -view-regions" commands.</li>
 <li>The loop optimizer has significantly improved strength reduction and analysis
   capabilities.  Notably it is able to build on the trap value and signed
@@ -1103,7 +1103,7 @@ components, please contact us on the <a
 href="http://lists.cs.uiuc.edu/mailman/listinfo/llvmdev">LLVMdev list</a>.</p>
 
 <ul>
-<li>The Alpha, Blackfin, CellSPU, MicroBlaze, MSP430, MIPS, PIC16, SystemZ
+<li>The Alpha, Blackfin, CellSPU, MicroBlaze, MSP430, MIPS, SystemZ
     and XCore backends are experimental.</li>
 <li><tt>llc</tt> "<tt>-filetype=obj</tt>" is experimental on all targets
     other than darwin-i386 and darwin-x86_64.</li>

@@ -535,6 +535,9 @@ unsigned ARMBaseInstrInfo::GetInstSizeInBytes(const MachineInstr *MI) const {
   case ARMII::Size2Bytes: return 2;          // Thumb1 instruction.
   case ARMII::SizeSpecial: {
     switch (Opc) {
+    case ARM::MOVi32imm:
+    case ARM::t2MOVi32imm:
+      return 8;
     case ARM::CONSTPOOL_ENTRY:
       // If this machine instr is a constant pool entry, its size is recorded as
       // operand #2.
@@ -1525,6 +1528,10 @@ OptimizeCompareInstr(MachineInstr *CmpInstr, unsigned SrcReg, int CmpMask,
   // want to change.
   MachineBasicBlock::const_iterator I = CmpInstr, E = MI,
     B = MI->getParent()->begin();
+
+  // Early exit if CmpInstr is at the beginning of the BB.
+  if (I == B) return false;
+
   --I;
   for (; I != E; --I) {
     const MachineInstr &Instr = *I;
@@ -1641,4 +1648,280 @@ ARMBaseInstrInfo::getNumMicroOps(const MachineInstr *MI,
     }
   }
   }
+}
+
+int
+ARMBaseInstrInfo::getVLDMDefCycle(const InstrItineraryData *ItinData,
+                                  const TargetInstrDesc &DefTID,
+                                  unsigned DefClass,
+                                  unsigned DefIdx, unsigned DefAlign) const {
+  int RegNo = (int)(DefIdx+1) - DefTID.getNumOperands() + 1;
+  if (RegNo <= 0)
+    // Def is the address writeback.
+    return ItinData->getOperandCycle(DefClass, DefIdx);
+
+  int DefCycle;
+  if (Subtarget.isCortexA8()) {
+    // (regno / 2) + (regno % 2) + 1
+    DefCycle = RegNo / 2 + 1;
+    if (RegNo % 2)
+      ++DefCycle;
+  } else if (Subtarget.isCortexA9()) {
+    DefCycle = RegNo;
+    bool isSLoad = false;
+    switch (DefTID.getOpcode()) {
+    default: break;
+    case ARM::VLDMS:
+    case ARM::VLDMS_UPD:
+      isSLoad = true;
+      break;
+    }
+    // If there are odd number of 'S' registers or if it's not 64-bit aligned,
+    // then it takes an extra cycle.
+    if ((isSLoad && (RegNo % 2)) || DefAlign < 8)
+      ++DefCycle;
+  } else {
+    // Assume the worst.
+    DefCycle = RegNo + 2;
+  }
+
+  return DefCycle;
+}
+
+int
+ARMBaseInstrInfo::getLDMDefCycle(const InstrItineraryData *ItinData,
+                                 const TargetInstrDesc &DefTID,
+                                 unsigned DefClass,
+                                 unsigned DefIdx, unsigned DefAlign) const {
+  int RegNo = (int)(DefIdx+1) - DefTID.getNumOperands() + 1;
+  if (RegNo <= 0)
+    // Def is the address writeback.
+    return ItinData->getOperandCycle(DefClass, DefIdx);
+
+  int DefCycle;
+  if (Subtarget.isCortexA8()) {
+    // 4 registers would be issued: 1, 2, 1.
+    // 5 registers would be issued: 1, 2, 2.
+    DefCycle = RegNo / 2;
+    if (DefCycle < 1)
+      DefCycle = 1;
+    // Result latency is issue cycle + 2: E2.
+    DefCycle += 2;
+  } else if (Subtarget.isCortexA9()) {
+    DefCycle = (RegNo / 2);
+    // If there are odd number of registers or if it's not 64-bit aligned,
+    // then it takes an extra AGU (Address Generation Unit) cycle.
+    if ((RegNo % 2) || DefAlign < 8)
+      ++DefCycle;
+    // Result latency is AGU cycles + 2.
+    DefCycle += 2;
+  } else {
+    // Assume the worst.
+    DefCycle = RegNo + 2;
+  }
+
+  return DefCycle;
+}
+
+int
+ARMBaseInstrInfo::getVSTMUseCycle(const InstrItineraryData *ItinData,
+                                  const TargetInstrDesc &UseTID,
+                                  unsigned UseClass,
+                                  unsigned UseIdx, unsigned UseAlign) const {
+  int RegNo = (int)(UseIdx+1) - UseTID.getNumOperands() + 1;
+  if (RegNo <= 0)
+    return ItinData->getOperandCycle(UseClass, UseIdx);
+
+  int UseCycle;
+  if (Subtarget.isCortexA8()) {
+    // (regno / 2) + (regno % 2) + 1
+    UseCycle = RegNo / 2 + 1;
+    if (RegNo % 2)
+      ++UseCycle;
+  } else if (Subtarget.isCortexA9()) {
+    UseCycle = RegNo;
+    bool isSStore = false;
+    switch (UseTID.getOpcode()) {
+    default: break;
+    case ARM::VSTMS:
+    case ARM::VSTMS_UPD:
+      isSStore = true;
+      break;
+    }
+    // If there are odd number of 'S' registers or if it's not 64-bit aligned,
+    // then it takes an extra cycle.
+    if ((isSStore && (RegNo % 2)) || UseAlign < 8)
+      ++UseCycle;
+  } else {
+    // Assume the worst.
+    UseCycle = RegNo + 2;
+  }
+
+  return UseCycle;
+}
+
+int
+ARMBaseInstrInfo::getSTMUseCycle(const InstrItineraryData *ItinData,
+                                 const TargetInstrDesc &UseTID,
+                                 unsigned UseClass,
+                                 unsigned UseIdx, unsigned UseAlign) const {
+  int RegNo = (int)(UseIdx+1) - UseTID.getNumOperands() + 1;
+  if (RegNo <= 0)
+    return ItinData->getOperandCycle(UseClass, UseIdx);
+
+  int UseCycle;
+  if (Subtarget.isCortexA8()) {
+    UseCycle = RegNo / 2;
+    if (UseCycle < 2)
+      UseCycle = 2;
+    // Read in E3.
+    UseCycle += 2;
+  } else if (Subtarget.isCortexA9()) {
+    UseCycle = (RegNo / 2);
+    // If there are odd number of registers or if it's not 64-bit aligned,
+    // then it takes an extra AGU (Address Generation Unit) cycle.
+    if ((RegNo % 2) || UseAlign < 8)
+      ++UseCycle;
+  } else {
+    // Assume the worst.
+    UseCycle = 1;
+  }
+  return UseCycle;
+}
+
+int
+ARMBaseInstrInfo::getOperandLatency(const InstrItineraryData *ItinData,
+                                    const TargetInstrDesc &DefTID,
+                                    unsigned DefIdx, unsigned DefAlign,
+                                    const TargetInstrDesc &UseTID,
+                                    unsigned UseIdx, unsigned UseAlign) const {
+  unsigned DefClass = DefTID.getSchedClass();
+  unsigned UseClass = UseTID.getSchedClass();
+
+  if (DefIdx < DefTID.getNumDefs() && UseIdx < UseTID.getNumOperands())
+    return ItinData->getOperandLatency(DefClass, DefIdx, UseClass, UseIdx);
+
+  // This may be a def / use of a variable_ops instruction, the operand
+  // latency might be determinable dynamically. Let the target try to
+  // figure it out.
+  bool LdmBypass = false;
+  int DefCycle = -1;
+  switch (DefTID.getOpcode()) {
+  default:
+    DefCycle = ItinData->getOperandCycle(DefClass, DefIdx);
+    break;
+  case ARM::VLDMD:
+  case ARM::VLDMS:
+  case ARM::VLDMD_UPD:
+  case ARM::VLDMS_UPD:  {
+    DefCycle = getVLDMDefCycle(ItinData, DefTID, DefClass, DefIdx, DefAlign);
+    break;
+  }
+  case ARM::LDM_RET:
+  case ARM::LDM:
+  case ARM::LDM_UPD:
+  case ARM::tLDM:
+  case ARM::tLDM_UPD:
+  case ARM::tPUSH:
+  case ARM::t2LDM_RET:
+  case ARM::t2LDM:
+  case ARM::t2LDM_UPD: {
+    LdmBypass = 1;
+    DefCycle = getLDMDefCycle(ItinData, DefTID, DefClass, DefIdx, DefAlign);
+    break;
+  }
+  }
+
+  if (DefCycle == -1)
+    // We can't seem to determine the result latency of the def, assume it's 2.
+    DefCycle = 2;
+
+  int UseCycle = -1;
+  switch (UseTID.getOpcode()) {
+  default:
+    UseCycle = ItinData->getOperandCycle(UseClass, UseIdx);
+    break;
+  case ARM::VSTMD:
+  case ARM::VSTMS:
+  case ARM::VSTMD_UPD:
+  case ARM::VSTMS_UPD: {
+    UseCycle = getVSTMUseCycle(ItinData, UseTID, UseClass, UseIdx, UseAlign);
+    break;
+  }
+  case ARM::STM:
+  case ARM::STM_UPD:
+  case ARM::tSTM_UPD:
+  case ARM::tPOP_RET:
+  case ARM::tPOP:
+  case ARM::t2STM:
+  case ARM::t2STM_UPD: {
+    UseCycle = getSTMUseCycle(ItinData, UseTID, UseClass, UseIdx, UseAlign);
+    break;
+  }
+  }
+
+  if (UseCycle == -1)
+    // Assume it's read in the first stage.
+    UseCycle = 1;
+
+  UseCycle = DefCycle - UseCycle + 1;
+  if (UseCycle > 0) {
+    if (LdmBypass) {
+      // It's a variable_ops instruction so we can't use DefIdx here. Just use
+      // first def operand.
+      if (ItinData->hasPipelineForwarding(DefClass, DefTID.getNumOperands()-1,
+                                          UseClass, UseIdx))
+        --UseCycle;
+    } else if (ItinData->hasPipelineForwarding(DefClass, DefIdx,
+                                               UseClass, UseIdx))
+      --UseCycle;
+  }
+
+  return UseCycle;
+}
+
+int
+ARMBaseInstrInfo::getOperandLatency(const InstrItineraryData *ItinData,
+                             const MachineInstr *DefMI, unsigned DefIdx,
+                             const MachineInstr *UseMI, unsigned UseIdx) const {
+  if (DefMI->isCopyLike() || DefMI->isInsertSubreg() ||
+      DefMI->isRegSequence() || DefMI->isImplicitDef())
+    return 1;
+
+  const TargetInstrDesc &DefTID = DefMI->getDesc();
+  if (!ItinData || ItinData->isEmpty())
+    return DefTID.mayLoad() ? 3 : 1;
+
+  const TargetInstrDesc &UseTID = UseMI->getDesc();
+  unsigned DefAlign = DefMI->hasOneMemOperand()
+    ? (*DefMI->memoperands_begin())->getAlignment() : 0;
+  unsigned UseAlign = UseMI->hasOneMemOperand()
+    ? (*UseMI->memoperands_begin())->getAlignment() : 0;
+  return getOperandLatency(ItinData, DefTID, DefIdx, DefAlign,
+                           UseTID, UseIdx, UseAlign);
+}
+
+int
+ARMBaseInstrInfo::getOperandLatency(const InstrItineraryData *ItinData,
+                                    SDNode *DefNode, unsigned DefIdx,
+                                    SDNode *UseNode, unsigned UseIdx) const {
+  if (!DefNode->isMachineOpcode())
+    return 1;
+
+  const TargetInstrDesc &DefTID = get(DefNode->getMachineOpcode());
+  if (!ItinData || ItinData->isEmpty())
+    return DefTID.mayLoad() ? 3 : 1;
+
+  if (!UseNode->isMachineOpcode())
+    return ItinData->getOperandCycle(DefTID.getSchedClass(), DefIdx);
+
+  const TargetInstrDesc &UseTID = get(UseNode->getMachineOpcode());
+  const MachineSDNode *DefMN = dyn_cast<MachineSDNode>(DefNode);
+  unsigned DefAlign = !DefMN->memoperands_empty()
+    ? (*DefMN->memoperands_begin())->getAlignment() : 0;
+  const MachineSDNode *UseMN = dyn_cast<MachineSDNode>(UseNode);
+  unsigned UseAlign = !UseMN->memoperands_empty()
+    ? (*UseMN->memoperands_begin())->getAlignment() : 0;
+  return getOperandLatency(ItinData, DefTID, DefIdx, DefAlign,
+                           UseTID, UseIdx, UseAlign);
 }
