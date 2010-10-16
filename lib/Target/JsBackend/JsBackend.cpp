@@ -59,9 +59,9 @@ extern "C" void LLVMInitializeJsBackendTarget() {
 }
 
 namespace {
-  class CBEMCAsmInfo : public MCAsmInfo {
+  class JsBEMCAsmInfo : public MCAsmInfo {
   public:
-    CBEMCAsmInfo() {
+    JsBEMCAsmInfo() {
       GlobalPrefix = "";
       PrivateGlobalPrefix = "";
     }
@@ -349,7 +349,7 @@ namespace {
 char JsWriter::ID = 0;
 
 
-static std::string CBEMangle(const std::string &S) {
+static std::string JsBEMangle(const std::string &S) {
   std::string Result;
   
   for (unsigned i = 0, e = S.size(); i != e; ++i)
@@ -904,16 +904,18 @@ std::string JsWriter::GetValueName(const Value *Operand) {
   if (const GlobalValue *GV = dyn_cast<GlobalValue>(Operand)) {
     SmallString<128> Str;
     Mang->getNameWithPrefix(Str, GV, false);
-    return CBEMangle(Str.str().str());
+    return JsBEMangle(Str.str().str());
   }
     
   std::string Name = Operand->getName();
     
   if (Name.empty()) { // Assign unique names to local temporaries.
-    unsigned &No = AnonValueNumbers[Operand];
-    if (No == 0)
-      No = ++NextAnonValueNumber;
-    Name = "tmp__" + utostr(No);
+    std::pair<DenseMapIterator<const Value*, unsigned>, bool> Lookup = AnonValueNumbers.insert(std::pair<const Value*, unsigned>(Operand, NextAnonValueNumber));
+    if(Lookup.second) {
+      NextAnonValueNumber++;
+    }
+    unsigned &No = Lookup.first->second;
+    Name = utostr(No);
   }
     
   std::string VarName;
@@ -932,7 +934,7 @@ std::string JsWriter::GetValueName(const Value *Operand) {
       VarName += ch;
   }
 
-  return "llvm_cbe_" + VarName;
+  return "v" + VarName;
 }
 
 /// writeInstComputationInline - Emit the computation for the specified
@@ -1081,7 +1083,7 @@ bool JsWriter::doInitialization(Module &M) {
   IL = new IntrinsicLowering(*TD);
   IL->AddPrototypes(M);
 
-  TAsm = new CBEMCAsmInfo();
+  TAsm = new JsBEMCAsmInfo();
   TCtx = new MCContext(*TAsm);
   Mang = new Mangler(*TCtx, *TD);
 
@@ -2473,8 +2475,6 @@ void JsWriter::visitInsertValueInst(InsertValueInst &IVI) {
   Out << GetValueName(&IVI);
   for (const unsigned *b = IVI.idx_begin(), *i = b, *e = IVI.idx_end();
        i != e; ++i) {
-    const Type *IndexedTy =
-      ExtractValueInst::getIndexedType(IVI.getOperand(0)->getType(), b, i+1);
     Out << "[" << *i << "]";
   }
   Out << " = ";
