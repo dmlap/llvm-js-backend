@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This library converts LLVM code to Javascript code, executable in a web
+// This library converts LLVM IR to Javascript code, executable in a web
 // browser.
 //
 //===----------------------------------------------------------------------===//
@@ -2417,9 +2417,8 @@ void JsWriter::visitVAArgInst(VAArgInst &I) {
 
 void JsWriter::visitInsertElementInst(InsertElementInst &I) {
   writeOperand(I.getOperand(0));
-  Out << ";\n  ";
-  Out << "(";
-  Out << "(&" << GetValueName(&I) << "))[";
+  Out << ";\n        ";
+  Out << GetValueName(&I) << "[";
   writeOperand(I.getOperand(2));
   Out << "] = (";
   writeOperand(I.getOperand(1));
@@ -2427,39 +2426,42 @@ void JsWriter::visitInsertElementInst(InsertElementInst &I) {
 }
 
 void JsWriter::visitExtractElementInst(ExtractElementInst &I) {
-  // We know that our operand is not inlined.
   Out << "(";
-  Out << "(&" << GetValueName(I.getOperand(0)) << "))[";
+  writeOperand(I.getOperand(0), false);
+  Out << ")[";
   writeOperand(I.getOperand(1));
   Out << "]";
 }
 
 void JsWriter::visitShuffleVectorInst(ShuffleVectorInst &SVI) {
-  Out << "{ ";
+  Out << "[";
   const VectorType *VT = SVI.getType();
   unsigned NumElts = VT->getNumElements();
+  unsigned FirstElts = NumElts / 2;
 
   for (unsigned i = 0; i != NumElts; ++i) {
     if (i) Out << ", ";
-    int SrcVal = SVI.getMaskValue(i);
-    if ((unsigned)SrcVal >= NumElts*2) {
-      Out << " 0/*undef*/ ";
-    } else {
-      Value *Op = SVI.getOperand((unsigned)SrcVal >= NumElts);
-      if (isa<Instruction>(Op)) {
-        // Do an extractelement of this value from the appropriate input.
-        Out << "((&" << GetValueName(Op)
-            << "))[" << (SrcVal & (NumElts-1)) << "]";
-      } else if (isa<ConstantAggregateZero>(Op) || isa<UndefValue>(Op)) {
-        Out << "0";
-      } else {
-        printConstant(cast<ConstantVector>(Op)->getOperand(SrcVal &
-                                                           (NumElts-1)),
-                      false);
-      }
+    int MaskVal = SVI.getMaskValue(i);
+    if((unsigned) MaskVal >= NumElts) {
+      Out << "undefined";
+      continue;
     }
+    Value *Op;
+    unsigned I;
+    if((unsigned) MaskVal < FirstElts) {
+      Op = SVI.getOperand(0);
+      I = MaskVal;
+    } else {
+      Op = SVI.getOperand(1);
+      I = MaskVal - FirstElts;
+    }
+    if(isa<Instruction>(Op)) {
+      Out << "((" << GetValueName(Op) << ")[" << I << "])";
+      continue;
+    }
+    printConstant(cast<ConstantVector>(Op)->getOperand(I), false);
   }
-  Out << "}";
+  Out << "]";
 }
 
 void JsWriter::visitInsertValueInst(InsertValueInst &IVI) {
