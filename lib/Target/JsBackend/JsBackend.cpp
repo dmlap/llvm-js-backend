@@ -134,9 +134,6 @@ namespace {
 
       LI = &getAnalysis<LoopInfo>();
 
-      // Get rid of intrinsics we can't handle.
-      lowerIntrinsics(F);
-
       // Output all floating point constants that cannot be printed accurately.
       printFloatingPointConstants(F);
 
@@ -191,8 +188,6 @@ namespace {
 
   private :
     std::string InterpretASMConstraint(InlineAsm::ConstraintInfo& c);
-
-    void lowerIntrinsics(Function &F);
 
     void printModule(Module *M);
     std::string getOperand(Value *Operand, bool Static = false);
@@ -1889,84 +1884,6 @@ void JsWriter::visitSelectInst(SelectInst &I) {
   Out << "))";
 }
 
-
-void JsWriter::lowerIntrinsics(Function &F) {
-  // This is used to keep track of intrinsics that get generated to a lowered
-  // function. We must generate the prototypes before the function body which
-  // will only be expanded on first use (by the loop below).
-  std::vector<Function*> prototypesToGen;
-
-  // Examine all the instructions in this function to find the intrinsics that
-  // need to be lowered.
-  for (Function::iterator BB = F.begin(), EE = F.end(); BB != EE; ++BB)
-    for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E; )
-      if (CallInst *CI = dyn_cast<CallInst>(I++))
-        if (Function *F = CI->getCalledFunction())
-          switch (F->getIntrinsicID()) {
-          case Intrinsic::not_intrinsic:
-          case Intrinsic::memory_barrier:
-          case Intrinsic::vastart:
-          case Intrinsic::vacopy:
-          case Intrinsic::vaend:
-          case Intrinsic::returnaddress:
-          case Intrinsic::frameaddress:
-          case Intrinsic::setjmp:
-          case Intrinsic::longjmp:
-          case Intrinsic::prefetch:
-          case Intrinsic::powi:
-          case Intrinsic::x86_sse_cmp_ss:
-          case Intrinsic::x86_sse_cmp_ps:
-          case Intrinsic::x86_sse2_cmp_sd:
-          case Intrinsic::x86_sse2_cmp_pd:
-          case Intrinsic::ppc_altivec_lvsl:
-              // We directly implement these intrinsics
-            break;
-          default:
-            // If this is an intrinsic that directly corresponds to a GCC
-            // builtin, we handle it.
-            const char *BuiltinName = "";
-#define GET_GCC_BUILTIN_NAME
-#include "llvm/Intrinsics.gen"
-#undef GET_GCC_BUILTIN_NAME
-            // If we handle it, don't lower it.
-            if (BuiltinName[0]) break;
-            
-            // All other intrinsic calls we must lower.
-            Instruction *Before = 0;
-            if (CI != &BB->front())
-              Before = prior(BasicBlock::iterator(CI));
-
-            IL->LowerIntrinsicCall(CI);
-            if (Before) {        // Move iterator to instruction after call
-              I = Before; ++I;
-            } else {
-              I = BB->begin();
-            }
-            // If the intrinsic got lowered to another call, and that call has
-            // a definition then we need to make sure its prototype is emitted
-            // before any calls to it.
-            if (CallInst *Call = dyn_cast<CallInst>(I))
-              if (Function *NewF = Call->getCalledFunction())
-                if (!NewF->isDeclaration())
-                  prototypesToGen.push_back(NewF);
-
-            break;
-          }
-
-  // We may have collected some prototypes to emit in the loop above. 
-  // Emit them now, before the function that uses them is emitted. But,
-  // be careful not to emit them twice.
-  std::vector<Function*>::iterator I = prototypesToGen.begin();
-  std::vector<Function*>::iterator E = prototypesToGen.end();
-  for ( ; I != E; ++I) {
-    if (intrinsicPrototypesAlreadyGenerated.insert(*I).second) {
-      Out << '\n';
-      printFunctionSignature(*I, true);
-      Out << ";\n";
-    }
-  }
-}
-
 void JsWriter::visitCallInst(CallInst &I) {
   if (isa<InlineAsm>(I.getCalledValue()))
     return visitInlineAsm(I);
@@ -2041,22 +1958,10 @@ void JsWriter::visitCallInst(CallInst &I) {
 bool JsWriter::visitBuiltinCall(CallInst &I, Intrinsic::ID ID,
                                bool &WroteCallee) {
   switch (ID) {
-  default: {
-    // If this is an intrinsic that directly corresponds to a GCC
-    // builtin, we emit it here.
-    const char *BuiltinName = "";
-    Function *F = I.getCalledFunction();
-#define GET_GCC_BUILTIN_NAME
-#include "llvm/Intrinsics.gen"
-#undef GET_GCC_BUILTIN_NAME
-    assert(BuiltinName[0] && "Unknown LLVM intrinsic!");
-    
-    Out << BuiltinName;
-    WroteCallee = true;
-    return false;
-  }
-  case Intrinsic::memory_barrier:
-    Out << "__sync_synchronize()";
+  case Intrinsic::sqrt:
+    Out << "Math.sqrt(";
+    writeOperand(I.getOperand(0));
+    Out << ")";
     return true;
   case Intrinsic::vastart:
     writeOperand(I.getOperand(1));
@@ -2070,82 +1975,20 @@ bool JsWriter::visitBuiltinCall(CallInst &I, Intrinsic::ID ID,
     writeOperand(I.getOperand(2));
     Out << "._";
     return true;
-  case Intrinsic::returnaddress:
-    Out << "__builtin_return_address(";
-    writeOperand(I.getOperand(1));
-    Out << ')';
-    return true;
-  case Intrinsic::frameaddress:
-    Out << "__builtin_frame_address(";
-    writeOperand(I.getOperand(1));
-    Out << ')';
-    return true;
   case Intrinsic::powi:
-    Out << "__builtin_powi(";
-    writeOperand(I.getOperand(1));
+    Out << "Math.pow(";
+    writeOperand(I.getOperand(0));
     Out << ", ";
-    writeOperand(I.getOperand(2));
-    Out << ')';
-    return true;
-  case Intrinsic::setjmp:
-    Out << "setjmp(*(jmp_buf*)";
     writeOperand(I.getOperand(1));
-    Out << ')';
-    return true;
-  case Intrinsic::longjmp:
-    Out << "longjmp(*(jmp_buf*)";
-    writeOperand(I.getOperand(1));
-    Out << ", ";
-    writeOperand(I.getOperand(2));
     Out << ')';
     return true;
   case Intrinsic::prefetch:
-    Out << "LLVM_PREFETCH((const void *)";
-    writeOperand(I.getOperand(1));
-    Out << ", ";
-    writeOperand(I.getOperand(2));
-    Out << ", ";
-    writeOperand(I.getOperand(3));
-    Out << ")";
     return true;
-  case Intrinsic::stacksave:
-    return false;
-  case Intrinsic::x86_sse_cmp_ss:
-  case Intrinsic::x86_sse_cmp_ps:
-  case Intrinsic::x86_sse2_cmp_sd:
-  case Intrinsic::x86_sse2_cmp_pd:
-    // Multiple GCC builtins multiplex onto this intrinsic.
-    switch (cast<ConstantInt>(I.getOperand(3))->getZExtValue()) {
-    default: llvm_unreachable("Invalid llvm.x86.sse.cmp!");
-    case 0: Out << "__builtin_ia32_cmpeq"; break;
-    case 1: Out << "__builtin_ia32_cmplt"; break;
-    case 2: Out << "__builtin_ia32_cmple"; break;
-    case 3: Out << "__builtin_ia32_cmpunord"; break;
-    case 4: Out << "__builtin_ia32_cmpneq"; break;
-    case 5: Out << "__builtin_ia32_cmpnlt"; break;
-    case 6: Out << "__builtin_ia32_cmpnle"; break;
-    case 7: Out << "__builtin_ia32_cmpord"; break;
-    }
-    if (ID == Intrinsic::x86_sse_cmp_ps || ID == Intrinsic::x86_sse2_cmp_pd)
-      Out << 'p';
-    else
-      Out << 's';
-    if (ID == Intrinsic::x86_sse_cmp_ss || ID == Intrinsic::x86_sse_cmp_ps)
-      Out << 's';
-    else
-      Out << 'd';
-      
-    Out << "(";
-    writeOperand(I.getOperand(1));
-    Out << ", ";
-    writeOperand(I.getOperand(2));
-    Out << ")";
-    return true;
-  case Intrinsic::ppc_altivec_lvsl:
-    Out << "__builtin_altivec_lvsl(0, (void*)";
-    writeOperand(I.getOperand(1));
-    Out << ")";
-    return true;
+  default:
+#ifndef NDEBUG
+    errs() << "Builtin call not supported by JsBackend" << ID;
+#endif
+    llvm_unreachable(0);    
   }
 }
 
