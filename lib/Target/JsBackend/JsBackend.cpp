@@ -100,7 +100,6 @@ namespace {
     MCContext *TCtx;
     const TargetData* TD;
     std::map<const Type *, std::string> TypeNames;
-    std::map<const ConstantFP *, unsigned> FPConstantMap;
     std::set<Function*> intrinsicPrototypesAlreadyGenerated;
     std::set<const Argument*> ByValParams;
     unsigned FPCounter;
@@ -134,9 +133,6 @@ namespace {
 
       LI = &getAnalysis<LoopInfo>();
 
-      // Output all floating point constants that cannot be printed accurately.
-      printFloatingPointConstants(F);
-
       printFunction(F);
       return false;
     }
@@ -158,7 +154,6 @@ namespace {
       delete Mang;
       delete TCtx;
       delete TAsm;
-      FPConstantMap.clear();
       TypeNames.clear();
       ByValParams.clear();
       intrinsicPrototypesAlreadyGenerated.clear();
@@ -191,8 +186,6 @@ namespace {
 
     void printModule(Module *M);
     std::string getOperand(Value *Operand, bool Static = false);
-    void printFloatingPointConstants(Function &F);
-    void printFloatingPointConstants(const Constant *C);
     void printFunctionSignature(const Function *F, bool Prototype);
 
     void printFunction(Function &);
@@ -523,48 +516,6 @@ void JsWriter::printConstantVector(ConstantVector *CP, bool Static) {
   Out << " ]";
 }
 
-// isFPCSafeToPrint - Returns true if we may assume that CFP may be written out
-// textually as a double (rather than as a reference to a stack-allocated
-// variable). We decide this by converting CFP to a string and back into a
-// double, and then checking whether the conversion results in a bit-equal
-// double to the original value of CFP. This depends on us and the target C
-// compiler agreeing on the conversion process (which is pretty likely since we
-// only deal in IEEE FP).
-//
-static bool isFPCSafeToPrint(const ConstantFP *CFP) {
-  bool ignored;
-  // Do long doubles in hex for now.
-  if (CFP->getType() != Type::getFloatTy(CFP->getContext()) &&
-      CFP->getType() != Type::getDoubleTy(CFP->getContext()))
-    return false;
-  APFloat APF = APFloat(CFP->getValueAPF());  // copy
-  if (CFP->getType() == Type::getFloatTy(CFP->getContext()))
-    APF.convert(APFloat::IEEEdouble, APFloat::rmNearestTiesToEven, &ignored);
-#if HAVE_PRINTF_A && ENABLE_CBE_PRINTF_A
-  char Buffer[100];
-  sprintf(Buffer, "%a", APF.convertToDouble());
-  if (!strncmp(Buffer, "0x", 2) ||
-      !strncmp(Buffer, "-0x", 3) ||
-      !strncmp(Buffer, "+0x", 3))
-    return APF.bitwiseIsEqual(APFloat(atof(Buffer)));
-  return false;
-#else
-  std::string StrVal = ftostr(APF);
-
-  while (StrVal[0] == ' ')
-    StrVal.erase(StrVal.begin());
-
-  // Check to make sure that the stringized number is not some string like "Inf"
-  // or NaN.  Check that the string matches the "[-+]?[0-9]" regex.
-  if ((StrVal[0] >= '0' && StrVal[0] <= '9') ||
-      ((StrVal[0] == '-' || StrVal[0] == '+') &&
-       (StrVal[1] >= '0' && StrVal[1] <= '9')))
-    // Reparse stringized version!
-    return APF.bitwiseIsEqual(APFloat(atof(StrVal.c_str())));
-  return false;
-#endif
-}
-
 void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
   if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(CPV)) {
     switch (CE->getOpcode()) {
@@ -741,70 +692,21 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
 
   switch (CPV->getType()->getTypeID()) {
   case Type::FloatTyID:
-  case Type::DoubleTyID: 
-  case Type::X86_FP80TyID:
-  case Type::PPC_FP128TyID:
-  case Type::FP128TyID: {
+  case Type::DoubleTyID: {
     ConstantFP *FPC = cast<ConstantFP>(CPV);
-    std::map<const ConstantFP*, unsigned>::iterator I = FPConstantMap.find(FPC);
-    if (I != FPConstantMap.end()) {
-      // Because of FP precision problems we must load from a stack allocated
-      // value that holds the value in hex.
-      Out << "(*(" << (FPC->getType() == Type::getFloatTy(CPV->getContext()) ?
-                       "float" : 
-                       FPC->getType() == Type::getDoubleTy(CPV->getContext()) ? 
-                       "double" :
-                       "long double")
-          << "*)&FPConstant" << I->second << ')';
+    double V;
+    if (FPC->getType() == Type::getFloatTy(CPV->getContext())) {
+      V = FPC->getValueAPF().convertToFloat();
     } else {
-      double V;
-      if (FPC->getType() == Type::getFloatTy(CPV->getContext()))
-        V = FPC->getValueAPF().convertToFloat();
-      else if (FPC->getType() == Type::getDoubleTy(CPV->getContext()))
-        V = FPC->getValueAPF().convertToDouble();
-      else {
-        // Long double.  Convert the number to double, discarding precision.
-        // This is not awesome, but it at least makes the CBE output somewhat
-        // useful.
-        APFloat Tmp = FPC->getValueAPF();
-        bool LosesInfo;
-        Tmp.convert(APFloat::IEEEdouble, APFloat::rmTowardZero, &LosesInfo);
-        V = Tmp.convertToDouble();
-      }
+      V = FPC->getValueAPF().convertToDouble();
+    }
       
-      if (IsNAN(V)) {
-        // The value is NaN
-
-        // FIXME the actual NaN bits should be emitted.
-        // The prefix for a quiet NaN is 0x7FF8. For a signalling NaN,
-        // it's 0x7ff4.
-        const unsigned long QuietNaN = 0x7ff8UL;
-        //const unsigned long SignalNaN = 0x7ff4UL;
-
-        // We need to grab the first part of the FP #
-        char Buffer[100];
-
-        uint64_t ll = DoubleToBits(V);
-        sprintf(Buffer, "0x%llx", static_cast<long long>(ll));
-
-        std::string Num(&Buffer[0], &Buffer[6]);
-        unsigned long Val = strtoul(Num.c_str(), 0, 16);
-
-        if (FPC->getType() == Type::getFloatTy(FPC->getContext()))
-          Out << "LLVM_NAN" << (Val == QuietNaN ? "" : "S") << "F(\""
-              << Buffer << "\") /*nan*/ ";
-        else
-          Out << "LLVM_NAN" << (Val == QuietNaN ? "" : "S") << "(\""
-              << Buffer << "\") /*nan*/ ";
-      } else if (IsInf(V)) {
-        // The value is Inf
-        if (V < 0) Out << '-';
-        Out << "LLVM_INF" <<
-            (FPC->getType() == Type::getFloatTy(FPC->getContext()) ? "F" : "")
-            << " /*inf*/ ";
-      } else {
-	Out << apfToStr(FPC->getValueAPF());
-      }
+    if (IsNAN(V)) {
+      Out << "NaN";
+    } else if (IsInf(V)) {
+      Out << "Infinity";
+    } else {
+      Out << apfToStr(FPC->getValueAPF());
     }
     break;
   }
@@ -1226,75 +1128,6 @@ bool JsWriter::doInitialization(Module &M) {
     Out << "\n/* Module Methods */\n";
   }
   return false;
-}
-
-
-/// Output all floating point constants that cannot be printed accurately...
-void JsWriter::printFloatingPointConstants(Function &F) {
-  // Scan the module for floating point constants.  If any FP constant is used
-  // in the function, we want to redirect it here so that we do not depend on
-  // the precision of the printed form, unless the printed form preserves
-  // precision.
-  //
-  for (constant_iterator I = constant_begin(&F), E = constant_end(&F);
-       I != E; ++I)
-    printFloatingPointConstants(*I);
-
-  Out << '\n';
-}
-
-void JsWriter::printFloatingPointConstants(const Constant *C) {
-  // If this is a constant expression, recursively check for constant fp values.
-  if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(C)) {
-    for (unsigned i = 0, e = CE->getNumOperands(); i != e; ++i)
-      printFloatingPointConstants(CE->getOperand(i));
-    return;
-  }
-    
-  // Otherwise, check for a FP constant that we need to print.
-  const ConstantFP *FPC = dyn_cast<ConstantFP>(C);
-  if (FPC == 0 ||
-      // Do not put in FPConstantMap if safe.
-      isFPCSafeToPrint(FPC) ||
-      // Already printed this constant?
-      FPConstantMap.count(FPC))
-    return;
-
-  FPConstantMap[FPC] = FPCounter;  // Number the FP constants
-  
-  if (FPC->getType() == Type::getDoubleTy(FPC->getContext())) {
-    double Val = FPC->getValueAPF().convertToDouble();
-    uint64_t i = FPC->getValueAPF().bitcastToAPInt().getZExtValue();
-    Out << "static const ConstantDoubleTy FPConstant" << FPCounter++
-    << " = 0x" << utohexstr(i)
-    << "ULL;    /* " << Val << " */\n";
-  } else if (FPC->getType() == Type::getFloatTy(FPC->getContext())) {
-    float Val = FPC->getValueAPF().convertToFloat();
-    uint32_t i = (uint32_t)FPC->getValueAPF().bitcastToAPInt().
-    getZExtValue();
-    Out << "static const ConstantFloatTy FPConstant" << FPCounter++
-    << " = 0x" << utohexstr(i)
-    << "U;    /* " << Val << " */\n";
-  } else if (FPC->getType() == Type::getX86_FP80Ty(FPC->getContext())) {
-    // api needed to prevent premature destruction
-    APInt api = FPC->getValueAPF().bitcastToAPInt();
-    const uint64_t *p = api.getRawData();
-    Out << "static const ConstantFP80Ty FPConstant" << FPCounter++
-    << " = { 0x" << utohexstr(p[0]) 
-    << "ULL, 0x" << utohexstr((uint16_t)p[1]) << ",{0,0,0}"
-    << "}; /* Long double constant */\n";
-  } else if (FPC->getType() == Type::getPPC_FP128Ty(FPC->getContext()) ||
-             FPC->getType() == Type::getFP128Ty(FPC->getContext())) {
-    APInt api = FPC->getValueAPF().bitcastToAPInt();
-    const uint64_t *p = api.getRawData();
-    Out << "static const ConstantFP128Ty FPConstant" << FPCounter++
-    << " = { 0x"
-    << utohexstr(p[0]) << ", 0x" << utohexstr(p[1])
-    << "}; /* Long double constant */\n";
-    
-  } else {
-    llvm_unreachable("Unknown float type!");
-  }
 }
 
 void JsWriter::printFunctionSignature(const Function *F, bool Prototype) {
