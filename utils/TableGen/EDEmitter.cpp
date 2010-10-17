@@ -567,6 +567,7 @@ static int ARMFlagFromOpName(LiteralConstantEmitter *type,
   IMM("jtblock_operand");
   IMM("nohash_imm");
   IMM("cpinst_operand");
+  IMM("setend_op");
   IMM("cps_opt");
   IMM("vfp_f64imm");
   IMM("vfp_f32imm");
@@ -574,6 +575,7 @@ static int ARMFlagFromOpName(LiteralConstantEmitter *type,
   IMM("msr_mask");
   IMM("neg_zero");
   IMM("imm0_31");
+  IMM("imm0_31_m1");
   IMM("nModImm");
   IMM("imm0_4095");
   IMM("jt2block_operand");
@@ -585,6 +587,7 @@ static int ARMFlagFromOpName(LiteralConstantEmitter *type,
   MISC("so_reg", "kOperandTypeARMSoReg");                         // R, R, I
   MISC("t2_so_reg", "kOperandTypeThumb2SoReg");                   // R, I
   MISC("so_imm", "kOperandTypeARMSoImm");                         // I
+  MISC("rot_imm", "kOperandTypeARMRotImm");                       // I
   MISC("t2_so_imm", "kOperandTypeThumb2SoImm");                   // I
   MISC("so_imm2part", "kOperandTypeARMSoImm2Part");               // I
   MISC("pred", "kOperandTypeARMPredicate");                       // I, R
@@ -801,6 +804,7 @@ static void emitCommonEnums(raw_ostream &o, unsigned int &i) {
   operandTypes.addEntry("kOperandTypeARMBranchTarget");
   operandTypes.addEntry("kOperandTypeARMSoReg");
   operandTypes.addEntry("kOperandTypeARMSoImm");
+  operandTypes.addEntry("kOperandTypeARMRotImm");
   operandTypes.addEntry("kOperandTypeARMSoImm2Part");
   operandTypes.addEntry("kOperandTypeARMPredicate");
   operandTypes.addEntry("kOperandTypeARMAddrMode2");

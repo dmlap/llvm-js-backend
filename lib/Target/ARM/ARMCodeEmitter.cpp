@@ -140,8 +140,6 @@ namespace {
 
     void emitVFPLoadStoreMultipleInstruction(const MachineInstr &MI);
 
-    void emitMiscInstruction(const MachineInstr &MI);
-
     void emitNEONLaneInstruction(const MachineInstr &MI);
     void emitNEONDupInstruction(const MachineInstr &MI);
     void emitNEON1RegModImmInstruction(const MachineInstr &MI);
@@ -155,6 +153,25 @@ namespace {
     unsigned getMachineOpValue(const MachineInstr &MI, unsigned OpIdx) const {
       return getMachineOpValue(MI, MI.getOperand(OpIdx));
     }
+
+    // FIXME: The legacy JIT ARMCodeEmitter doesn't rely on the the
+    //  TableGen'erated getBinaryCodeForInstr() function to encode any
+    //  operand values, instead querying getMachineOpValue() directly for
+    //  each operand it needs to encode. Thus, any of the new encoder
+    //  helper functions can simply return 0 as the values the return
+    //  are already handled elsewhere. They are placeholders to allow this
+    //  encoder to continue to function until the MC encoder is sufficiently
+    //  far along that this one can be eliminated entirely.
+    unsigned getCCOutOpValue(const MachineInstr &MI, unsigned Op)
+      const { return 0; }
+    unsigned getSOImmOpValue(const MachineInstr &MI, unsigned Op)
+      const { return 0; }
+    unsigned getSORegOpValue(const MachineInstr &MI, unsigned Op)
+      const { return 0; }
+    unsigned getRotImmOpValue(const MachineInstr &MI, unsigned Op)
+      const { return 0; }
+    unsigned getImmMinusOneOpValue(const MachineInstr &MI, unsigned Op)
+      const { return 0; }
 
     /// getMovi32Value - Return binary encoding of operand for movw/movt. If the
     /// machine operand requires relocation, record the relocation and return
@@ -418,9 +435,7 @@ void ARMCodeEmitter::emitInstruction(const MachineInstr &MI) {
   case ARMII::VFPLdStMulFrm:
     emitVFPLoadStoreMultipleInstruction(MI);
     break;
-  case ARMII::VFPMiscFrm:
-    emitMiscInstruction(MI);
-    break;
+
   // NEON instructions.
   case ARMII::NGetLnFrm:
   case ARMII::NSetLnFrm:
@@ -628,7 +643,7 @@ void ARMCodeEmitter::emitPseudoMoveInstruction(const MachineInstr &MI) {
   // Encode the shift operation.
   switch (Opcode) {
   default: break;
-  case ARM::MOVrx:
+  case ARM::RRX:
     // rrx
     Binary |= 0x6 << 4;
     break;
@@ -731,7 +746,7 @@ void ARMCodeEmitter::emitPseudoInstruction(const MachineInstr &MI) {
     // Materialize jumptable address.
     emitLEApcrelJTInstruction(MI);
     break;
-  case ARM::MOVrx:
+  case ARM::RRX:
   case ARM::MOVsrl_flag:
   case ARM::MOVsra_flag:
     emitPseudoMoveInstruction(MI);
@@ -1566,58 +1581,6 @@ ARMCodeEmitter::emitVFPLoadStoreMultipleInstruction(const MachineInstr &MI) {
     Binary |= NumRegs * 2;
   else
     Binary |= NumRegs;
-
-  emitWordLE(Binary);
-}
-
-void ARMCodeEmitter::emitMiscInstruction(const MachineInstr &MI) {
-  unsigned Opcode = MI.getDesc().Opcode;
-  // Part of binary is determined by TableGn.
-  unsigned Binary = getBinaryCodeForInstr(MI);
-
-  // Set the conditional execution predicate
-  Binary |= II->getPredicate(&MI) << ARMII::CondShift;
-
-  switch(Opcode) {
-  default:
-    llvm_unreachable("ARMCodeEmitter::emitMiscInstruction");
-
-  case ARM::FMSTAT:
-    // No further encoding needed.
-    break;
-
-  case ARM::VMRS:
-  case ARM::VMSR: {
-    const MachineOperand &MO0 = MI.getOperand(0);
-    // Encode Rt.
-    Binary |= getARMRegisterNumbering(MO0.getReg()) << ARMII::RegRdShift;
-    break;
-  }
-
-  case ARM::FCONSTD:
-  case ARM::FCONSTS: {
-    // Encode Dd / Sd.
-    Binary |= encodeVFPRd(MI, 0);
-
-    // Encode imm., Table A7-18 VFP modified immediate constants
-    const MachineOperand &MO1 = MI.getOperand(1);
-    unsigned Imm = static_cast<unsigned>(MO1.getFPImm()->getValueAPF()
-                      .bitcastToAPInt().getHiBits(32).getLimitedValue());
-    unsigned ModifiedImm;
-
-    if(Opcode == ARM::FCONSTS)
-      ModifiedImm = (Imm & 0x80000000) >> 24 | // a
-                    (Imm & 0x03F80000) >> 19;  // bcdefgh
-    else // Opcode == ARM::FCONSTD
-      ModifiedImm = (Imm & 0x80000000) >> 24 | // a
-                    (Imm & 0x007F0000) >> 16;  // bcdefgh
-
-    // Insts{19-16} = abcd, Insts{3-0} = efgh
-    Binary |= ((ModifiedImm & 0xF0) >> 4) << 16;
-    Binary |= (ModifiedImm & 0xF);
-    break;
-  }
-  }
 
   emitWordLE(Binary);
 }

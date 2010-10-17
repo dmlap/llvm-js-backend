@@ -737,7 +737,6 @@ const char *ARMTargetLowering::getTargetNodeName(unsigned Opcode) const {
   case ARMISD::BR2_JT:        return "ARMISD::BR2_JT";
   case ARMISD::RET_FLAG:      return "ARMISD::RET_FLAG";
   case ARMISD::PIC_ADD:       return "ARMISD::PIC_ADD";
-  case ARMISD::AND:           return "ARMISD::AND";
   case ARMISD::CMP:           return "ARMISD::CMP";
   case ARMISD::CMPZ:          return "ARMISD::CMPZ";
   case ARMISD::CMPFP:         return "ARMISD::CMPFP";
@@ -2218,7 +2217,7 @@ ARMTargetLowering::LowerFormalArguments(SDValue Chain,
       AFI->setVarArgsFrameIndex(
         MFI->CreateFixedObject(VARegSaveSize,
                                ArgOffset + VARegSaveSize - VARegSize,
-                               true));
+                               false));
       SDValue FIN = DAG.getFrameIndex(AFI->getVarArgsFrameIndex(),
                                       getPointerTy());
 

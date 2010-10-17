@@ -1,3 +1,8 @@
+set(LLVM_REQUIRES_RTTI 1)
+if( MINGW )
+  set(LLVM_REQUIRES_EH 1)
+endif()
+
 add_llvm_library(LLVMSystem
   Alarm.cpp
   Atomic.cpp
@@ -42,7 +47,3 @@ add_llvm_library(LLVMSystem
   Win32/ThreadLocal.inc
   Win32/TimeValue.inc
   )
-
-if( BUILD_SHARED_LIBS AND NOT WIN32 )
-  target_link_libraries(LLVMSystem ${CMAKE_DL_LIBS})
-endif()

@@ -14,6 +14,7 @@
 
 #define DEBUG_TYPE "splitter"
 #include "SplitKit.h"
+#include "LiveRangeEdit.h"
 #include "VirtRegMap.h"
 #include "llvm/CodeGen/CalcSpillWeights.h"
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
@@ -213,24 +214,28 @@ const MachineLoop *SplitAnalysis::getBestSplitLoop() {
   if (usingLoops_.empty())
     return 0;
 
-  LoopPtrSet Loops, SecondLoops;
+  LoopPtrSet Loops;
   LoopBlocks Blocks;
   BlockPtrSet CriticalExits;
 
-  // Find first-class and second class candidate loops.
-  // We prefer to split around loops where curli is used outside the periphery.
+  // We split around loops where curli is used outside the periphery.
   for (LoopCountMap::const_iterator I = usingLoops_.begin(),
        E = usingLoops_.end(); I != E; ++I) {
     const MachineLoop *Loop = I->first;
     getLoopBlocks(Loop, Blocks);
 
-    LoopPtrSet *LPS = 0;
     switch(analyzeLoopPeripheralUse(Blocks)) {
     case OutsideLoop:
-      LPS = &Loops;
       break;
     case MultiPeripheral:
-      LPS = &SecondLoops;
+      // FIXME: We could split a live range with multiple uses in a peripheral
+      // block and still make progress. However, it is possible that splitting
+      // another live range will insert copies into a peripheral block, and
+      // there is a small chance we can enter an infinity loop, inserting copies
+      // forever.
+      // For safety, stick to splitting live ranges with uses outside the
+      // periphery.
+      DEBUG(dbgs() << "  multiple peripheral uses in " << *Loop);
       break;
     case ContainedInLoop:
       DEBUG(dbgs() << "  contained in " << *Loop);
@@ -246,16 +251,11 @@ const MachineLoop *SplitAnalysis::getBestSplitLoop() {
     if (!canSplitCriticalExits(Blocks, CriticalExits))
       continue;
     // This is a possible split.
-    assert(LPS);
-    LPS->insert(Loop);
+    Loops.insert(Loop);
   }
 
-  DEBUG(dbgs() << "  getBestSplitLoop found " << Loops.size() << " + "
-               << SecondLoops.size() << " candidate loops.\n");
-
-  // If there are no first class loops available, look at second class loops.
-  if (Loops.empty())
-    Loops = SecondLoops;
+  DEBUG(dbgs() << "  getBestSplitLoop found " << Loops.size()
+               << " candidate loops.\n");
 
   if (Loops.empty())
     return 0;
@@ -581,36 +581,19 @@ VNInfo *LiveIntervalMap::defByCopyFrom(unsigned Reg,
 
 /// Create a new SplitEditor for editing the LiveInterval analyzed by SA.
 SplitEditor::SplitEditor(SplitAnalysis &sa, LiveIntervals &lis, VirtRegMap &vrm,
-                         SmallVectorImpl<LiveInterval*> &intervals)
+                         LiveRangeEdit &edit)
   : sa_(sa), lis_(lis), vrm_(vrm),
     mri_(vrm.getMachineFunction().getRegInfo()),
     tii_(*vrm.getMachineFunction().getTarget().getInstrInfo()),
-    curli_(sa_.getCurLI()),
-    dupli_(lis_, *curli_),
-    openli_(lis_, *curli_),
-    intervals_(intervals),
-    firstInterval(intervals_.size())
+    edit_(edit),
+    dupli_(lis_, edit.getParent()),
+    openli_(lis_, edit.getParent())
 {
-  assert(curli_ && "SplitEditor created from empty SplitAnalysis");
-
-  // Make sure curli_ is assigned a stack slot, so all our intervals get the
-  // same slot as curli_.
-  if (vrm_.getStackSlot(curli_->reg) == VirtRegMap::NO_STACK_SLOT)
-    vrm_.assignVirt2StackSlot(curli_->reg);
-
-}
-
-LiveInterval *SplitEditor::createInterval() {
-  unsigned Reg = mri_.createVirtualRegister(mri_.getRegClass(curli_->reg));
-  LiveInterval &Intv = lis_.getOrCreateInterval(Reg);
-  vrm_.grow();
-  vrm_.assignVirt2StackSlot(Reg, vrm_.getStackSlot(curli_->reg));
-  return &Intv;
 }
 
 bool SplitEditor::intervalsLiveAt(SlotIndex Idx) const {
-  for (int i = firstInterval, e = intervals_.size(); i != e; ++i)
-    if (intervals_[i]->liveAt(Idx))
+  for (LiveRangeEdit::iterator I = edit_.begin(), E = edit_.end(); I != E; ++I)
+    if (*I != dupli_.getLI() && (*I)->liveAt(Idx))
       return true;
   return false;
 }
@@ -620,10 +603,9 @@ void SplitEditor::openIntv() {
   assert(!openli_.getLI() && "Previous LI not closed before openIntv");
 
   if (!dupli_.getLI())
-    dupli_.reset(createInterval());
+    dupli_.reset(&edit_.create(mri_, lis_, vrm_));
 
-  openli_.reset(createInterval());
-  intervals_.push_back(openli_.getLI());
+  openli_.reset(&edit_.create(mri_, lis_, vrm_));
 }
 
 /// enterIntvBefore - Enter openli before the instruction at Idx. If curli is
@@ -631,7 +613,7 @@ void SplitEditor::openIntv() {
 void SplitEditor::enterIntvBefore(SlotIndex Idx) {
   assert(openli_.getLI() && "openIntv not called before enterIntvBefore");
   DEBUG(dbgs() << "    enterIntvBefore " << Idx);
-  VNInfo *ParentVNI = curli_->getVNInfoAt(Idx.getUseIndex());
+  VNInfo *ParentVNI = edit_.getParent().getVNInfoAt(Idx.getUseIndex());
   if (!ParentVNI) {
     DEBUG(dbgs() << ": not live\n");
     return;
@@ -640,7 +622,7 @@ void SplitEditor::enterIntvBefore(SlotIndex Idx) {
   truncatedValues.insert(ParentVNI);
   MachineInstr *MI = lis_.getInstructionFromIndex(Idx);
   assert(MI && "enterIntvBefore called with invalid index");
-  VNInfo *VNI = openli_.defByCopyFrom(curli_->reg, ParentVNI,
+  VNInfo *VNI = openli_.defByCopyFrom(edit_.getReg(), ParentVNI,
                                       *MI->getParent(), MI);
   openli_.getLI()->addRange(LiveRange(VNI->def, Idx.getDefIndex(), VNI));
   DEBUG(dbgs() << ": " << *openli_.getLI() << '\n');
@@ -651,14 +633,14 @@ void SplitEditor::enterIntvAtEnd(MachineBasicBlock &MBB) {
   assert(openli_.getLI() && "openIntv not called before enterIntvAtEnd");
   SlotIndex End = lis_.getMBBEndIdx(&MBB);
   DEBUG(dbgs() << "    enterIntvAtEnd BB#" << MBB.getNumber() << ", " << End);
-  VNInfo *ParentVNI = curli_->getVNInfoAt(End.getPrevSlot());
+  VNInfo *ParentVNI = edit_.getParent().getVNInfoAt(End.getPrevSlot());
   if (!ParentVNI) {
     DEBUG(dbgs() << ": not live\n");
     return;
   }
   DEBUG(dbgs() << ": valno " << ParentVNI->id);
   truncatedValues.insert(ParentVNI);
-  VNInfo *VNI = openli_.defByCopyFrom(curli_->reg, ParentVNI,
+  VNInfo *VNI = openli_.defByCopyFrom(edit_.getReg(), ParentVNI,
                                       MBB, MBB.getFirstTerminator());
   // Make sure openli is live out of MBB.
   openli_.getLI()->addRange(LiveRange(VNI->def, End, VNI));
@@ -683,7 +665,7 @@ void SplitEditor::leaveIntvAfter(SlotIndex Idx) {
   DEBUG(dbgs() << "    leaveIntvAfter " << Idx);
 
   // The interval must be live beyond the instruction at Idx.
-  VNInfo *ParentVNI = curli_->getVNInfoAt(Idx.getBoundaryIndex());
+  VNInfo *ParentVNI = edit_.getParent().getVNInfoAt(Idx.getBoundaryIndex());
   if (!ParentVNI) {
     DEBUG(dbgs() << ": not live\n");
     return;
@@ -708,7 +690,7 @@ void SplitEditor::leaveIntvAtTop(MachineBasicBlock &MBB) {
   SlotIndex Start = lis_.getMBBStartIdx(&MBB);
   DEBUG(dbgs() << "    leaveIntvAtTop BB#" << MBB.getNumber() << ", " << Start);
 
-  VNInfo *ParentVNI = curli_->getVNInfoAt(Start);
+  VNInfo *ParentVNI = edit_.getParent().getVNInfoAt(Start);
   if (!ParentVNI) {
     DEBUG(dbgs() << ": not live\n");
     return;
@@ -750,8 +732,9 @@ void SplitEditor::rewrite(unsigned reg) {
     SlotIndex Idx = lis_.getInstructionIndex(MI);
     Idx = MO.isUse() ? Idx.getUseIndex() : Idx.getDefIndex();
     LiveInterval *LI = 0;
-    for (unsigned i = firstInterval, e = intervals_.size(); i != e; ++i) {
-      LiveInterval *testli = intervals_[i];
+    for (LiveRangeEdit::iterator I = edit_.begin(), E = edit_.end(); I != E;
+         ++I) {
+      LiveInterval *testli = *I;
       if (testli->liveAt(Idx)) {
         LI = testli;
         break;
@@ -770,9 +753,10 @@ SplitEditor::addTruncSimpleRange(SlotIndex Start, SlotIndex End, VNInfo *VNI) {
   typedef std::pair<LiveInterval::const_iterator,
                     LiveInterval::const_iterator> IIPair;
   SmallVector<IIPair, 8> Iters;
-  for (int i = firstInterval, e = intervals_.size(); i != e; ++i) {
-    LiveInterval::const_iterator I = intervals_[i]->find(Start);
-    LiveInterval::const_iterator E = intervals_[i]->end();
+  for (LiveRangeEdit::iterator LI = edit_.begin(), LE = edit_.end(); LI != LE;
+       ++LI) {
+    LiveInterval::const_iterator I = (*LI)->find(Start);
+    LiveInterval::const_iterator E = (*LI)->end();
     if (I != E)
       Iters.push_back(std::make_pair(I, E));
   }
@@ -818,13 +802,13 @@ void SplitEditor::computeRemainder() {
   // If values were partially rematted, we should shrink to uses.
   // If values were fully rematted, they should be omitted.
   // FIXME: If a single value is redefined, just move the def and truncate.
+  LiveInterval &parent = edit_.getParent();
 
   // Values that are fully contained in the split intervals.
   SmallPtrSet<const VNInfo*, 8> deadValues;
-
   // Map all curli values that should have live defs in dupli.
-  for (LiveInterval::const_vni_iterator I = curli_->vni_begin(),
-       E = curli_->vni_end(); I != E; ++I) {
+  for (LiveInterval::const_vni_iterator I = parent.vni_begin(),
+       E = parent.vni_end(); I != E; ++I) {
     const VNInfo *VNI = *I;
     // Original def is contained in the split intervals.
     if (intervalsLiveAt(VNI->def)) {
@@ -841,7 +825,7 @@ void SplitEditor::computeRemainder() {
   }
 
   // Add all ranges to dupli.
-  for (LiveInterval::const_iterator I = curli_->begin(), E = curli_->end();
+  for (LiveInterval::const_iterator I = parent.begin(), E = parent.end();
        I != E; ++I) {
     const LiveRange &LR = *I;
     if (truncatedValues.count(LR.valno)) {
@@ -869,29 +853,25 @@ void SplitEditor::finish() {
   if (unsigned NumComp = ConEQ.Classify(dupli_.getLI())) {
     DEBUG(dbgs() << "  Remainder has " << NumComp << " connected components: "
                  << *dupli_.getLI() << '\n');
-    unsigned firstComp = intervals_.size();
-    intervals_.push_back(dupli_.getLI());
     // Did the remainder break up? Create intervals for all the components.
     if (NumComp > 1) {
+      SmallVector<LiveInterval*, 8> dups;
+      dups.push_back(dupli_.getLI());
       for (unsigned i = 1; i != NumComp; ++i)
-        intervals_.push_back(createInterval());
-      ConEQ.Distribute(&intervals_[firstComp]);
+        dups.push_back(&edit_.create(mri_, lis_, vrm_));
+      ConEQ.Distribute(&dups[0]);
       // Rewrite uses to the new regs.
       rewrite(dupli_.getLI()->reg);
     }
-  } else {
-    DEBUG(dbgs() << "  dupli became empty?\n");
-    lis_.removeInterval(dupli_.getLI()->reg);
-    dupli_.reset(0);
   }
 
   // Rewrite instructions.
-  rewrite(curli_->reg);
+  rewrite(edit_.getReg());
 
   // Calculate spill weight and allocation hints for new intervals.
   VirtRegAuxInfo vrai(vrm_.getMachineFunction(), lis_, sa_.loops_);
-  for (unsigned i = firstInterval, e = intervals_.size(); i != e; ++i) {
-    LiveInterval &li = *intervals_[i];
+  for (LiveRangeEdit::iterator I = edit_.begin(), E = edit_.end(); I != E; ++I){
+    LiveInterval &li = **I;
     vrai.CalculateRegClass(li.reg);
     vrai.CalculateWeightAndHint(li);
     DEBUG(dbgs() << "  new interval " << mri_.getRegClass(li.reg)->getName()

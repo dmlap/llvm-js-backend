@@ -20,6 +20,7 @@ namespace llvm {
 
 class LiveInterval;
 class LiveIntervals;
+class LiveRangeEdit;
 class MachineInstr;
 class MachineLoop;
 class MachineLoopInfo;
@@ -67,8 +68,6 @@ public:
   /// analyze - set curli to the specified interval, and analyze how it may be
   /// split.
   void analyze(const LiveInterval *li);
-
-  const LiveInterval *getCurLI() { return curli_; }
 
   /// clear - clear all data structures so SplitAnalysis is ready to analyze a
   /// new interval.
@@ -238,8 +237,8 @@ class SplitEditor {
   MachineRegisterInfo &mri_;
   const TargetInstrInfo &tii_;
 
-  /// curli_ - The immutable interval we are currently splitting.
-  const LiveInterval *const curli_;
+  /// edit_ - The current parent register and new intervals created.
+  LiveRangeEdit &edit_;
 
   /// dupli_ - Created as a copy of curli_, ranges are carved out as new
   /// intervals get added through openIntv / closeIntv. This is used to avoid
@@ -248,17 +247,6 @@ class SplitEditor {
 
   /// Currently open LiveInterval.
   LiveIntervalMap openli_;
-
-  /// createInterval - Create a new virtual register and LiveInterval with same
-  /// register class and spill slot as curli.
-  LiveInterval *createInterval();
-
-  /// All the new intervals created for this split are added to intervals_.
-  SmallVectorImpl<LiveInterval*> &intervals_;
-
-  /// The index into intervals_ of the first interval we added. There may be
-  /// others from before we got it.
-  unsigned firstInterval;
 
   /// intervalsLiveAt - Return true if any member of intervals_ is live at Idx.
   bool intervalsLiveAt(SlotIndex Idx) const;
@@ -281,8 +269,7 @@ class SplitEditor {
 public:
   /// Create a new SplitEditor for editing the LiveInterval analyzed by SA.
   /// Newly created intervals will be appended to newIntervals.
-  SplitEditor(SplitAnalysis &SA, LiveIntervals&, VirtRegMap&,
-              SmallVectorImpl<LiveInterval*> &newIntervals);
+  SplitEditor(SplitAnalysis &SA, LiveIntervals&, VirtRegMap&, LiveRangeEdit&);
 
   /// getAnalysis - Get the corresponding analysis.
   SplitAnalysis &getAnalysis() { return sa_; }

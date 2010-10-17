@@ -33,7 +33,9 @@
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/Support/CallSite.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -135,11 +137,10 @@ class ARMFastISel : public FastISel {
   private:
     bool isTypeLegal(const Type *Ty, EVT &VT);
     bool isLoadTypeLegal(const Type *Ty, EVT &VT);
-    bool ARMEmitLoad(EVT VT, unsigned &ResultReg, unsigned Reg, int Offset);
-    bool ARMEmitStore(EVT VT, unsigned SrcReg, unsigned Reg, int Offset);
-    bool ARMLoadAlloca(const Instruction *I, EVT VT);
-    bool ARMStoreAlloca(const Instruction *I, unsigned SrcReg, EVT VT);
-    bool ARMComputeRegOffset(const Value *Obj, unsigned &Reg, int &Offset);
+    bool ARMEmitLoad(EVT VT, unsigned &ResultReg, unsigned Base, int Offset);
+    bool ARMEmitStore(EVT VT, unsigned SrcReg, unsigned Base, int Offset);
+    bool ARMComputeRegOffset(const Value *Obj, unsigned &Base, int &Offset);
+    void ARMSimplifyRegOffset(unsigned &Base, int &Offset, EVT VT);
     unsigned ARMMaterializeFP(const ConstantFP *CFP, EVT VT);
     unsigned ARMMaterializeInt(const Constant *C, EVT VT);
     unsigned ARMMaterializeGV(const GlobalValue *GV, EVT VT);
@@ -517,7 +518,7 @@ unsigned ARMFastISel::TargetMaterializeAlloca(const AllocaInst *AI) {
   if (!FuncInfo.StaticAllocaMap.count(AI)) return 0;
 
   EVT VT;
-  if (!isTypeLegal(AI->getType(), VT)) return false;
+  if (!isLoadTypeLegal(AI->getType(), VT)) return false;
 
   DenseMap<const AllocaInst*, int>::iterator SI =
     FuncInfo.StaticAllocaMap.find(AI);
@@ -561,7 +562,7 @@ bool ARMFastISel::isLoadTypeLegal(const Type *Ty, EVT &VT) {
 }
 
 // Computes the Reg+Offset to get to an object.
-bool ARMFastISel::ARMComputeRegOffset(const Value *Obj, unsigned &Reg,
+bool ARMFastISel::ARMComputeRegOffset(const Value *Obj, unsigned &Base,
                                       int &Offset) {
   // Some boilerplate from the X86 FastISel.
   const User *U = NULL;
@@ -590,88 +591,126 @@ bool ARMFastISel::ARMComputeRegOffset(const Value *Obj, unsigned &Reg,
     break;
     case Instruction::BitCast: {
       // Look through bitcasts.
-      return ARMComputeRegOffset(U->getOperand(0), Reg, Offset);
+      return ARMComputeRegOffset(U->getOperand(0), Base, Offset);
     }
     case Instruction::IntToPtr: {
       // Look past no-op inttoptrs.
       if (TLI.getValueType(U->getOperand(0)->getType()) == TLI.getPointerTy())
-        return ARMComputeRegOffset(U->getOperand(0), Reg, Offset);
+        return ARMComputeRegOffset(U->getOperand(0), Base, Offset);
       break;
     }
     case Instruction::PtrToInt: {
       // Look past no-op ptrtoints.
       if (TLI.getValueType(U->getType()) == TLI.getPointerTy())
-        return ARMComputeRegOffset(U->getOperand(0), Reg, Offset);
+        return ARMComputeRegOffset(U->getOperand(0), Base, Offset);
+      break;
+    }
+    case Instruction::GetElementPtr: {
+      int SavedOffset = Offset;
+      unsigned SavedBase = Base;
+      int TmpOffset = Offset;
+
+      // Iterate through the GEP folding the constants into offsets where
+      // we can.
+      gep_type_iterator GTI = gep_type_begin(U);
+      for (User::const_op_iterator i = U->op_begin() + 1, e = U->op_end();
+           i != e; ++i, ++GTI) {
+        const Value *Op = *i;
+        if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
+          const StructLayout *SL = TD.getStructLayout(STy);
+          unsigned Idx = cast<ConstantInt>(Op)->getZExtValue();
+          TmpOffset += SL->getElementOffset(Idx);
+        } else {
+          uint64_t S = TD.getTypeAllocSize(GTI.getIndexedType());
+          SmallVector<const Value *, 4> Worklist;
+          Worklist.push_back(Op);
+          do {
+            Op = Worklist.pop_back_val();
+            if (const ConstantInt *CI = dyn_cast<ConstantInt>(Op)) {
+              // Constant-offset addressing.
+              TmpOffset += CI->getSExtValue() * S;
+            } else if (isa<AddOperator>(Op) &&
+                       isa<ConstantInt>(cast<AddOperator>(Op)->getOperand(1))) {
+              // An add with a constant operand. Fold the constant.
+              ConstantInt *CI =
+                cast<ConstantInt>(cast<AddOperator>(Op)->getOperand(1));
+              TmpOffset += CI->getSExtValue() * S;
+              // Add the other operand back to the work list.
+              Worklist.push_back(cast<AddOperator>(Op)->getOperand(0));
+            } else
+              goto unsupported_gep;
+          } while (!Worklist.empty());
+        }
+      }
+
+      // Try to grab the base operand now.
+      Offset = TmpOffset;
+      if (ARMComputeRegOffset(U->getOperand(0), Base, Offset)) return true;
+
+      // We failed, restore everything and try the other options.
+      Offset = SavedOffset;
+      Base = SavedBase;
+
+      unsupported_gep:
       break;
     }
     case Instruction::Alloca: {
-      // Don't handle dynamic allocas.
-      assert(!FuncInfo.StaticAllocaMap.count(cast<AllocaInst>(Obj)) &&
-             "Alloca should have been handled earlier!");
-      return false;
+      const AllocaInst *AI = cast<AllocaInst>(Obj);
+      unsigned Reg = TargetMaterializeAlloca(AI);
+
+      if (Reg == 0) return false;
+
+      Base = Reg;
+      return true;
     }
   }
 
-  // FIXME: Handle global variables.
+  // Materialize the global variable's address into a reg which can
+  // then be used later to load the variable.
   if (const GlobalValue *GV = dyn_cast<GlobalValue>(Obj)) {
-    (void)GV;
-    return false;
+    unsigned Tmp = ARMMaterializeGV(GV, TLI.getValueType(Obj->getType()));
+    if (Tmp == 0) return false;
+
+    Base = Tmp;
+    return true;
   }
 
   // Try to get this in a register if nothing else has worked.
-  Reg = getRegForValue(Obj);
-  if (Reg == 0) return false;
+  if (Base == 0) Base  = getRegForValue(Obj);
+  return Base != 0;
+}
 
+void ARMFastISel::ARMSimplifyRegOffset(unsigned &Base, int &Offset, EVT VT) {
+
+  assert (Base != ARM::SP && "How'd we get a stack pointer here?");
+  
   // Since the offset may be too large for the load instruction
   // get the reg+offset into a register.
-  // TODO: Verify the additions work, otherwise we'll need to add the
-  // offset instead of 0 to the instructions and do all sorts of operand
-  // munging.
-  // TODO: Optimize this somewhat.
   if (Offset != 0) {
     ARMCC::CondCodes Pred = ARMCC::AL;
     unsigned PredReg = 0;
 
+    TargetRegisterClass *RC = isThumb ? ARM::tGPRRegisterClass :
+      ARM::GPRRegisterClass;
+    unsigned BaseReg = createResultReg(RC);
+
     if (!isThumb)
       emitARMRegPlusImmediate(*FuncInfo.MBB, FuncInfo.InsertPt, DL,
-                              Reg, Reg, Offset, Pred, PredReg,
+                              BaseReg, Base, Offset, Pred, PredReg,
                               static_cast<const ARMBaseInstrInfo&>(TII));
     else {
       assert(AFI->isThumb2Function());
       emitT2RegPlusImmediate(*FuncInfo.MBB, FuncInfo.InsertPt, DL,
-                             Reg, Reg, Offset, Pred, PredReg,
+                             BaseReg, Base, Offset, Pred, PredReg,
                              static_cast<const ARMBaseInstrInfo&>(TII));
     }
+    Offset = 0;
+    Base = BaseReg;
   }
-  return true;
-}
-
-bool ARMFastISel::ARMLoadAlloca(const Instruction *I, EVT VT) {
-  Value *Op0 = I->getOperand(0);
-
-  // Promote load/store types.
-  if (VT == MVT::i8 || VT == MVT::i16) VT = MVT::i32;
-
-  // Verify it's an alloca.
-  if (const AllocaInst *AI = dyn_cast<AllocaInst>(Op0)) {
-    DenseMap<const AllocaInst*, int>::iterator SI =
-      FuncInfo.StaticAllocaMap.find(AI);
-
-    if (SI != FuncInfo.StaticAllocaMap.end()) {
-      TargetRegisterClass* RC = TLI.getRegClassFor(VT);
-      unsigned ResultReg = createResultReg(RC);
-      TII.loadRegFromStackSlot(*FuncInfo.MBB, *FuncInfo.InsertPt,
-                               ResultReg, SI->second, RC,
-                               TM.getRegisterInfo());
-      UpdateValueMap(I, ResultReg);
-      return true;
-    }
-  }
-  return false;
 }
 
 bool ARMFastISel::ARMEmitLoad(EVT VT, unsigned &ResultReg,
-                              unsigned Reg, int Offset) {
+                              unsigned Base, int Offset) {
 
   assert(VT.isSimple() && "Non-simple types are invalid here!");
   unsigned Opc;
@@ -682,17 +721,17 @@ bool ARMFastISel::ARMEmitLoad(EVT VT, unsigned &ResultReg,
       // This is mostly going to be Neon/vector support.
       return false;
     case MVT::i16:
-      Opc = isThumb ? ARM::t2LDRHi8 : ARM::LDRH;
+      Opc = isThumb ? ARM::t2LDRHi12 : ARM::LDRH;
       RC = ARM::GPRRegisterClass;
       VT = MVT::i32;
       break;
     case MVT::i8:
-      Opc = isThumb ? ARM::t2LDRBi8 : ARM::LDRB;
+      Opc = isThumb ? ARM::t2LDRBi12 : ARM::LDRB;
       RC = ARM::GPRRegisterClass;
       VT = MVT::i32;
       break;
     case MVT::i32:
-      Opc = isThumb ? ARM::t2LDRi8 : ARM::LDR;
+      Opc = isThumb ? ARM::t2LDRi12 : ARM::LDR;
       RC = ARM::GPRRegisterClass;
       break;
     case MVT::f32:
@@ -708,21 +747,24 @@ bool ARMFastISel::ARMEmitLoad(EVT VT, unsigned &ResultReg,
   }
 
   ResultReg = createResultReg(RC);
+  
+  // All SP loads should already have been lowered to another reg.
+  assert(Base != ARM::SP && "No stack stores this late!");
 
   // For now with the additions above the offset should be zero - thus we
-  // can always fit into an i8.
-  assert(Offset == 0 && "Offset not zero!");
+  // can always fit into an i12.
+  assert(Offset == 0 && "Offset should be zero at this point!");
 
   // The thumb and floating point instructions both take 2 operands, ARM takes
   // another register.
   if (isFloat || isThumb)
     AddOptionalDefs(BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DL,
                             TII.get(Opc), ResultReg)
-                    .addReg(Reg).addImm(Offset));
+                    .addReg(Base).addImm(Offset));
   else
     AddOptionalDefs(BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DL,
                             TII.get(Opc), ResultReg)
-                    .addReg(Reg).addReg(0).addImm(Offset));
+                    .addReg(Base).addReg(0).addImm(Offset));
   return true;
 }
 
@@ -732,59 +774,43 @@ bool ARMFastISel::SelectLoad(const Instruction *I) {
   if (!isLoadTypeLegal(I->getType(), VT))
     return false;
 
-  // If we're an alloca we know we have a frame index and can emit the load
-  // directly in short order.
-  if (ARMLoadAlloca(I, VT))
-    return true;
-
   // Our register and offset with innocuous defaults.
-  unsigned Reg = 0;
+  unsigned Base = 0;
   int Offset = 0;
 
   // See if we can handle this as Reg + Offset
-  if (!ARMComputeRegOffset(I->getOperand(0), Reg, Offset))
+  if (!ARMComputeRegOffset(I->getOperand(0), Base, Offset))
     return false;
 
+  ARMSimplifyRegOffset(Base, Offset, VT);
+
   unsigned ResultReg;
-  if (!ARMEmitLoad(VT, ResultReg, Reg, Offset /* 0 */)) return false;
+  if (!ARMEmitLoad(VT, ResultReg, Base, Offset)) return false;
 
   UpdateValueMap(I, ResultReg);
   return true;
 }
 
-bool ARMFastISel::ARMStoreAlloca(const Instruction *I, unsigned SrcReg, EVT VT){
-  Value *Op1 = I->getOperand(1);
-
-  // Promote load/store types.
-  if (VT == MVT::i8 || VT == MVT::i16) VT = MVT::i32;
-
-  // Verify it's an alloca.
-  if (const AllocaInst *AI = dyn_cast<AllocaInst>(Op1)) {
-    DenseMap<const AllocaInst*, int>::iterator SI =
-      FuncInfo.StaticAllocaMap.find(AI);
-
-    if (SI != FuncInfo.StaticAllocaMap.end()) {
-      TargetRegisterClass* RC = TLI.getRegClassFor(VT);
-      assert(SrcReg != 0 && "Nothing to store!");
-      TII.storeRegToStackSlot(*FuncInfo.MBB, *FuncInfo.InsertPt,
-                              SrcReg, true /*isKill*/, SI->second, RC,
-                              TM.getRegisterInfo());
-      return true;
-    }
-  }
-  return false;
-}
-
 bool ARMFastISel::ARMEmitStore(EVT VT, unsigned SrcReg,
-                               unsigned DstReg, int Offset) {
+                               unsigned Base, int Offset) {
   unsigned StrOpc;
   bool isFloat = false;
+  // VT is set here only for use in the alloca stores below - those are promoted
+  // to reg size always.
   switch (VT.getSimpleVT().SimpleTy) {
     default: return false;
     case MVT::i1:
-    case MVT::i8: StrOpc = isThumb ? ARM::t2STRBi8 : ARM::STRB; break;
-    case MVT::i16: StrOpc = isThumb ? ARM::t2STRHi8 : ARM::STRH; break;
-    case MVT::i32: StrOpc = isThumb ? ARM::t2STRi8 : ARM::STR; break;
+    case MVT::i8:
+      VT = MVT::i32;
+      StrOpc = isThumb ? ARM::t2STRBi12 : ARM::STRB;
+      break;
+    case MVT::i16:
+      VT = MVT::i32;
+      StrOpc = isThumb ? ARM::t2STRHi12 : ARM::STRH;
+      break;
+    case MVT::i32:
+      StrOpc = isThumb ? ARM::t2STRi12 : ARM::STR;
+      break;
     case MVT::f32:
       if (!Subtarget->hasVFP2()) return false;
       StrOpc = ARM::VSTRS;
@@ -797,16 +823,23 @@ bool ARMFastISel::ARMEmitStore(EVT VT, unsigned SrcReg,
       break;
   }
 
+  // All SP stores should already have been lowered to another reg.
+  assert(Base != ARM::SP && "No stack stores this late!");
+
+  // For now with the additions above the offset should be zero - thus we
+  // can always fit into an i12.
+  assert(Offset == 0 && "Offset should be zero at this point!");
+
   // The thumb addressing mode has operands swapped from the arm addressing
   // mode, the floating point one only has two operands.
   if (isFloat || isThumb)
     AddOptionalDefs(BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DL,
                             TII.get(StrOpc))
-                    .addReg(SrcReg).addReg(DstReg).addImm(Offset));
+                    .addReg(SrcReg).addReg(Base).addImm(Offset));
   else
     AddOptionalDefs(BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DL,
                             TII.get(StrOpc))
-                    .addReg(SrcReg).addReg(DstReg).addReg(0).addImm(Offset));
+                    .addReg(SrcReg).addReg(Base).addReg(0).addImm(Offset));
 
   return true;
 }
@@ -825,20 +858,17 @@ bool ARMFastISel::SelectStore(const Instruction *I) {
   if (SrcReg == 0)
     return false;
 
-  // If we're an alloca we know we have a frame index and can emit the store
-  // quickly.
-  if (ARMStoreAlloca(I, SrcReg, VT))
-    return true;
-
   // Our register and offset with innocuous defaults.
-  unsigned Reg = 0;
+  unsigned Base = 0;
   int Offset = 0;
 
   // See if we can handle this as Reg + Offset
-  if (!ARMComputeRegOffset(I->getOperand(1), Reg, Offset))
+  if (!ARMComputeRegOffset(I->getOperand(1), Base, Offset))
     return false;
 
-  if (!ARMEmitStore(VT, SrcReg, Reg, Offset /* 0 */)) return false;
+  ARMSimplifyRegOffset(Base, Offset, VT);
+
+  if (!ARMEmitStore(VT, SrcReg, Base, Offset)) return false;
 
   return true;
 }
@@ -1157,7 +1187,7 @@ bool ARMFastISel::SelectSRem(const Instruction *I) {
   else if (VT == MVT::i128)
     LC = RTLIB::SREM_I128;
   assert(LC != RTLIB::UNKNOWN_LIBCALL && "Unsupported SREM!");
-    
+
   return ARMEmitLibcall(I, LC);
 }
 
@@ -1322,7 +1352,7 @@ bool ARMFastISel::FinishCall(EVT RetVT, SmallVectorImpl<unsigned> &UsedRegs,
       // Finally update the result.
       UpdateValueMap(I, ResultReg);
     } else {
-      assert(RVLocs.size() == 1 && "Can't handle non-double multi-reg retvals!");
+      assert(RVLocs.size() == 1 &&"Can't handle non-double multi-reg retvals!");
       EVT CopyVT = RVLocs[0].getValVT();
       TargetRegisterClass* DstRC = TLI.getRegClassFor(CopyVT);
 

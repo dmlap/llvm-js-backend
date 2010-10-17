@@ -20,6 +20,11 @@ def GetLo32XForm : SDNodeXForm<imm, [{
   return getI32Imm((unsigned)N->getZExtValue());
 }]>;
 
+def GetLo8XForm : SDNodeXForm<imm, [{
+  // Transformation function: get the low 8 bits.
+  return getI8Imm((uint8_t)N->getZExtValue());
+}]>;
+
 
 //===----------------------------------------------------------------------===//
 // Random Pseudo Instructions.
@@ -77,6 +82,17 @@ def VASTART_SAVE_XMM_REGS : I<0, Pseudo,
                               [(X86vastart_save_xmm_regs GR8:$al,
                                                          imm:$regsavefi,
                                                          imm:$offset)]>;
+
+// The VAARG_64 pseudo-instruction takes the address of the va_list,
+// and places the address of the next argument into a register.
+let Defs = [EFLAGS] in
+def VAARG_64 : I<0, Pseudo,
+                 (outs GR64:$dst),
+                 (ins i8mem:$ap, i32imm:$size, i8imm:$mode, i32imm:$align),
+                 "#VAARG_64 $dst, $ap, $size, $mode, $align",
+                 [(set GR64:$dst,
+                    (X86vaarg64 addr:$ap, imm:$size, imm:$mode, imm:$align)),
+                  (implicit EFLAGS)]>;
 
 // Dynamic stack allocation yields _alloca call for Cygwin/Mingw targets.  Calls
 // to _alloca is needed to probe the stack when allocating more than 4k bytes in
@@ -1036,33 +1052,37 @@ def ADD32rr_DB  : I<0, Pseudo, (outs GR32:$dst), (ins GR32:$src1, GR32:$src2),
 def ADD64rr_DB  : I<0, Pseudo, (outs GR64:$dst), (ins GR64:$src1, GR64:$src2),
                     "", // orq/addq REG, REG
                     [(set GR64:$dst, (or_is_add GR64:$src1, GR64:$src2))]>;
-                    
-                    
-def ADD16ri_DB  : I<0, Pseudo, (outs GR16:$dst), (ins GR16:$src1, i16imm:$src2),
-                    "", // orw/addw REG, imm
-                    [(set GR16:$dst, (or_is_add GR16:$src1, imm:$src2))]>;
-def ADD32ri_DB  : I<0, Pseudo, (outs GR32:$dst), (ins GR32:$src1, i32imm:$src2),
-                    "", // orl/addl REG, imm
-                    [(set GR32:$dst, (or_is_add GR32:$src1, imm:$src2))]>;
-def ADD64ri32_DB : I<0, Pseudo,
-                     (outs GR64:$dst), (ins GR64:$src1, i64i32imm:$src2),
-                      "", // orq/addq REG, imm
-                      [(set GR64:$dst, (or_is_add GR64:$src1,
-                                                  i64immSExt32:$src2))]>;
-                    
+
+// NOTE: These are order specific, we want the ri8 forms to be listed
+// first so that they are slightly preferred to the ri forms.
+
 def ADD16ri8_DB : I<0, Pseudo,
                     (outs GR16:$dst), (ins GR16:$src1, i16i8imm:$src2),
                     "", // orw/addw REG, imm8
                     [(set GR16:$dst,(or_is_add GR16:$src1,i16immSExt8:$src2))]>;
+def ADD16ri_DB  : I<0, Pseudo, (outs GR16:$dst), (ins GR16:$src1, i16imm:$src2),
+                    "", // orw/addw REG, imm
+                    [(set GR16:$dst, (or_is_add GR16:$src1, imm:$src2))]>;
+
 def ADD32ri8_DB : I<0, Pseudo,
                     (outs GR32:$dst), (ins GR32:$src1, i32i8imm:$src2),
                     "", // orl/addl REG, imm8
                     [(set GR32:$dst,(or_is_add GR32:$src1,i32immSExt8:$src2))]>;
+def ADD32ri_DB  : I<0, Pseudo, (outs GR32:$dst), (ins GR32:$src1, i32imm:$src2),
+                    "", // orl/addl REG, imm
+                    [(set GR32:$dst, (or_is_add GR32:$src1, imm:$src2))]>;
+
+
 def ADD64ri8_DB : I<0, Pseudo,
                     (outs GR64:$dst), (ins GR64:$src1, i64i8imm:$src2),
                     "", // orq/addq REG, imm8
                     [(set GR64:$dst, (or_is_add GR64:$src1,
                                                 i64immSExt8:$src2))]>;
+def ADD64ri32_DB : I<0, Pseudo,
+                     (outs GR64:$dst), (ins GR64:$src1, i64i32imm:$src2),
+                      "", // orq/addq REG, imm
+                      [(set GR64:$dst, (or_is_add GR64:$src1,
+                                                  i64immSExt32:$src2))]>;
 }
 } // AddedComplexity
 
@@ -1095,9 +1115,19 @@ def : Pat<(add GR64:$src1, 0x0000000080000000),
 def : Pat<(store (add (loadi64 addr:$dst), 0x00000000800000000), addr:$dst),
           (SUB64mi32 addr:$dst, 0xffffffff80000000)>;
 
-// Use a 32-bit and with implicit zero-extension instead of a 64-bit and if it
-// has an immediate with at least 32 bits of leading zeros, to avoid needing to
-// materialize that immediate in a register first.
+// To avoid needing to materialize an immediate in a register, use a 32-bit and
+// with implicit zero-extension instead of a 64-bit and if the immediate has at
+// least 32 bits of leading zeros. If in addition the last 32 bits can be
+// represented with a sign extension of a 8 bit constant, use that.
+
+def : Pat<(and GR64:$src, i64immZExt32SExt8:$imm),
+          (SUBREG_TO_REG
+            (i64 0),
+            (AND32ri8
+              (EXTRACT_SUBREG GR64:$src, sub_32bit),
+              (i32 (GetLo8XForm imm:$imm))),
+            sub_32bit)>;
+
 def : Pat<(and GR64:$src, i64immZExt32:$imm),
           (SUBREG_TO_REG
             (i64 0),

@@ -135,7 +135,11 @@ namespace {
 }
 
 char SROA::ID = 0;
-INITIALIZE_PASS(SROA, "scalarrepl",
+INITIALIZE_PASS_BEGIN(SROA, "scalarrepl",
+                "Scalar Replacement of Aggregates", false, false)
+INITIALIZE_PASS_DEPENDENCY(DominatorTree)
+INITIALIZE_PASS_DEPENDENCY(DominanceFrontier)
+INITIALIZE_PASS_END(SROA, "scalarrepl",
                 "Scalar Replacement of Aggregates", false, false)
 
 // Public interface to the ScalarReplAggregates pass
@@ -1442,7 +1446,7 @@ void SROA::RewriteMemIntrinUserOfAlloca(MemIntrinsic *MI, Instruction *Inst,
         Type *NewOtherPTy = PointerType::get(PTy->getElementType(),
                                              OtherPTy->getAddressSpace());
         OtherElt = new BitCastInst(OtherElt, NewOtherPTy,
-                                   OtherElt->getNameStr(), MI);
+                                   OtherElt->getName(), MI);
       }
     }
     

@@ -435,17 +435,22 @@ static uint64_t SymbolValue(MCSymbolData &Data, const MCAsmLayout &Layout) {
   return 0;
 }
 
+static const MCSymbol &AliasedSymbol(const MCSymbol &Symbol) {
+  const MCSymbol *S = &Symbol;
+  while (S->isVariable()) {
+    const MCExpr *Value = S->getVariableValue();
+    assert (Value->getKind() == MCExpr::SymbolRef && "Unimplemented");
+    const MCSymbolRefExpr *Ref = static_cast<const MCSymbolRefExpr*>(Value);
+    S = &Ref->getSymbol();
+  }
+  return *S;
+}
+
 void ELFObjectWriterImpl::WriteSymbol(MCDataFragment *F, ELFSymbolData &MSD,
                                       const MCAsmLayout &Layout) {
   MCSymbolData &OrigData = *MSD.SymbolData;
-  MCSymbolData *AliasData = NULL;
-  if (OrigData.Symbol->isVariable()) {
-    const MCExpr *Value = OrigData.getSymbol().getVariableValue();
-    assert (Value->getKind() == MCExpr::SymbolRef && "Unimplemented");
-    const MCSymbolRefExpr *Ref = static_cast<const MCSymbolRefExpr*>(Value);
-    AliasData = &Layout.getAssembler().getSymbolData(Ref->getSymbol());
-  }
-  MCSymbolData &Data = AliasData ? *AliasData : OrigData;
+  MCSymbolData &Data =
+    Layout.getAssembler().getSymbolData(AliasedSymbol(OrigData.getSymbol()));
 
   uint8_t Binding = GetBinding(OrigData);
   uint8_t Visibility = GetVisibility(OrigData);
@@ -467,22 +472,9 @@ void ELFObjectWriterImpl::WriteSymbol(MCDataFragment *F, ELFSymbolData &MSD,
       const MCBinaryExpr *BE = static_cast<const MCBinaryExpr *>(ESize);
 
       if (BE->EvaluateAsRelocatable(Res, &Layout)) {
-        uint64_t AddressA = 0;
-        uint64_t AddressB = 0;
-        const MCSymbol &SymA = Res.getSymA()->getSymbol();
-        const MCSymbol &SymB = Res.getSymB()->getSymbol();
-
-        if (SymA.isDefined()) {
-          MCSymbolData &A = Layout.getAssembler().getSymbolData(SymA);
-          AddressA = Layout.getSymbolAddress(&A);
-        }
-
-        if (SymB.isDefined()) {
-          MCSymbolData &B = Layout.getAssembler().getSymbolData(SymB);
-          AddressB = Layout.getSymbolAddress(&B);
-        }
-
-        Size = AddressA - AddressB;
+        assert(!Res.getSymA() || !Res.getSymA()->getSymbol().isDefined());
+        assert(!Res.getSymB() || !Res.getSymB()->getSymbol().isDefined());
+        Size = Res.getConstant();
       }
     } else if (ESize->getKind() == MCExpr::Constant) {
       Size = static_cast<const MCConstantExpr *>(ESize)->getValue();
@@ -592,7 +584,7 @@ void ELFObjectWriterImpl::RecordRelocation(const MCAssembler &Asm,
 
   bool IsPCRel = isFixupKindX86PCRel(Fixup.getKind());
   if (!Target.isAbsolute()) {
-    Symbol = &Target.getSymA()->getSymbol();
+    Symbol = &AliasedSymbol(Target.getSymA()->getSymbol());
     MCSymbolData &SD = Asm.getSymbolData(*Symbol);
     MCFragment *F = SD.getFragment();
 
@@ -781,7 +773,7 @@ void ELFObjectWriterImpl::ComputeSymbolTable(MCAssembler &Asm) {
   StringMap<uint64_t> StringIndexMap;
   StringTable += '\x00';
 
-  // Add the data for local symbols.
+  // Add the data for the symbols.
   for (MCAssembler::symbol_iterator it = Asm.symbol_begin(),
          ie = Asm.symbol_end(); it != ie; ++it) {
     const MCSymbol &Symbol = it->getSymbol();
@@ -789,87 +781,53 @@ void ELFObjectWriterImpl::ComputeSymbolTable(MCAssembler &Asm) {
     if (!isInSymtab(Asm, *it, UsedInReloc.count(&Symbol)))
       continue;
 
-    if (!isLocal(*it))
-      continue;
-
-    uint64_t &Entry = StringIndexMap[Symbol.getName()];
-    if (!Entry) {
-      Entry = StringTable.size();
-      StringTable += Symbol.getName();
-      StringTable += '\x00';
-    }
-
     ELFSymbolData MSD;
     MSD.SymbolData = it;
-    MSD.StringIndex = Entry;
+    bool Local = isLocal(*it);
 
-    if (Symbol.isAbsolute()) {
-      MSD.SectionIndex = ELF::SHN_ABS;
-      LocalSymbolData.push_back(MSD);
-    } else {
-      const MCSymbol *SymbolP = &Symbol;
-      if (Symbol.isVariable()) {
-        const MCExpr *Value = Symbol.getVariableValue();
-        assert (Value->getKind() == MCExpr::SymbolRef && "Unimplemented");
-        const MCSymbolRefExpr *Ref = static_cast<const MCSymbolRefExpr*>(Value);
-        SymbolP = &Ref->getSymbol();
-      }
-      MSD.SectionIndex = SectionIndexMap.lookup(&SymbolP->getSection());
-      assert(MSD.SectionIndex && "Invalid section index!");
-      LocalSymbolData.push_back(MSD);
-    }
-  }
-
-  // Now add non-local symbols.
-  for (MCAssembler::symbol_iterator it = Asm.symbol_begin(),
-         ie = Asm.symbol_end(); it != ie; ++it) {
-    const MCSymbol &Symbol = it->getSymbol();
-
-    if (!isInSymtab(Asm, *it, UsedInReloc.count(&Symbol)))
-      continue;
-
-    if (isLocal(*it))
-      continue;
-
-    uint64_t &Entry = StringIndexMap[Symbol.getName()];
-    if (!Entry) {
-      Entry = StringTable.size();
-      StringTable += Symbol.getName();
-      StringTable += '\x00';
-    }
-
-    ELFSymbolData MSD;
-    MSD.SymbolData = it;
-    MSD.StringIndex = Entry;
-
-    // FIXME: There is duplicated code with the local case.
+    bool Add = false;
     if (it->isCommon()) {
+      assert(!Local);
       MSD.SectionIndex = ELF::SHN_COMMON;
-      ExternalSymbolData.push_back(MSD);
+      Add = true;
+    } else if (Symbol.isAbsolute()) {
+      MSD.SectionIndex = ELF::SHN_ABS;
+      Add = true;
     } else if (Symbol.isVariable()) {
-      const MCExpr *Value = Symbol.getVariableValue();
-      assert (Value->getKind() == MCExpr::SymbolRef && "Unimplemented");
-      const MCSymbolRefExpr *Ref = static_cast<const MCSymbolRefExpr*>(Value);
-      const MCSymbol &RefSymbol = Ref->getSymbol();
+      const MCSymbol &RefSymbol = AliasedSymbol(Symbol);
       if (RefSymbol.isDefined()) {
         MSD.SectionIndex = SectionIndexMap.lookup(&RefSymbol.getSection());
         assert(MSD.SectionIndex && "Invalid section index!");
-        ExternalSymbolData.push_back(MSD);
+        Add = true;
       }
     } else if (Symbol.isUndefined()) {
+      assert(!Local);
       MSD.SectionIndex = ELF::SHN_UNDEF;
       // FIXME: Undefined symbols are global, but this is the first place we
       // are able to set it.
       if (GetBinding(*it) == ELF::STB_LOCAL)
         SetBinding(*it, ELF::STB_GLOBAL);
-      UndefinedSymbolData.push_back(MSD);
-    } else if (Symbol.isAbsolute()) {
-      MSD.SectionIndex = ELF::SHN_ABS;
-      ExternalSymbolData.push_back(MSD);
+      Add = true;
     } else {
       MSD.SectionIndex = SectionIndexMap.lookup(&Symbol.getSection());
       assert(MSD.SectionIndex && "Invalid section index!");
-      ExternalSymbolData.push_back(MSD);
+      Add = true;
+    }
+
+    if (Add) {
+      uint64_t &Entry = StringIndexMap[Symbol.getName()];
+      if (!Entry) {
+        Entry = StringTable.size();
+        StringTable += Symbol.getName();
+        StringTable += '\x00';
+      }
+      MSD.StringIndex = Entry;
+      if (MSD.SectionIndex == ELF::SHN_UNDEF)
+        UndefinedSymbolData.push_back(MSD);
+      else if (Local)
+        LocalSymbolData.push_back(MSD);
+      else
+        ExternalSymbolData.push_back(MSD);
     }
   }
 

@@ -64,6 +64,12 @@ def SDT_X86VASTART_SAVE_XMM_REGS : SDTypeProfile<0, -1, [SDTCisVT<0, i8>,
                                                          SDTCisVT<1, iPTR>,
                                                          SDTCisVT<2, iPTR>]>;
 
+def SDT_X86VAARG_64 : SDTypeProfile<1, -1, [SDTCisPtrTy<0>,
+                                            SDTCisPtrTy<1>,
+                                            SDTCisVT<2, i32>,
+                                            SDTCisVT<3, i8>,
+                                            SDTCisVT<4, i32>]>;
+
 def SDTX86RepStr  : SDTypeProfile<0, 1, [SDTCisVT<0, OtherVT>]>;
 
 def SDTX86Void    : SDTypeProfile<0, 0, []>;
@@ -141,7 +147,10 @@ def X86vastart_save_xmm_regs :
                  SDNode<"X86ISD::VASTART_SAVE_XMM_REGS",
                         SDT_X86VASTART_SAVE_XMM_REGS,
                         [SDNPHasChain, SDNPVariadic]>;
-
+def X86vaarg64 :
+                 SDNode<"X86ISD::VAARG_64", SDT_X86VAARG_64,
+                        [SDNPHasChain, SDNPMayLoad, SDNPMayStore,
+                         SDNPMemOperand]>;
 def X86callseq_start :
                  SDNode<"ISD::CALLSEQ_START", SDT_X86CallSeqStart,
                         [SDNPHasChain, SDNPOutFlag]>;
@@ -462,6 +471,11 @@ def i64immZExt32  : PatLeaf<(i64 imm), [{
   // i64immZExt32 predicate - True if the 64-bit immediate fits in a 32-bit
   // unsignedsign extended field.
   return (uint64_t)N->getZExtValue() == (uint32_t)N->getZExtValue();
+}]>;
+
+def i64immZExt32SExt8 : PatLeaf<(i64 imm), [{
+    uint64_t v = N->getZExtValue();
+    return v == (uint32_t)v && (int32_t)v == (int8_t)v;
 }]>;
 
 // Helper fragments for loads.
@@ -864,34 +878,6 @@ def MOV32mr : I<0x89, MRMDestMem, (outs), (ins i32mem:$dst, GR32:$src),
 def MOV64mr : RI<0x89, MRMDestMem, (outs), (ins i64mem:$dst, GR64:$src),
                  "mov{q}\t{$src, $dst|$dst, $src}",
                  [(store GR64:$src, addr:$dst)]>;
-
-/// Versions of MOV32rr, MOV32rm, and MOV32mr for i32mem_TC and GR32_TC.
-let isCodeGenOnly = 1 in {
-let neverHasSideEffects = 1 in {
-def MOV32rr_TC : I<0x89, MRMDestReg, (outs GR32_TC:$dst), (ins GR32_TC:$src),
-                "mov{l}\t{$src, $dst|$dst, $src}", []>;
-def MOV64rr_TC : RI<0x89, MRMDestReg, (outs GR64_TC:$dst), (ins GR64_TC:$src),
-                "mov{q}\t{$src, $dst|$dst, $src}", []>;
-}
-
-let mayLoad = 1, canFoldAsLoad = 1, isReMaterializable = 1 in {
-def MOV32rm_TC : I<0x8B, MRMSrcMem, (outs GR32_TC:$dst), (ins i32mem_TC:$src),
-                "mov{l}\t{$src, $dst|$dst, $src}",
-                []>;
-def MOV64rm_TC : RI<0x8B, MRMSrcMem, (outs GR64_TC:$dst), (ins i64mem_TC:$src),
-                "mov{q}\t{$src, $dst|$dst, $src}",
-                []>;
-}
-
-let mayStore = 1 in {
-def MOV32mr_TC : I<0x89, MRMDestMem, (outs), (ins i32mem_TC:$dst, GR32_TC:$src),
-                "mov{l}\t{$src, $dst|$dst, $src}",
-                []>;
-def MOV64mr_TC : RI<0x89, MRMDestMem, (outs), (ins i64mem_TC:$dst, GR64_TC:$src),
-                "mov{q}\t{$src, $dst|$dst, $src}",
-                []>;
-}
-} // isCodeGenOnly
 
 // Versions of MOV8rr, MOV8mr, and MOV8rm that use i8mem_NOREX and GR8_NOREX so
 // that they can be used for copying and storing h registers, which can't be
