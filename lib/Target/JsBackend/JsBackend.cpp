@@ -1426,14 +1426,6 @@ void JsWriter::printBasicBlock(BasicBlock *BB) {
 
 // Specific Instruction type classes...
 void JsWriter::visitReturnInst(ReturnInst &I) {
-  // If this is a struct return function, return the temporary struct.
-  bool isStructReturn = I.getParent()->getParent()->hasStructRetAttr();
-
-  if (isStructReturn) {
-    Out << "        return StructReturn;\n";
-    return;
-  }
-  
   if (I.getNumOperands() > 1) {
     Out << "  return [\n";
     for (unsigned i = 0, e = I.getNumOperands(); i != e; ++i) {
