@@ -79,6 +79,15 @@ void SplitAnalysis::analyzeUses() {
                << usingLoops_.size()  << " loops.\n");
 }
 
+void SplitAnalysis::print(const BlockPtrSet &B, raw_ostream &OS) const {
+  for (BlockPtrSet::const_iterator I = B.begin(), E = B.end(); I != E; ++I) {
+    unsigned count = usingBlocks_.lookup(*I);
+    OS << " BB#" << (*I)->getNumber();
+    if (count)
+      OS << '(' << count << ')';
+  }
+}
+
 // Get three sets of basic blocks surrounding a loop: Blocks inside the loop,
 // predecessor blocks, and exit blocks.
 void SplitAnalysis::getLoopBlocks(const MachineLoop *Loop, LoopBlocks &Blocks) {
@@ -105,6 +114,15 @@ void SplitAnalysis::getLoopBlocks(const MachineLoop *Loop, LoopBlocks &Blocks) {
   }
 }
 
+void SplitAnalysis::print(const LoopBlocks &B, raw_ostream &OS) const {
+  OS << "Loop:";
+  print(B.Loop, OS);
+  OS << ", preds:";
+  print(B.Preds, OS);
+  OS << ", exits:";
+  print(B.Exits, OS);
+}
+
 /// analyzeLoopPeripheralUse - Return an enum describing how curli_ is used in
 /// and around the Loop.
 SplitAnalysis::LoopPeripheralUse SplitAnalysis::
@@ -124,43 +142,40 @@ analyzeLoopPeripheralUse(const SplitAnalysis::LoopBlocks &Blocks) {
     if (Blocks.Loop.count(MBB))
       continue;
     // It must be an unrelated block.
+    DEBUG(dbgs() << ", outside: BB#" << MBB->getNumber());
     return OutsideLoop;
   }
   return use;
 }
 
 /// getCriticalExits - It may be necessary to partially break critical edges
-/// leaving the loop if an exit block has phi uses of curli. Collect the exit
-/// blocks that need special treatment into CriticalExits.
+/// leaving the loop if an exit block has predecessors from outside the loop
+/// periphery.
 void SplitAnalysis::getCriticalExits(const SplitAnalysis::LoopBlocks &Blocks,
                                      BlockPtrSet &CriticalExits) {
   CriticalExits.clear();
 
-  // A critical exit block contains a phi def of curli, and has a predecessor
-  // that is not in the loop nor a loop predecessor.
-  // For such an exit block, the edges carrying the new variable must be moved
-  // to a new pre-exit block.
+  // A critical exit block has curli line-in, and has a predecessor that is not
+  // in the loop nor a loop predecessor. For such an exit block, the edges
+  // carrying the new variable must be moved to a new pre-exit block.
   for (BlockPtrSet::iterator I = Blocks.Exits.begin(), E = Blocks.Exits.end();
        I != E; ++I) {
-    const MachineBasicBlock *Succ = *I;
-    SlotIndex SuccIdx = lis_.getMBBStartIdx(Succ);
-    VNInfo *SuccVNI = curli_->getVNInfoAt(SuccIdx);
+    const MachineBasicBlock *Exit = *I;
+    // A single-predecessor exit block is definitely not a critical edge.
+    if (Exit->pred_size() == 1)
+      continue;
     // This exit may not have curli live in at all. No need to split.
-    if (!SuccVNI)
+    if (!lis_.isLiveInToMBB(*curli_, Exit))
       continue;
-    // If this is not a PHI def, it is either using a value from before the
-    // loop, or a value defined inside the loop. Both are safe.
-    if (!SuccVNI->isPHIDef() || SuccVNI->def.getBaseIndex() != SuccIdx)
-      continue;
-    // This exit block does have a PHI. Does it also have a predecessor that is
-    // not a loop block or loop predecessor?
-    for (MachineBasicBlock::const_pred_iterator PI = Succ->pred_begin(),
-         PE = Succ->pred_end(); PI != PE; ++PI) {
+    // Does this exit block have a predecessor that is not a loop block or loop
+    // predecessor?
+    for (MachineBasicBlock::const_pred_iterator PI = Exit->pred_begin(),
+         PE = Exit->pred_end(); PI != PE; ++PI) {
       const MachineBasicBlock *Pred = *PI;
       if (Blocks.Loop.count(Pred) || Blocks.Preds.count(Pred))
         continue;
       // This is a critical exit block, and we need to split the exit edge.
-      CriticalExits.insert(Succ);
+      CriticalExits.insert(Exit);
       break;
     }
   }
@@ -223,6 +238,7 @@ const MachineLoop *SplitAnalysis::getBestSplitLoop() {
        E = usingLoops_.end(); I != E; ++I) {
     const MachineLoop *Loop = I->first;
     getLoopBlocks(Loop, Blocks);
+    DEBUG({ dbgs() << "  "; print(Blocks, dbgs()); });
 
     switch(analyzeLoopPeripheralUse(Blocks)) {
     case OutsideLoop:
@@ -235,19 +251,18 @@ const MachineLoop *SplitAnalysis::getBestSplitLoop() {
       // forever.
       // For safety, stick to splitting live ranges with uses outside the
       // periphery.
-      DEBUG(dbgs() << "  multiple peripheral uses in " << *Loop);
+      DEBUG(dbgs() << ": multiple peripheral uses\n");
       break;
     case ContainedInLoop:
-      DEBUG(dbgs() << "  contained in " << *Loop);
+      DEBUG(dbgs() << ": fully contained\n");
       continue;
     case SinglePeripheral:
-      DEBUG(dbgs() << "  single peripheral use in " << *Loop);
+      DEBUG(dbgs() << ": single peripheral use\n");
       continue;
     }
     // Will it be possible to split around this loop?
     getCriticalExits(Blocks, CriticalExits);
-    DEBUG(dbgs() << "  " << CriticalExits.size() << " critical exits from "
-                 << *Loop);
+    DEBUG(dbgs() << ": " << CriticalExits.size() << " critical exits\n");
     if (!canSplitCriticalExits(Blocks, CriticalExits))
       continue;
     // This is a possible split.
@@ -272,34 +287,6 @@ const MachineLoop *SplitAnalysis::getBestSplitLoop() {
   }
   DEBUG(dbgs() << "  getBestSplitLoop found " << *Best);
   return Best;
-}
-
-/// getMultiUseBlocks - if curli has more than one use in a basic block, it
-/// may be an advantage to split curli for the duration of the block.
-bool SplitAnalysis::getMultiUseBlocks(BlockPtrSet &Blocks) {
-  // If curli is local to one block, there is no point to splitting it.
-  if (usingBlocks_.size() <= 1)
-    return false;
-  // Add blocks with multiple uses.
-  for (BlockCountMap::iterator I = usingBlocks_.begin(), E = usingBlocks_.end();
-       I != E; ++I)
-    switch (I->second) {
-    case 0:
-    case 1:
-      continue;
-    case 2: {
-      // It doesn't pay to split a 2-instr block if it redefines curli.
-      VNInfo *VN1 = curli_->getVNInfoAt(lis_.getMBBStartIdx(I->first));
-      VNInfo *VN2 =
-        curli_->getVNInfoAt(lis_.getMBBEndIdx(I->first).getPrevIndex());
-      // live-in and live-out with a different value.
-      if (VN1 && VN2 && VN1 != VN2)
-        continue;
-    } // Fall through.
-    default:
-      Blocks.insert(I->first);
-    }
-  return !Blocks.empty();
 }
 
 //===----------------------------------------------------------------------===//
@@ -740,10 +727,10 @@ void SplitEditor::rewrite(unsigned reg) {
         break;
       }
     }
+    DEBUG(dbgs() << "  rewr BB#" << MI->getParent()->getNumber() << '\t'<< Idx);
     assert(LI && "No register was live at use");
     MO.setReg(LI->reg);
-    DEBUG(dbgs() << "  rewrite BB#" << MI->getParent()->getNumber() << '\t'
-                 << Idx << '\t' << *MI);
+    DEBUG(dbgs() << '\t' << *MI);
   }
 }
 
@@ -755,6 +742,8 @@ SplitEditor::addTruncSimpleRange(SlotIndex Start, SlotIndex End, VNInfo *VNI) {
   SmallVector<IIPair, 8> Iters;
   for (LiveRangeEdit::iterator LI = edit_.begin(), LE = edit_.end(); LI != LE;
        ++LI) {
+    if (*LI == dupli_.getLI())
+      continue;
     LiveInterval::const_iterator I = (*LI)->find(Start);
     LiveInterval::const_iterator E = (*LI)->end();
     if (I != E)
@@ -889,19 +878,7 @@ void SplitEditor::splitAroundLoop(const MachineLoop *Loop) {
   sa_.getLoopBlocks(Loop, Blocks);
 
   DEBUG({
-    dbgs() << "  splitAroundLoop";
-    for (SplitAnalysis::BlockPtrSet::iterator I = Blocks.Loop.begin(),
-         E = Blocks.Loop.end(); I != E; ++I)
-      dbgs() << " BB#" << (*I)->getNumber();
-    dbgs() << ", preds:";
-    for (SplitAnalysis::BlockPtrSet::iterator I = Blocks.Preds.begin(),
-         E = Blocks.Preds.end(); I != E; ++I)
-      dbgs() << " BB#" << (*I)->getNumber();
-    dbgs() << ", exits:";
-    for (SplitAnalysis::BlockPtrSet::iterator I = Blocks.Exits.begin(),
-         E = Blocks.Exits.end(); I != E; ++I)
-      dbgs() << " BB#" << (*I)->getNumber();
-    dbgs() << '\n';
+    dbgs() << "  splitAround"; sa_.print(Blocks, dbgs()); dbgs() << '\n';
   });
 
   // Break critical edges as needed.
@@ -940,6 +917,35 @@ void SplitEditor::splitAroundLoop(const MachineLoop *Loop) {
 //===----------------------------------------------------------------------===//
 //                            Single Block Splitting
 //===----------------------------------------------------------------------===//
+
+/// getMultiUseBlocks - if curli has more than one use in a basic block, it
+/// may be an advantage to split curli for the duration of the block.
+bool SplitAnalysis::getMultiUseBlocks(BlockPtrSet &Blocks) {
+  // If curli is local to one block, there is no point to splitting it.
+  if (usingBlocks_.size() <= 1)
+    return false;
+  // Add blocks with multiple uses.
+  for (BlockCountMap::iterator I = usingBlocks_.begin(), E = usingBlocks_.end();
+       I != E; ++I)
+    switch (I->second) {
+    case 0:
+    case 1:
+      continue;
+    case 2: {
+      // When there are only two uses and curli is both live in and live out,
+      // we don't really win anything by isolating the block since we would be
+      // inserting two copies.
+      // The remaing register would still have two uses in the block. (Unless it
+      // separates into disconnected components).
+      if (lis_.isLiveInToMBB(*curli_, I->first) &&
+          lis_.isLiveOutOfMBB(*curli_, I->first))
+        continue;
+    } // Fall through.
+    default:
+      Blocks.insert(I->first);
+    }
+  return !Blocks.empty();
+}
 
 /// splitSingleBlocks - Split curli into a separate live interval inside each
 /// basic block in Blocks.

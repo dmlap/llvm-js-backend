@@ -172,6 +172,8 @@ namespace {
       const { return 0; }
     unsigned getImmMinusOneOpValue(const MachineInstr &MI, unsigned Op)
       const { return 0; }
+    unsigned getBitfieldInvertedMaskOpValue(const MachineInstr &MI,
+                                            unsigned Op) const { return 0; }
 
     /// getMovi32Value - Return binary encoding of operand for movw/movt. If the
     /// machine operand requires relocation, record the relocation and return
@@ -503,7 +505,7 @@ void ARMCodeEmitter::emitConstPoolInstruction(const MachineInstr &MI) {
       emitGlobalAddress(GV, ARM::reloc_arm_absolute, isa<Function>(GV), false);
       emitWordLE(0);
     } else if (const ConstantInt *CI = dyn_cast<ConstantInt>(CV)) {
-      uint32_t Val = *(uint32_t*)CI->getValue().getRawData();
+      uint32_t Val = uint32_t(*CI->getValue().getRawData());
       emitWordLE(Val);
     } else if (const ConstantFP *CFP = dyn_cast<ConstantFP>(CV)) {
       if (CFP->getType()->isFloatTy())
@@ -988,7 +990,7 @@ void ARMCodeEmitter::emitLoadStoreInstruction(const MachineInstr &MI,
     return;
   }
 
-  // Set bit I(25), because this is not in immediate enconding.
+  // Set bit I(25), because this is not in immediate encoding.
   Binary |= 1 << ARMII::I_BitShift;
   assert(TargetRegisterInfo::isPhysicalRegister(MO2.getReg()));
   // Set bit[3:0] to the corresponding Rm register

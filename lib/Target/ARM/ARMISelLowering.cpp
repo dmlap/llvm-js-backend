@@ -59,13 +59,6 @@ EnableARMTailCalls("arm-tail-calls", cl::Hidden,
   cl::desc("Generate tail calls (TEMPORARY OPTION)."),
   cl::init(false));
 
-// This option should go away when Machine LICM is smart enough to hoist a
-// reg-to-reg VDUP.
-static cl::opt<bool>
-EnableARMVDUPsplat("arm-vdup-splat", cl::Hidden,
-  cl::desc("Generate VDUP for integer constant splats (TEMPORARY OPTION)."),
-  cl::init(false));
-
 static cl::opt<bool>
 EnableARMLongCalls("arm-long-calls", cl::Hidden,
   cl::desc("Generate calls via indirect call instructions"),
@@ -619,6 +612,7 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
   if (Subtarget->isTargetDarwin()) {
     setOperationAction(ISD::EH_SJLJ_SETJMP, MVT::i32, Custom);
     setOperationAction(ISD::EH_SJLJ_LONGJMP, MVT::Other, Custom);
+    setOperationAction(ISD::EH_SJLJ_DISPATCHSETUP, MVT::Other, Custom);
   }
 
   setOperationAction(ISD::SETCC,     MVT::i32, Expand);
@@ -762,6 +756,7 @@ const char *ARMTargetLowering::getTargetNodeName(unsigned Opcode) const {
 
   case ARMISD::EH_SJLJ_SETJMP: return "ARMISD::EH_SJLJ_SETJMP";
   case ARMISD::EH_SJLJ_LONGJMP:return "ARMISD::EH_SJLJ_LONGJMP";
+  case ARMISD::EH_SJLJ_DISPATCHSETUP:return "ARMISD::EH_SJLJ_DISPATCHSETUP";
 
   case ARMISD::TC_RETURN:     return "ARMISD::TC_RETURN";
 
@@ -960,23 +955,29 @@ CCAssignFn *ARMTargetLowering::CCAssignFnForNode(CallingConv::ID CC,
   switch (CC) {
   default:
     llvm_unreachable("Unsupported calling convention");
-  case CallingConv::C:
   case CallingConv::Fast:
+    if (Subtarget->hasVFP2() && !isVarArg) {
+      if (!Subtarget->isAAPCS_ABI())
+        return (Return ? RetFastCC_ARM_APCS : FastCC_ARM_APCS);
+      // For AAPCS ABI targets, just use VFP variant of the calling convention.
+      return (Return ? RetCC_ARM_AAPCS_VFP : CC_ARM_AAPCS_VFP);
+    }
+    // Fallthrough
+  case CallingConv::C: {
     // Use target triple & subtarget features to do actual dispatch.
-    if (Subtarget->isAAPCS_ABI()) {
-      if (Subtarget->hasVFP2() &&
-          FloatABIType == FloatABI::Hard && !isVarArg)
-        return (Return ? RetCC_ARM_AAPCS_VFP: CC_ARM_AAPCS_VFP);
-      else
-        return (Return ? RetCC_ARM_AAPCS: CC_ARM_AAPCS);
-    } else
-        return (Return ? RetCC_ARM_APCS: CC_ARM_APCS);
+    if (!Subtarget->isAAPCS_ABI())
+      return (Return ? RetCC_ARM_APCS : CC_ARM_APCS);
+    else if (Subtarget->hasVFP2() &&
+             FloatABIType == FloatABI::Hard && !isVarArg)
+      return (Return ? RetCC_ARM_AAPCS_VFP : CC_ARM_AAPCS_VFP);
+    return (Return ? RetCC_ARM_AAPCS : CC_ARM_AAPCS);
+  }
   case CallingConv::ARM_AAPCS_VFP:
-    return (Return ? RetCC_ARM_AAPCS_VFP: CC_ARM_AAPCS_VFP);
+    return (Return ? RetCC_ARM_AAPCS_VFP : CC_ARM_AAPCS_VFP);
   case CallingConv::ARM_AAPCS:
-    return (Return ? RetCC_ARM_AAPCS: CC_ARM_AAPCS);
+    return (Return ? RetCC_ARM_AAPCS : CC_ARM_AAPCS);
   case CallingConv::ARM_APCS:
-    return (Return ? RetCC_ARM_APCS: CC_ARM_APCS);
+    return (Return ? RetCC_ARM_APCS : CC_ARM_APCS);
   }
 }
 
@@ -1952,6 +1953,14 @@ SDValue ARMTargetLowering::LowerGLOBAL_OFFSET_TABLE(SDValue Op,
                                false, false, 0);
   SDValue PICLabel = DAG.getConstant(ARMPCLabelIndex, MVT::i32);
   return DAG.getNode(ARMISD::PIC_ADD, dl, PtrVT, Result, PICLabel);
+}
+
+SDValue
+ARMTargetLowering::LowerEH_SJLJ_DISPATCHSETUP(SDValue Op, SelectionDAG &DAG)
+  const {
+  DebugLoc dl = Op.getDebugLoc();
+  return DAG.getNode(ARMISD::EH_SJLJ_DISPATCHSETUP, dl, MVT::Other,
+                     Op.getOperand(0), Op.getOperand(1));
 }
 
 SDValue
@@ -3442,26 +3451,25 @@ static SDValue LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG,
 
   unsigned EltSize = VT.getVectorElementType().getSizeInBits();
 
-  if (EnableARMVDUPsplat) {
-    // Use VDUP for non-constant splats.  For f32 constant splats, reduce to
-    // i32 and try again.
-    if (usesOnlyOneValue && EltSize <= 32) {
-      if (!isConstant)
-        return DAG.getNode(ARMISD::VDUP, dl, VT, Value);
-      if (VT.getVectorElementType().isFloatingPoint()) {
-        SmallVector<SDValue, 8> Ops;
-        for (unsigned i = 0; i < NumElts; ++i)
-          Ops.push_back(DAG.getNode(ISD::BIT_CONVERT, dl, MVT::i32,
-                                    Op.getOperand(i)));
-        SDValue Val = DAG.getNode(ISD::BUILD_VECTOR, dl, MVT::v4i32, &Ops[0],
-                                  NumElts);
-        return DAG.getNode(ISD::BIT_CONVERT, dl, VT,
-                           LowerBUILD_VECTOR(Val, DAG, ST));
-      }
-      SDValue Val = IsSingleInstrConstant(Value, DAG, ST, dl);
+  // Use VDUP for non-constant splats.  For f32 constant splats, reduce to
+  // i32 and try again.
+  if (usesOnlyOneValue && EltSize <= 32) {
+    if (!isConstant)
+      return DAG.getNode(ARMISD::VDUP, dl, VT, Value);
+    if (VT.getVectorElementType().isFloatingPoint()) {
+      SmallVector<SDValue, 8> Ops;
+      for (unsigned i = 0; i < NumElts; ++i)
+        Ops.push_back(DAG.getNode(ISD::BIT_CONVERT, dl, MVT::i32,
+                                  Op.getOperand(i)));
+      SDValue Val = DAG.getNode(ISD::BUILD_VECTOR, dl, MVT::v4i32, &Ops[0],
+                                NumElts);
+      Val = LowerBUILD_VECTOR(Val, DAG, ST);
       if (Val.getNode())
-        return DAG.getNode(ARMISD::VDUP, dl, VT, Val);
+        return DAG.getNode(ISD::BIT_CONVERT, dl, VT, Val);
     }
+    SDValue Val = IsSingleInstrConstant(Value, DAG, ST, dl);
+    if (Val.getNode())
+      return DAG.getNode(ARMISD::VDUP, dl, VT, Val);
   }
 
   // If all elements are constants and the case above didn't get hit, fall back
@@ -3469,12 +3477,6 @@ static SDValue LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG,
   // pool.
   if (isConstant)
     return SDValue();
-
-  if (!EnableARMVDUPsplat) {
-    // Use VDUP for non-constant splats.
-    if (usesOnlyOneValue && EltSize <= 32)
-      return DAG.getNode(ARMISD::VDUP, dl, VT, Value);
-  }
 
   // Vectors with 32- or 64-bit elements can be built by directly assigning
   // the subregisters.  Lower it to an ARMISD::BUILD_VECTOR so the operands
@@ -3828,6 +3830,7 @@ SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::GLOBAL_OFFSET_TABLE: return LowerGLOBAL_OFFSET_TABLE(Op, DAG);
   case ISD::EH_SJLJ_SETJMP: return LowerEH_SJLJ_SETJMP(Op, DAG);
   case ISD::EH_SJLJ_LONGJMP: return LowerEH_SJLJ_LONGJMP(Op, DAG);
+  case ISD::EH_SJLJ_DISPATCHSETUP: return LowerEH_SJLJ_DISPATCHSETUP(Op, DAG);
   case ISD::INTRINSIC_WO_CHAIN: return LowerINTRINSIC_WO_CHAIN(Op, DAG,
                                                                Subtarget);
   case ISD::BIT_CONVERT:   return ExpandBIT_CONVERT(Op.getNode(), DAG);

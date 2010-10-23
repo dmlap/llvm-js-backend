@@ -341,6 +341,7 @@ public:
   /// that we can remove a "comparison with zero".
   virtual bool OptimizeCompareInstr(MachineInstr *CmpInstr, unsigned SrcReg,
                                     int CmpMask, int CmpValue,
+                                    const MachineRegisterInfo *MRI,
                                     MachineBasicBlock::iterator &MII) const;
 
   virtual unsigned getNumMicroOps(const MachineInstr *MI,
@@ -376,6 +377,11 @@ private:
                         unsigned DefIdx, unsigned DefAlign,
                         const TargetInstrDesc &UseTID,
                         unsigned UseIdx, unsigned UseAlign) const;
+
+  bool hasHighOperandLatency(const InstrItineraryData *ItinData,
+                             const MachineRegisterInfo *MRI,
+                             const MachineInstr *DefMI, unsigned DefIdx,
+                             const MachineInstr *UseMI, unsigned UseIdx) const;
 };
 
 static inline
@@ -441,6 +447,12 @@ void emitT2RegPlusImmediate(MachineBasicBlock &MBB,
                             unsigned DestReg, unsigned BaseReg, int NumBytes,
                             ARMCC::CondCodes Pred, unsigned PredReg,
                             const ARMBaseInstrInfo &TII);
+void emitThumbRegPlusImmediate(MachineBasicBlock &MBB,
+                               MachineBasicBlock::iterator &MBBI,
+                               unsigned DestReg, unsigned BaseReg,
+                               int NumBytes, const TargetInstrInfo &TII,
+                               const ARMBaseRegisterInfo& MRI,
+                               DebugLoc dl);
 
 
 /// rewriteARMFrameIndex / rewriteT2FrameIndex -

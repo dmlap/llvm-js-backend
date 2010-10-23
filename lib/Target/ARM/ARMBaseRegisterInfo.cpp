@@ -661,8 +661,9 @@ ARMBaseRegisterInfo::estimateRSStackSizeLimit(MachineFunction &MF) const {
           if (hasFP(MF) && AFI->hasStackFrame())
             Limit = std::min(Limit, (1U << 8) - 1);
           break;
+        case ARMII::AddrMode4:
         case ARMII::AddrMode6:
-          // Addressing mode 6 (load/store) instructions can't encode an
+          // Addressing modes 4 & 6 (load/store) instructions can't encode an
           // immediate offset for stack references.
           return 0;
         default:
@@ -826,7 +827,7 @@ ARMBaseRegisterInfo::processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
     }
 
     // If stack and double are 8-byte aligned and we are spilling an odd number
-    // of GPRs. Spill one extra callee save GPR so we won't have to pad between
+    // of GPRs, spill one extra callee save GPR so we won't have to pad between
     // the integer and double callee save areas.
     unsigned TargetAlign = MF.getTarget().getFrameInfo()->getStackAlignment();
     if (TargetAlign == 8 && (NumGPRSpills & 1)) {
@@ -952,8 +953,16 @@ ARMBaseRegisterInfo::ResolveFrameIndexReference(const MachineFunction &MF,
       return FPOffset;
     } else if (MFI->hasVarSizedObjects()) {
       assert(hasBasePointer(MF) && "missing base pointer!");
-      // Use the base register since we have it.
-      FrameReg = BasePtr;
+      // Try to use the frame pointer if we can, else use the base pointer
+      // since it's available. This is handy for the emergency spill slot, in
+      // particular.
+      if (AFI->isThumb2Function()) {
+        if (FPOffset >= -255 && FPOffset < 0) {
+          FrameReg = getFrameRegister(MF);
+          return FPOffset;
+        }
+      } else
+        FrameReg = BasePtr;
     } else if (AFI->isThumb2Function()) {
       // In Thumb2 mode, the negative offset is very limited. Try to avoid
       // out of range references.
@@ -1663,7 +1672,7 @@ emitPrologue(MachineFunction &MF) const {
 
   // Determine the sizes of each callee-save spill areas and record which frame
   // belongs to which callee-save spill areas.
-  unsigned GPRCSSize = 0/*, GPRCS2Size = 0*/, DPRCSSize = 0;
+  unsigned GPRCSSize = 0, DPRCSSize = 0;
   int FramePtrSpillFI = 0;
 
   // Allocate the vararg register save area. This is not counted in NumBytes.

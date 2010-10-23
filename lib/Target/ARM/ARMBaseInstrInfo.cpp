@@ -490,7 +490,7 @@ bool ARMBaseInstrInfo::isPredicable(MachineInstr *MI) const {
 }
 
 /// FIXME: Works around a gcc miscompilation with -fstrict-aliasing.
-DISABLE_INLINE
+LLVM_ATTRIBUTE_NOINLINE
 static unsigned getNumJTEntries(const std::vector<MachineJumpTableEntry> &JT,
                                 unsigned JTI);
 static unsigned getNumJTEntries(const std::vector<MachineJumpTableEntry> &JT,
@@ -1490,13 +1490,13 @@ static bool isSuitableForMask(MachineInstr *&MI, unsigned SrcReg,
 /// iterator *only* if a transformation took place.
 bool ARMBaseInstrInfo::
 OptimizeCompareInstr(MachineInstr *CmpInstr, unsigned SrcReg, int CmpMask,
-                     int CmpValue, MachineBasicBlock::iterator &MII) const {
+                     int CmpValue, const MachineRegisterInfo *MRI,
+                     MachineBasicBlock::iterator &MII) const {
   if (CmpValue != 0)
     return false;
 
-  MachineRegisterInfo &MRI = CmpInstr->getParent()->getParent()->getRegInfo();
-  MachineRegisterInfo::def_iterator DI = MRI.def_begin(SrcReg);
-  if (llvm::next(DI) != MRI.def_end())
+  MachineRegisterInfo::def_iterator DI = MRI->def_begin(SrcReg);
+  if (llvm::next(DI) != MRI->def_end())
     // Only support one definition.
     return false;
 
@@ -1506,8 +1506,8 @@ OptimizeCompareInstr(MachineInstr *CmpInstr, unsigned SrcReg, int CmpMask,
   if (CmpMask != ~0) {
     if (!isSuitableForMask(MI, SrcReg, CmpMask, false)) {
       MI = 0;
-      for (MachineRegisterInfo::use_iterator UI = MRI.use_begin(SrcReg),
-           UE = MRI.use_end(); UI != UE; ++UI) {
+      for (MachineRegisterInfo::use_iterator UI = MRI->use_begin(SrcReg),
+           UE = MRI->use_end(); UI != UE; ++UI) {
         if (UI->getParent() != CmpInstr->getParent()) continue;
         MachineInstr *PotentialAND = &*UI;
         if (!isSuitableForMask(PotentialAND, SrcReg, CmpMask, true))
@@ -1892,7 +1892,13 @@ ARMBaseInstrInfo::getOperandLatency(const InstrItineraryData *ItinData,
   if (!ItinData || ItinData->isEmpty())
     return DefTID.mayLoad() ? 3 : 1;
 
+
   const TargetInstrDesc &UseTID = UseMI->getDesc();
+  const MachineOperand &DefMO = DefMI->getOperand(DefIdx);
+  if (DefMO.getReg() == ARM::CPSR && UseTID.isBranch())
+    // CPSR set and branch can be paired in the same cycle.
+    return 0;
+
   unsigned DefAlign = DefMI->hasOneMemOperand()
     ? (*DefMI->memoperands_begin())->getAlignment() : 0;
   unsigned UseAlign = UseMI->hasOneMemOperand()
@@ -1924,4 +1930,24 @@ ARMBaseInstrInfo::getOperandLatency(const InstrItineraryData *ItinData,
     ? (*UseMN->memoperands_begin())->getAlignment() : 0;
   return getOperandLatency(ItinData, DefTID, DefIdx, DefAlign,
                            UseTID, UseIdx, UseAlign);
+}
+
+bool ARMBaseInstrInfo::
+hasHighOperandLatency(const InstrItineraryData *ItinData,
+                      const MachineRegisterInfo *MRI,
+                      const MachineInstr *DefMI, unsigned DefIdx,
+                      const MachineInstr *UseMI, unsigned UseIdx) const {
+  unsigned DDomain = DefMI->getDesc().TSFlags & ARMII::DomainMask;
+  unsigned UDomain = UseMI->getDesc().TSFlags & ARMII::DomainMask;
+  if (Subtarget.isCortexA8() &&
+      (DDomain == ARMII::DomainVFP || UDomain == ARMII::DomainVFP))
+    // CortexA8 VFP instructions are not pipelined.
+    return true;
+
+  // Hoist VFP / NEON instructions with 4 or higher latency.
+  int Latency = getOperandLatency(ItinData, DefMI, DefIdx, UseMI, UseIdx);
+  if (Latency <= 3)
+    return false;
+  return DDomain == ARMII::DomainVFP || DDomain == ARMII::DomainNEON ||
+         UDomain == ARMII::DomainVFP || UDomain == ARMII::DomainNEON;
 }

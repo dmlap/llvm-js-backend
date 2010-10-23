@@ -2934,6 +2934,7 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
   bool isVolatile = I.isVolatile();
   bool isNonTemporal = I.getMetadata("nontemporal") != 0;
   unsigned Alignment = I.getAlignment();
+  const MDNode *TBAAInfo = I.getMetadata(LLVMContext::MD_tbaa);
 
   SmallVector<EVT, 4> ValueVTs;
   SmallVector<uint64_t, 4> Offsets;
@@ -2947,7 +2948,8 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
   if (I.isVolatile())
     // Serialize volatile loads with other side effects.
     Root = getRoot();
-  else if (AA->pointsToConstantMemory(SV)) {
+  else if (AA->pointsToConstantMemory(
+             AliasAnalysis::Location(SV, AA->getTypeStoreSize(Ty), TBAAInfo))) {
     // Do not serialize (non-volatile) loads of constant memory with anything.
     Root = DAG.getEntryNode();
     ConstantMemory = true;
@@ -2965,7 +2967,7 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
                             DAG.getConstant(Offsets[i], PtrVT));
     SDValue L = DAG.getLoad(ValueVTs[i], getCurDebugLoc(), Root,
                             A, MachinePointerInfo(SV, Offsets[i]), isVolatile,
-                            isNonTemporal, Alignment);
+                            isNonTemporal, Alignment, TBAAInfo);
 
     Values[i] = L;
     Chains[i] = L.getValue(1);
@@ -3008,6 +3010,7 @@ void SelectionDAGBuilder::visitStore(const StoreInst &I) {
   bool isVolatile = I.isVolatile();
   bool isNonTemporal = I.getMetadata("nontemporal") != 0;
   unsigned Alignment = I.getAlignment();
+  const MDNode *TBAAInfo = I.getMetadata(LLVMContext::MD_tbaa);
 
   for (unsigned i = 0; i != NumValues; ++i) {
     SDValue Add = DAG.getNode(ISD::ADD, getCurDebugLoc(), PtrVT, Ptr,
@@ -3015,7 +3018,7 @@ void SelectionDAGBuilder::visitStore(const StoreInst &I) {
     Chains[i] = DAG.getStore(Root, getCurDebugLoc(),
                              SDValue(Src.getNode(), Src.getResNo() + i),
                              Add, MachinePointerInfo(PtrV, Offsets[i]),
-                             isVolatile, isNonTemporal, Alignment);
+                             isVolatile, isNonTemporal, Alignment, TBAAInfo);
   }
 
   DAG.setRoot(DAG.getNode(ISD::TokenFactor, getCurDebugLoc(),
@@ -4319,8 +4322,12 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
   }
   case Intrinsic::eh_sjlj_longjmp: {
     DAG.setRoot(DAG.getNode(ISD::EH_SJLJ_LONGJMP, dl, MVT::Other,
-                            getRoot(),
-                            getValue(I.getArgOperand(0))));
+                            getRoot(), getValue(I.getArgOperand(0))));
+    return 0;
+  }
+  case Intrinsic::eh_sjlj_dispatch_setup: {
+    DAG.setRoot(DAG.getNode(ISD::EH_SJLJ_DISPATCHSETUP, dl, MVT::Other,
+                            getRoot(), getValue(I.getArgOperand(0))));
     return 0;
   }
 
@@ -5003,6 +5010,26 @@ void SelectionDAGBuilder::visitCall(const CallInst &I) {
     return;
   }
 
+  // See if any floating point values are being passed to this function. This is
+  // used to emit an undefined reference to fltused on Windows.
+  const FunctionType *FT =
+    cast<FunctionType>(I.getCalledValue()->getType()->getContainedType(0));
+  MachineModuleInfo &MMI = DAG.getMachineFunction().getMMI();
+  if (FT->isVarArg() &&
+      !MMI.callsExternalVAFunctionWithFloatingPointArguments()) {
+    for (unsigned i = 0, e = I.getNumArgOperands(); i != e; ++i) {
+      const Type* T = I.getArgOperand(i)->getType();
+      for (po_iterator<const Type*> i = po_begin(T),
+                                    e = po_end(T);
+                                    i != e; ++i) {
+        if (i->isFloatingPointTy()) {
+          MMI.setCallsExternalVAFunctionWithFloatingPointArguments(true);
+          break;
+        }
+      }
+    }
+  }
+
   const char *RenameFn = 0;
   if (Function *F = I.getCalledFunction()) {
     if (F->isDeclaration()) {
@@ -5017,25 +5044,6 @@ void SelectionDAGBuilder::visitCall(const CallInst &I) {
         RenameFn = visitIntrinsicCall(I, IID);
         if (!RenameFn)
           return;
-      }
-    }
-
-    // See if any floating point values are being passed to this external
-    // function. This is used to emit an undefined reference to fltused on
-    // Windows.
-    if (!F->hasLocalLinkage() && F->hasName()) {
-      MachineModuleInfo &MMI = DAG.getMachineFunction().getMMI();
-      for (unsigned i = 0, e = I.getNumArgOperands(); i != e &&
-                  !MMI.callsExternalFunctionWithFloatingPointArguments(); ++i) {
-        const Type* T = I.getArgOperand(i)->getType();
-        for (po_iterator<const Type*> i = po_begin(T),
-                                      e = po_end(T);
-                                      i != e; ++i) {
-          if (i->isFloatingPointTy()) {
-            MMI.setCallsExternalFunctionWithFloatingPointArguments(true);
-            break;
-          }
-        }
       }
     }
 

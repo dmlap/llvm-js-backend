@@ -1,4 +1,4 @@
-##===- lib/Target/MBlaze/AsmPrinter/Makefile ---------------*- Makefile -*-===##
+##===- llvmc/examples/mcc16/Makefile -----------------------*- Makefile -*-===##
 #
 #                     The LLVM Compiler Infrastructure
 #
@@ -8,10 +8,8 @@
 ##===----------------------------------------------------------------------===##
 
 LEVEL = ../../../..
-LIBRARYNAME = LLVMMBlazeAsmPrinter
 
-# Hack: we need to include 'main' MBlaze target directory to grab
-# private headers
-CPP.Flags += -I$(PROJ_OBJ_DIR)/.. -I$(PROJ_SRC_DIR)/..
+LLVMC_BASED_DRIVER = mcc16
+BUILT_SOURCES = PIC16.inc
 
 include $(LEVEL)/Makefile.common

@@ -304,7 +304,9 @@ namespace {
     bool runOnFunction(Function &F);
   public:
     static char ID; // Pass identification, replacement for typeid
-    MemCpyOpt() : FunctionPass(ID) {}
+    MemCpyOpt() : FunctionPass(ID) {
+      initializeMemCpyOptPass(*PassRegistry::getPassRegistry());
+    }
 
   private:
     // This transformation requires dominator postdominator info
@@ -770,7 +772,7 @@ bool MemCpyOpt::processMemMove(MemMoveInst *M) {
 
   // If the memmove is a constant size, use it for the alias query, this allows
   // us to optimize things like: memmove(P, P+64, 64);
-  uint64_t MemMoveSize = ~0ULL;
+  uint64_t MemMoveSize = AliasAnalysis::UnknownSize;
   if (ConstantInt *Len = dyn_cast<ConstantInt>(M->getLength()))
     MemMoveSize = Len->getZExtValue();
   

@@ -20,6 +20,7 @@
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MachObjectWriter.h"
+#include "llvm/Support/ELF.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetRegistry.h"
@@ -71,6 +72,11 @@ static unsigned getRelaxedOpcode(unsigned Op) {
   switch (Op) {
   default:
     return Op;
+
+  // This is used on i386 with things like addl $foo, %ebx
+  // FIXME: Should the other *i8 instructions be here too? If not, it might
+  // be better to just select X86::ADD32ri instead of X86::ADD32ri8.
+  case X86::ADD32ri8: return X86::ADD32ri;
 
   case X86::JAE_1: return X86::JAE_4;
   case X86::JA_1:  return X86::JA_4;
@@ -223,7 +229,7 @@ public:
 
   MCObjectWriter *createObjectWriter(raw_ostream &OS) const {
     return new ELFObjectWriter(OS, /*Is64Bit=*/false,
-                               OSType,
+                               OSType, ELF::EM_386,
                                /*IsLittleEndian=*/true,
                                /*HasRelocationAddend=*/false);
   }
@@ -240,7 +246,7 @@ public:
 
   MCObjectWriter *createObjectWriter(raw_ostream &OS) const {
     return new ELFObjectWriter(OS, /*Is64Bit=*/true,
-                               OSType,
+                               OSType, ELF::EM_X86_64,
                                /*IsLittleEndian=*/true,
                                /*HasRelocationAddend=*/true);
   }

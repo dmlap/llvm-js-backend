@@ -58,6 +58,8 @@ def SDT_ARMEH_SJLJ_Setjmp : SDTypeProfile<1, 2, [SDTCisInt<0>, SDTCisPtrTy<1>,
                                                  SDTCisInt<2>]>;
 def SDT_ARMEH_SJLJ_Longjmp: SDTypeProfile<0, 2, [SDTCisPtrTy<0>, SDTCisInt<1>]>;
 
+def SDT_ARMEH_SJLJ_DispatchSetup: SDTypeProfile<0, 1, [SDTCisPtrTy<0>]>;
+
 def SDT_ARMMEMBARRIER     : SDTypeProfile<0, 0, []>;
 def SDT_ARMSYNCBARRIER    : SDTypeProfile<0, 0, []>;
 def SDT_ARMMEMBARRIERMCR  : SDTypeProfile<0, 1, [SDTCisInt<0>]>;
@@ -122,7 +124,10 @@ def ARMthread_pointer: SDNode<"ARMISD::THREAD_POINTER", SDT_ARMThreadPointer>;
 def ARMeh_sjlj_setjmp: SDNode<"ARMISD::EH_SJLJ_SETJMP",
                                SDT_ARMEH_SJLJ_Setjmp, [SDNPHasChain]>;
 def ARMeh_sjlj_longjmp: SDNode<"ARMISD::EH_SJLJ_LONGJMP",
-                                SDT_ARMEH_SJLJ_Longjmp, [SDNPHasChain]>;
+                               SDT_ARMEH_SJLJ_Longjmp, [SDNPHasChain]>;
+def ARMeh_sjlj_dispatchsetup: SDNode<"ARMISD::EH_SJLJ_DISPATCHSETUP",
+                               SDT_ARMEH_SJLJ_DispatchSetup, [SDNPHasChain]>;
+
 
 def ARMMemBarrier     : SDNode<"ARMISD::MEMBARRIER", SDT_ARMMEMBARRIER,
                                [SDNPHasChain]>;
@@ -135,7 +140,7 @@ def ARMSyncBarrierMCR : SDNode<"ARMISD::SYNCBARRIER", SDT_ARMMEMBARRIERMCR,
 
 def ARMrbit          : SDNode<"ARMISD::RBIT", SDTIntUnaryOp>;
 
-def ARMtcret         : SDNode<"ARMISD::TC_RETURN", SDT_ARMTCRET, 
+def ARMtcret         : SDNode<"ARMISD::TC_RETURN", SDT_ARMTCRET,
                         [SDNPHasChain,  SDNPOptInFlag, SDNPVariadic]>;
 
 
@@ -227,6 +232,7 @@ def bf_inv_mask_imm : Operand<i32>,
                       PatLeaf<(imm), [{
   return ARM::isBitFieldInvertedMask(N->getZExtValue());
 }] > {
+  string EncoderMethod = "getBitfieldInvertedMaskOpValue";
   let PrintMethod = "printBitfieldInvMaskImmOperand";
 }
 
@@ -955,7 +961,7 @@ def DBG : AI<(outs), (ins i32imm:$opt), MiscFrm, NoItinerary, "dbg", "\t$opt",
 
 // A5.4 Permanently UNDEFINED instructions.
 let isBarrier = 1, isTerminator = 1 in
-def TRAP : AXI<(outs), (ins), MiscFrm, NoItinerary, 
+def TRAP : AXI<(outs), (ins), MiscFrm, NoItinerary,
                "trap", [(trap)]>,
            Requires<[IsARM]> {
   let Inst{27-25} = 0b011;
@@ -1044,7 +1050,7 @@ let isReturn = 1, isTerminator = 1, isBarrier = 1 in {
   }
 
   // ARMV4 only
-  def MOVPCLR : AI<(outs), (ins), BrMiscFrm, IIC_Br, 
+  def MOVPCLR : AI<(outs), (ins), BrMiscFrm, IIC_Br,
                   "mov", "\tpc, lr", [(ARMretflag)]>,
                Requires<[IsARM, NoV4T]> {
     let Inst{27-0} = 0b0001101000001111000000001110;
@@ -1632,7 +1638,7 @@ def MOVr : AsI1<0b1101, (outs GPR:$Rd), (ins GPR:$Rm), DPFrm, IIC_iMOVr,
 
 // A version for the smaller set of tail call registers.
 let neverHasSideEffects = 1 in
-def MOVr_TC : AsI1<0b1101, (outs tcGPR:$Rd), (ins tcGPR:$Rm), DPFrm, 
+def MOVr_TC : AsI1<0b1101, (outs tcGPR:$Rd), (ins tcGPR:$Rm), DPFrm,
                 IIC_iMOVr, "mov", "\t$Rd, $Rm", []>, UnaryDP {
   bits<4> Rd;
   bits<4> Rm;
@@ -2059,50 +2065,94 @@ def UHSUB8  : AAI<0b01100111, 0b11111111, "uhsub8">;
 
 // Unsigned Sum of Absolute Differences [and Accumulate] -- for disassembly only
 
-def USAD8  : AI<(outs GPR:$dst), (ins GPR:$a, GPR:$b),
+def USAD8  : AI<(outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm),
                 MulFrm /* for convenience */, NoItinerary, "usad8",
-                "\t$dst, $a, $b", []>,
+                "\t$Rd, $Rn, $Rm", []>,
              Requires<[IsARM, HasV6]> {
+  bits<4> Rd;
+  bits<4> Rn;
+  bits<4> Rm;
   let Inst{27-20} = 0b01111000;
   let Inst{15-12} = 0b1111;
   let Inst{7-4} = 0b0001;
+  let Inst{19-16} = Rd;
+  let Inst{11-8} = Rm;
+  let Inst{3-0} = Rn;
 }
-def USADA8 : AI<(outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$acc),
+def USADA8 : AI<(outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
                 MulFrm /* for convenience */, NoItinerary, "usada8",
-                "\t$dst, $a, $b, $acc", []>,
+                "\t$Rd, $Rn, $Rm, $Ra", []>,
              Requires<[IsARM, HasV6]> {
+  bits<4> Rd;
+  bits<4> Rn;
+  bits<4> Rm;
+  bits<4> Ra;
   let Inst{27-20} = 0b01111000;
   let Inst{7-4} = 0b0001;
+  let Inst{19-16} = Rd;
+  let Inst{15-12} = Ra;
+  let Inst{11-8} = Rm;
+  let Inst{3-0} = Rn;
 }
 
 // Signed/Unsigned saturate -- for disassembly only
 
-def SSAT : AI<(outs GPR:$dst), (ins i32imm:$bit_pos, GPR:$a, shift_imm:$sh),
-              SatFrm, NoItinerary, "ssat", "\t$dst, $bit_pos, $a$sh",
+def SSAT : AI<(outs GPR:$Rd), (ins i32imm:$sat_imm, GPR:$a, shift_imm:$sh),
+              SatFrm, NoItinerary, "ssat", "\t$Rd, $sat_imm, $a$sh",
               [/* For disassembly only; pattern left blank */]> {
+  bits<4> Rd;
+  bits<5> sat_imm;
+  bits<4> Rn;
+  bits<8> sh;
   let Inst{27-21} = 0b0110101;
   let Inst{5-4} = 0b01;
+  let Inst{20-16} = sat_imm;
+  let Inst{15-12} = Rd;
+  let Inst{11-7} = sh{7-3};
+  let Inst{6} = sh{0};
+  let Inst{3-0} = Rn;
 }
 
-def SSAT16 : AI<(outs GPR:$dst), (ins i32imm:$bit_pos, GPR:$a), SatFrm,
-                NoItinerary, "ssat16", "\t$dst, $bit_pos, $a",
+def SSAT16 : AI<(outs GPR:$Rd), (ins i32imm:$sat_imm, GPR:$Rn), SatFrm,
+                NoItinerary, "ssat16", "\t$Rd, $sat_imm, $Rn",
                 [/* For disassembly only; pattern left blank */]> {
+  bits<4> Rd;
+  bits<4> sat_imm;
+  bits<4> Rn;
   let Inst{27-20} = 0b01101010;
-  let Inst{7-4} = 0b0011;
+  let Inst{11-4} = 0b11110011;
+  let Inst{15-12} = Rd;
+  let Inst{19-16} = sat_imm;
+  let Inst{3-0} = Rn;
 }
 
-def USAT : AI<(outs GPR:$dst), (ins i32imm:$bit_pos, GPR:$a, shift_imm:$sh),
-              SatFrm, NoItinerary, "usat", "\t$dst, $bit_pos, $a$sh",
+def USAT : AI<(outs GPR:$Rd), (ins i32imm:$sat_imm, GPR:$a, shift_imm:$sh),
+              SatFrm, NoItinerary, "usat", "\t$Rd, $sat_imm, $a$sh",
               [/* For disassembly only; pattern left blank */]> {
+  bits<4> Rd;
+  bits<5> sat_imm;
+  bits<4> Rn;
+  bits<8> sh;
   let Inst{27-21} = 0b0110111;
   let Inst{5-4} = 0b01;
+  let Inst{15-12} = Rd;
+  let Inst{11-7} = sh{7-3};
+  let Inst{6} = sh{0};
+  let Inst{20-16} = sat_imm;
+  let Inst{3-0} = Rn;
 }
 
-def USAT16 : AI<(outs GPR:$dst), (ins i32imm:$bit_pos, GPR:$a), SatFrm,
-                NoItinerary, "usat16", "\t$dst, $bit_pos, $a",
+def USAT16 : AI<(outs GPR:$Rd), (ins i32imm:$sat_imm, GPR:$a), SatFrm,
+                NoItinerary, "usat16", "\t$Rd, $sat_imm, $a",
                 [/* For disassembly only; pattern left blank */]> {
+  bits<4> Rd;
+  bits<4> sat_imm;
+  bits<4> Rn;
   let Inst{27-20} = 0b01101110;
-  let Inst{7-4} = 0b0011;
+  let Inst{11-4} = 0b11110011;
+  let Inst{15-12} = Rd;
+  let Inst{19-16} = sat_imm;
+  let Inst{3-0} = Rn;
 }
 
 def : ARMV6Pat<(int_arm_ssat GPR:$a, imm:$pos), (SSAT imm:$pos, GPR:$a, 0)>;
@@ -2125,42 +2175,71 @@ defm BIC   : AsI1_bin_irs<0b1110, "bic",
                           IIC_iBITi, IIC_iBITr, IIC_iBITsr,
                           BinOpFrag<(and node:$LHS, (not node:$RHS))>>;
 
-def BFC    : I<(outs GPR:$dst), (ins GPR:$src, bf_inv_mask_imm:$imm),
+def BFC    : I<(outs GPR:$Rd), (ins GPR:$src, bf_inv_mask_imm:$imm),
                AddrMode1, Size4Bytes, IndexModeNone, DPFrm, IIC_iUNAsi,
-               "bfc", "\t$dst, $imm", "$src = $dst",
-               [(set GPR:$dst, (and GPR:$src, bf_inv_mask_imm:$imm))]>,
+               "bfc", "\t$Rd, $imm", "$src = $Rd",
+               [(set GPR:$Rd, (and GPR:$src, bf_inv_mask_imm:$imm))]>,
                Requires<[IsARM, HasV6T2]> {
+  bits<4> Rd;
+  bits<10> imm;
   let Inst{27-21} = 0b0111110;
   let Inst{6-0}   = 0b0011111;
+  let Inst{15-12} = Rd;
+  let Inst{11-7}  = imm{4-0}; // lsb
+  let Inst{20-16} = imm{9-5}; // width
 }
 
 // A8.6.18  BFI - Bitfield insert (Encoding A1)
-def BFI    : I<(outs GPR:$dst), (ins GPR:$src, GPR:$val, bf_inv_mask_imm:$imm),
+def BFI    : I<(outs GPR:$Rd), (ins GPR:$src, GPR:$Rn, bf_inv_mask_imm:$imm),
                AddrMode1, Size4Bytes, IndexModeNone, DPFrm, IIC_iUNAsi,
-               "bfi", "\t$dst, $val, $imm", "$src = $dst",
-               [(set GPR:$dst, (ARMbfi GPR:$src, GPR:$val,
+               "bfi", "\t$Rd, $Rn, $imm", "$src = $Rd",
+               [(set GPR:$Rd, (ARMbfi GPR:$src, GPR:$Rn,
                                 bf_inv_mask_imm:$imm))]>,
                Requires<[IsARM, HasV6T2]> {
+  bits<4> Rd;
+  bits<4> Rn;
+  bits<10> imm;
   let Inst{27-21} = 0b0111110;
   let Inst{6-4}   = 0b001; // Rn: Inst{3-0} != 15
+  let Inst{15-12} = Rd;
+  let Inst{11-7}  = imm{4-0}; // lsb
+  let Inst{20-16} = imm{9-5}; // width
+  let Inst{3-0}   = Rn;
 }
 
-def  MVNr  : AsI1<0b1111, (outs GPR:$dst), (ins GPR:$src), DPFrm, IIC_iMVNr,
-                  "mvn", "\t$dst, $src",
-                  [(set GPR:$dst, (not GPR:$src))]>, UnaryDP {
+def  MVNr  : AsI1<0b1111, (outs GPR:$Rd), (ins GPR:$Rm), DPFrm, IIC_iMVNr,
+                  "mvn", "\t$Rd, $Rm",
+                  [(set GPR:$Rd, (not GPR:$Rm))]>, UnaryDP {
+  bits<4> Rd;
+  bits<4> Rm;
   let Inst{25} = 0;
+  let Inst{19-16} = 0b0000;
   let Inst{11-4} = 0b00000000;
+  let Inst{15-12} = Rd;
+  let Inst{3-0} = Rm;
 }
-def  MVNs  : AsI1<0b1111, (outs GPR:$dst), (ins so_reg:$src), DPSoRegFrm,
-                  IIC_iMVNsr, "mvn", "\t$dst, $src",
-                  [(set GPR:$dst, (not so_reg:$src))]>, UnaryDP {
+def  MVNs  : AsI1<0b1111, (outs GPR:$Rd), (ins so_reg:$shift), DPSoRegFrm,
+                  IIC_iMVNsr, "mvn", "\t$Rd, $shift",
+                  [(set GPR:$Rd, (not so_reg:$shift))]>, UnaryDP {
+  bits<4> Rd;
+  bits<4> Rm;
+  bits<12> shift;
   let Inst{25} = 0;
+  let Inst{19-16} = 0b0000;
+  let Inst{15-12} = Rd;
+  let Inst{11-0} = shift;
 }
 let isReMaterializable = 1, isAsCheapAsAMove = 1 in
-def  MVNi  : AsI1<0b1111, (outs GPR:$dst), (ins so_imm:$imm), DPFrm,
-                  IIC_iMVNi, "mvn", "\t$dst, $imm",
-                  [(set GPR:$dst, so_imm_not:$imm)]>,UnaryDP {
-    let Inst{25} = 1;
+def  MVNi  : AsI1<0b1111, (outs GPR:$Rd), (ins so_imm:$imm), DPFrm,
+                  IIC_iMVNi, "mvn", "\t$Rd, $imm",
+                  [(set GPR:$Rd, so_imm_not:$imm)]>,UnaryDP {
+  bits<4> Rd;
+  bits<4> Rm;
+  bits<12> imm;
+  let Inst{25} = 1;
+  let Inst{19-16} = 0b0000;
+  let Inst{15-12} = Rd;
+  let Inst{11-0} = imm;
 }
 
 def : ARMPat<(and   GPR:$src, so_imm_not:$imm),
@@ -2169,247 +2248,247 @@ def : ARMPat<(and   GPR:$src, so_imm_not:$imm),
 //===----------------------------------------------------------------------===//
 //  Multiply Instructions.
 //
+class AsMul1I32<bits<7> opcod, dag oops, dag iops, InstrItinClass itin,
+             string opc, string asm, list<dag> pattern>
+  : AsMul1I<opcod, oops, iops, itin, opc, asm, pattern> {
+  bits<4> Rd;
+  bits<4> Rm;
+  bits<4> Rn;
+  let Inst{19-16} = Rd;
+  let Inst{11-8}  = Rm;
+  let Inst{3-0}   = Rn;
+}
+class AsMul1I64<bits<7> opcod, dag oops, dag iops, InstrItinClass itin,
+             string opc, string asm, list<dag> pattern>
+  : AsMul1I<opcod, oops, iops, itin, opc, asm, pattern> {
+  bits<4> RdLo;
+  bits<4> RdHi;
+  bits<4> Rm;
+  bits<4> Rn;
+  let Inst{19-16} = RdHi;
+  let Inst{15-12} = RdLo;
+  let Inst{11-8}  = Rm;
+  let Inst{3-0}   = Rn;
+}
 
 let isCommutable = 1 in
-def MUL   : AsMul1I<0b0000000, (outs GPR:$dst), (ins GPR:$a, GPR:$b),
-                   IIC_iMUL32, "mul", "\t$dst, $a, $b",
-                   [(set GPR:$dst, (mul GPR:$a, GPR:$b))]>;
+def MUL  : AsMul1I32<0b0000000, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm),
+                   IIC_iMUL32, "mul", "\t$Rd, $Rn, $Rm",
+                   [(set GPR:$Rd, (mul GPR:$Rn, GPR:$Rm))]>;
 
-def MLA   : AsMul1I<0b0000001, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$c),
-                    IIC_iMAC32, "mla", "\t$dst, $a, $b, $c",
-                   [(set GPR:$dst, (add (mul GPR:$a, GPR:$b), GPR:$c))]>;
+def MLA  : AsMul1I32<0b0000001, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+                    IIC_iMAC32, "mla", "\t$Rd, $Rn, $Rm, $Ra",
+                   [(set GPR:$Rd, (add (mul GPR:$Rn, GPR:$Rm), GPR:$Ra))]> {
+  bits<4> Ra;
+  let Inst{15-12} = Ra;
+}
 
-def MLS   : AMul1I<0b0000011, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$c),
+def MLS  : AMul1I<0b0000011, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$c),
                    IIC_iMAC32, "mls", "\t$dst, $a, $b, $c",
                    [(set GPR:$dst, (sub GPR:$c, (mul GPR:$a, GPR:$b)))]>,
-                   Requires<[IsARM, HasV6T2]>;
+                   Requires<[IsARM, HasV6T2]> {
+  bits<4> Rd;
+  bits<4> Rm;
+  bits<4> Rn;
+  let Inst{19-16} = Rd;
+  let Inst{11-8}  = Rm;
+  let Inst{3-0}   = Rn;
+}
 
 // Extra precision multiplies with low / high results
+
 let neverHasSideEffects = 1 in {
 let isCommutable = 1 in {
-def SMULL : AsMul1I<0b0000110, (outs GPR:$ldst, GPR:$hdst),
-                               (ins GPR:$a, GPR:$b), IIC_iMUL64,
-                    "smull", "\t$ldst, $hdst, $a, $b", []>;
+def SMULL : AsMul1I64<0b0000110, (outs GPR:$RdLo, GPR:$RdHi),
+                               (ins GPR:$Rn, GPR:$Rm), IIC_iMUL64,
+                    "smull", "\t$RdLo, $RdHi, $Rn, $Rm", []>;
 
-def UMULL : AsMul1I<0b0000100, (outs GPR:$ldst, GPR:$hdst),
-                               (ins GPR:$a, GPR:$b), IIC_iMUL64,
-                    "umull", "\t$ldst, $hdst, $a, $b", []>;
+def UMULL : AsMul1I64<0b0000100, (outs GPR:$RdLo, GPR:$RdHi),
+                               (ins GPR:$Rn, GPR:$Rm), IIC_iMUL64,
+                    "umull", "\t$RdLo, $RdHi, $Rn, $Rm", []>;
 }
 
 // Multiply + accumulate
-def SMLAL : AsMul1I<0b0000111, (outs GPR:$ldst, GPR:$hdst),
-                               (ins GPR:$a, GPR:$b), IIC_iMAC64,
-                    "smlal", "\t$ldst, $hdst, $a, $b", []>;
+def SMLAL : AsMul1I64<0b0000111, (outs GPR:$RdLo, GPR:$RdHi),
+                               (ins GPR:$Rn, GPR:$Rm), IIC_iMAC64,
+                    "smlal", "\t$RdLo, $RdHi, $Rn, $Rm", []>;
 
-def UMLAL : AsMul1I<0b0000101, (outs GPR:$ldst, GPR:$hdst),
-                               (ins GPR:$a, GPR:$b), IIC_iMAC64,
-                    "umlal", "\t$ldst, $hdst, $a, $b", []>;
+def UMLAL : AsMul1I64<0b0000101, (outs GPR:$RdLo, GPR:$RdHi),
+                               (ins GPR:$Rn, GPR:$Rm), IIC_iMAC64,
+                    "umlal", "\t$RdLo, $RdHi, $Rn, $Rm", []>;
 
-def UMAAL : AMul1I <0b0000010, (outs GPR:$ldst, GPR:$hdst),
-                               (ins GPR:$a, GPR:$b), IIC_iMAC64,
-                    "umaal", "\t$ldst, $hdst, $a, $b", []>,
-                    Requires<[IsARM, HasV6]>;
+def UMAAL : AMul1I <0b0000010, (outs GPR:$RdLo, GPR:$RdHi),
+                               (ins GPR:$Rn, GPR:$Rm), IIC_iMAC64,
+                    "umaal", "\t$RdLo, $RdHi, $Rn, $Rm", []>,
+                    Requires<[IsARM, HasV6]> {
+  bits<4> RdLo;
+  bits<4> RdHi;
+  bits<4> Rm;
+  bits<4> Rn;
+  let Inst{19-16} = RdLo;
+  let Inst{15-12} = RdHi;
+  let Inst{11-8}  = Rm;
+  let Inst{3-0}   = Rn;
+}
 } // neverHasSideEffects
 
 // Most significant word multiply
-def SMMUL : AMul2I <0b0111010, (outs GPR:$dst), (ins GPR:$a, GPR:$b),
-               IIC_iMUL32, "smmul", "\t$dst, $a, $b",
-               [(set GPR:$dst, (mulhs GPR:$a, GPR:$b))]>,
+def SMMUL : AMul2I <0b0111010, 0b0001, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm),
+               IIC_iMUL32, "smmul", "\t$Rd, $Rn, $Rm",
+               [(set GPR:$Rd, (mulhs GPR:$Rn, GPR:$Rm))]>,
             Requires<[IsARM, HasV6]> {
-  let Inst{7-4}   = 0b0001;
   let Inst{15-12} = 0b1111;
 }
 
-def SMMULR : AMul2I <0b0111010, (outs GPR:$dst), (ins GPR:$a, GPR:$b),
-               IIC_iMUL32, "smmulr", "\t$dst, $a, $b",
+def SMMULR : AMul2I <0b0111010, 0b0011, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm),
+               IIC_iMUL32, "smmulr", "\t$Rd, $Rn, $Rm",
                [/* For disassembly only; pattern left blank */]>,
             Requires<[IsARM, HasV6]> {
-  let Inst{7-4}   = 0b0011; // R = 1
   let Inst{15-12} = 0b1111;
 }
 
-def SMMLA : AMul2I <0b0111010, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$c),
-               IIC_iMAC32, "smmla", "\t$dst, $a, $b, $c",
-               [(set GPR:$dst, (add (mulhs GPR:$a, GPR:$b), GPR:$c))]>,
-            Requires<[IsARM, HasV6]> {
-  let Inst{7-4}   = 0b0001;
-}
+def SMMLA : AMul2Ia <0b0111010, 0b0001, (outs GPR:$Rd),
+               (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+               IIC_iMAC32, "smmla", "\t$Rd, $Rn, $Rm, $Ra",
+               [(set GPR:$Rd, (add (mulhs GPR:$Rn, GPR:$Rm), GPR:$Ra))]>,
+            Requires<[IsARM, HasV6]>;
 
-def SMMLAR : AMul2I <0b0111010, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$c),
-               IIC_iMAC32, "smmlar", "\t$dst, $a, $b, $c",
+def SMMLAR : AMul2Ia <0b0111010, 0b0011, (outs GPR:$Rd),
+               (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+               IIC_iMAC32, "smmlar", "\t$Rd, $Rn, $Rm, $Ra",
                [/* For disassembly only; pattern left blank */]>,
-            Requires<[IsARM, HasV6]> {
-  let Inst{7-4}   = 0b0011; // R = 1
-}
+            Requires<[IsARM, HasV6]>;
 
-def SMMLS : AMul2I <0b0111010, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$c),
-               IIC_iMAC32, "smmls", "\t$dst, $a, $b, $c",
-               [(set GPR:$dst, (sub GPR:$c, (mulhs GPR:$a, GPR:$b)))]>,
-            Requires<[IsARM, HasV6]> {
-  let Inst{7-4}   = 0b1101;
-}
+def SMMLS : AMul2Ia <0b0111010, 0b1101, (outs GPR:$Rd),
+               (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+               IIC_iMAC32, "smmls", "\t$Rd, $Rn, $Rm, $Ra",
+               [(set GPR:$Rd, (sub GPR:$Ra, (mulhs GPR:$Rn, GPR:$Rm)))]>,
+            Requires<[IsARM, HasV6]>;
 
-def SMMLSR : AMul2I <0b0111010, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$c),
-               IIC_iMAC32, "smmlsr", "\t$dst, $a, $b, $c",
+def SMMLSR : AMul2Ia <0b0111010, 0b1111, (outs GPR:$Rd),
+               (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+               IIC_iMAC32, "smmlsr", "\t$Rd, $Rn, $Rm, $Ra",
                [/* For disassembly only; pattern left blank */]>,
-            Requires<[IsARM, HasV6]> {
-  let Inst{7-4}   = 0b1111; // R = 1
-}
+            Requires<[IsARM, HasV6]>;
 
 multiclass AI_smul<string opc, PatFrag opnode> {
-  def BB : AMulxyI<0b0001011, (outs GPR:$dst), (ins GPR:$a, GPR:$b),
-              IIC_iMUL16, !strconcat(opc, "bb"), "\t$dst, $a, $b",
-              [(set GPR:$dst, (opnode (sext_inreg GPR:$a, i16),
-                                      (sext_inreg GPR:$b, i16)))]>,
-           Requires<[IsARM, HasV5TE]> {
-             let Inst{5} = 0;
-             let Inst{6} = 0;
-           }
+  def BB : AMulxyI<0b0001011, 0b00, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm),
+              IIC_iMUL16, !strconcat(opc, "bb"), "\t$Rd, $Rn, $Rm",
+              [(set GPR:$Rd, (opnode (sext_inreg GPR:$Rn, i16),
+                                      (sext_inreg GPR:$Rm, i16)))]>,
+           Requires<[IsARM, HasV5TE]>;
 
-  def BT : AMulxyI<0b0001011, (outs GPR:$dst), (ins GPR:$a, GPR:$b),
-              IIC_iMUL16, !strconcat(opc, "bt"), "\t$dst, $a, $b",
-              [(set GPR:$dst, (opnode (sext_inreg GPR:$a, i16),
-                                      (sra GPR:$b, (i32 16))))]>,
-           Requires<[IsARM, HasV5TE]> {
-             let Inst{5} = 0;
-             let Inst{6} = 1;
-           }
+  def BT : AMulxyI<0b0001011, 0b10, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm),
+              IIC_iMUL16, !strconcat(opc, "bt"), "\t$Rd, $Rn, $Rm",
+              [(set GPR:$Rd, (opnode (sext_inreg GPR:$Rn, i16),
+                                      (sra GPR:$Rm, (i32 16))))]>,
+           Requires<[IsARM, HasV5TE]>;
 
-  def TB : AMulxyI<0b0001011, (outs GPR:$dst), (ins GPR:$a, GPR:$b),
-              IIC_iMUL16, !strconcat(opc, "tb"), "\t$dst, $a, $b",
-              [(set GPR:$dst, (opnode (sra GPR:$a, (i32 16)),
-                                      (sext_inreg GPR:$b, i16)))]>,
-           Requires<[IsARM, HasV5TE]> {
-             let Inst{5} = 1;
-             let Inst{6} = 0;
-           }
+  def TB : AMulxyI<0b0001011, 0b01, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm),
+              IIC_iMUL16, !strconcat(opc, "tb"), "\t$Rd, $Rn, $Rm",
+              [(set GPR:$Rd, (opnode (sra GPR:$Rn, (i32 16)),
+                                      (sext_inreg GPR:$Rm, i16)))]>,
+           Requires<[IsARM, HasV5TE]>;
 
-  def TT : AMulxyI<0b0001011, (outs GPR:$dst), (ins GPR:$a, GPR:$b),
-              IIC_iMUL16, !strconcat(opc, "tt"), "\t$dst, $a, $b",
-              [(set GPR:$dst, (opnode (sra GPR:$a, (i32 16)),
-                                      (sra GPR:$b, (i32 16))))]>,
-            Requires<[IsARM, HasV5TE]> {
-             let Inst{5} = 1;
-             let Inst{6} = 1;
-           }
+  def TT : AMulxyI<0b0001011, 0b11, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm),
+              IIC_iMUL16, !strconcat(opc, "tt"), "\t$Rd, $Rn, $Rm",
+              [(set GPR:$Rd, (opnode (sra GPR:$Rn, (i32 16)),
+                                      (sra GPR:$Rm, (i32 16))))]>,
+            Requires<[IsARM, HasV5TE]>;
 
-  def WB : AMulxyI<0b0001001, (outs GPR:$dst), (ins GPR:$a, GPR:$b),
-              IIC_iMUL16, !strconcat(opc, "wb"), "\t$dst, $a, $b",
-              [(set GPR:$dst, (sra (opnode GPR:$a,
-                                    (sext_inreg GPR:$b, i16)), (i32 16)))]>,
-           Requires<[IsARM, HasV5TE]> {
-             let Inst{5} = 1;
-             let Inst{6} = 0;
-           }
+  def WB : AMulxyI<0b0001001, 0b01, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm),
+              IIC_iMUL16, !strconcat(opc, "wb"), "\t$Rd, $Rn, $Rm",
+              [(set GPR:$Rd, (sra (opnode GPR:$Rn,
+                                    (sext_inreg GPR:$Rm, i16)), (i32 16)))]>,
+           Requires<[IsARM, HasV5TE]>;
 
-  def WT : AMulxyI<0b0001001, (outs GPR:$dst), (ins GPR:$a, GPR:$b),
-              IIC_iMUL16, !strconcat(opc, "wt"), "\t$dst, $a, $b",
-              [(set GPR:$dst, (sra (opnode GPR:$a,
-                                    (sra GPR:$b, (i32 16))), (i32 16)))]>,
-            Requires<[IsARM, HasV5TE]> {
-             let Inst{5} = 1;
-             let Inst{6} = 1;
-           }
+  def WT : AMulxyI<0b0001001, 0b11, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm),
+              IIC_iMUL16, !strconcat(opc, "wt"), "\t$Rd, $Rn, $Rm",
+              [(set GPR:$Rd, (sra (opnode GPR:$Rn,
+                                    (sra GPR:$Rm, (i32 16))), (i32 16)))]>,
+            Requires<[IsARM, HasV5TE]>;
 }
 
 
 multiclass AI_smla<string opc, PatFrag opnode> {
-  def BB : AMulxyI<0b0001000, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$acc),
-              IIC_iMAC16, !strconcat(opc, "bb"), "\t$dst, $a, $b, $acc",
-              [(set GPR:$dst, (add GPR:$acc,
-                               (opnode (sext_inreg GPR:$a, i16),
-                                       (sext_inreg GPR:$b, i16))))]>,
-           Requires<[IsARM, HasV5TE]> {
-             let Inst{5} = 0;
-             let Inst{6} = 0;
-           }
+  def BB : AMulxyI<0b0001000, 0b00, (outs GPR:$Rd),
+              (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+              IIC_iMAC16, !strconcat(opc, "bb"), "\t$Rd, $Rn, $Rm, $Ra",
+              [(set GPR:$Rd, (add GPR:$Ra,
+                               (opnode (sext_inreg GPR:$Rn, i16),
+                                       (sext_inreg GPR:$Rm, i16))))]>,
+           Requires<[IsARM, HasV5TE]>;
 
-  def BT : AMulxyI<0b0001000, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$acc),
-              IIC_iMAC16, !strconcat(opc, "bt"), "\t$dst, $a, $b, $acc",
-              [(set GPR:$dst, (add GPR:$acc, (opnode (sext_inreg GPR:$a, i16),
-                                                    (sra GPR:$b, (i32 16)))))]>,
-           Requires<[IsARM, HasV5TE]> {
-             let Inst{5} = 0;
-             let Inst{6} = 1;
-           }
+  def BT : AMulxyI<0b0001000, 0b10, (outs GPR:$Rd),
+              (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+              IIC_iMAC16, !strconcat(opc, "bt"), "\t$Rd, $Rn, $Rm, $Ra",
+              [(set GPR:$Rd, (add GPR:$Ra, (opnode (sext_inreg GPR:$Rn, i16),
+                                                   (sra GPR:$Rm, (i32 16)))))]>,
+           Requires<[IsARM, HasV5TE]>;
 
-  def TB : AMulxyI<0b0001000, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$acc),
-              IIC_iMAC16, !strconcat(opc, "tb"), "\t$dst, $a, $b, $acc",
-              [(set GPR:$dst, (add GPR:$acc, (opnode (sra GPR:$a, (i32 16)),
-                                                 (sext_inreg GPR:$b, i16))))]>,
-           Requires<[IsARM, HasV5TE]> {
-             let Inst{5} = 1;
-             let Inst{6} = 0;
-           }
+  def TB : AMulxyI<0b0001000, 0b01, (outs GPR:$Rd),
+              (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+              IIC_iMAC16, !strconcat(opc, "tb"), "\t$Rd, $Rn, $Rm, $Ra",
+              [(set GPR:$Rd, (add GPR:$Ra, (opnode (sra GPR:$Rn, (i32 16)),
+                                                (sext_inreg GPR:$Rm, i16))))]>,
+           Requires<[IsARM, HasV5TE]>;
 
-  def TT : AMulxyI<0b0001000, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$acc),
-              IIC_iMAC16, !strconcat(opc, "tt"), "\t$dst, $a, $b, $acc",
-             [(set GPR:$dst, (add GPR:$acc, (opnode (sra GPR:$a, (i32 16)),
-                                                    (sra GPR:$b, (i32 16)))))]>,
-            Requires<[IsARM, HasV5TE]> {
-             let Inst{5} = 1;
-             let Inst{6} = 1;
-           }
+  def TT : AMulxyI<0b0001000, 0b11, (outs GPR:$Rd),
+              (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+              IIC_iMAC16, !strconcat(opc, "tt"), "\t$Rd, $Rn, $Rm, $Ra",
+             [(set GPR:$Rd, (add GPR:$Ra, (opnode (sra GPR:$Rn, (i32 16)),
+                                                   (sra GPR:$Rm, (i32 16)))))]>,
+            Requires<[IsARM, HasV5TE]>;
 
-  def WB : AMulxyI<0b0001001, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$acc),
-              IIC_iMAC16, !strconcat(opc, "wb"), "\t$dst, $a, $b, $acc",
-              [(set GPR:$dst, (add GPR:$acc, (sra (opnode GPR:$a,
-                                       (sext_inreg GPR:$b, i16)), (i32 16))))]>,
-           Requires<[IsARM, HasV5TE]> {
-             let Inst{5} = 0;
-             let Inst{6} = 0;
-           }
+  def WB : AMulxyI<0b0001001, 0b00, (outs GPR:$Rd),
+              (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+              IIC_iMAC16, !strconcat(opc, "wb"), "\t$Rd, $Rn, $Rm, $Ra",
+              [(set GPR:$Rd, (add GPR:$Ra, (sra (opnode GPR:$Rn,
+                                      (sext_inreg GPR:$Rm, i16)), (i32 16))))]>,
+           Requires<[IsARM, HasV5TE]>;
 
-  def WT : AMulxyI<0b0001001, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$acc),
-              IIC_iMAC16, !strconcat(opc, "wt"), "\t$dst, $a, $b, $acc",
-              [(set GPR:$dst, (add GPR:$acc, (sra (opnode GPR:$a,
-                                         (sra GPR:$b, (i32 16))), (i32 16))))]>,
-            Requires<[IsARM, HasV5TE]> {
-             let Inst{5} = 0;
-             let Inst{6} = 1;
-           }
+  def WT : AMulxyI<0b0001001, 0b10, (outs GPR:$Rd),
+              (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+              IIC_iMAC16, !strconcat(opc, "wt"), "\t$Rd, $Rn, $Rm, $Ra",
+              [(set GPR:$Rd, (add GPR:$Ra, (sra (opnode GPR:$Rn,
+                                        (sra GPR:$Rm, (i32 16))), (i32 16))))]>,
+            Requires<[IsARM, HasV5TE]>;
 }
 
 defm SMUL : AI_smul<"smul", BinOpFrag<(mul node:$LHS, node:$RHS)>>;
 defm SMLA : AI_smla<"smla", BinOpFrag<(mul node:$LHS, node:$RHS)>>;
 
 // Halfword multiply accumulate long: SMLAL<x><y> -- for disassembly only
-def SMLALBB : AMulxyI<0b0001010,(outs GPR:$ldst,GPR:$hdst),(ins GPR:$a,GPR:$b),
-                      IIC_iMAC64, "smlalbb", "\t$ldst, $hdst, $a, $b",
+def SMLALBB : AMulxyI64<0b0001010, 0b00, (outs GPR:$RdLo, GPR:$RdHi),
+                      (ins GPR:$Rn, GPR:$Rm),
+                      IIC_iMAC64, "smlalbb", "\t$RdLo, $RdHi, $Rn, $Rm",
                       [/* For disassembly only; pattern left blank */]>,
-              Requires<[IsARM, HasV5TE]> {
-  let Inst{5} = 0;
-  let Inst{6} = 0;
-}
+              Requires<[IsARM, HasV5TE]>;
 
-def SMLALBT : AMulxyI<0b0001010,(outs GPR:$ldst,GPR:$hdst),(ins GPR:$a,GPR:$b),
-                      IIC_iMAC64, "smlalbt", "\t$ldst, $hdst, $a, $b",
+def SMLALBT : AMulxyI64<0b0001010, 0b10, (outs GPR:$RdLo, GPR:$RdHi),
+                      (ins GPR:$Rn, GPR:$Rm),
+                      IIC_iMAC64, "smlalbt", "\t$RdLo, $RdHi, $Rn, $Rm",
                       [/* For disassembly only; pattern left blank */]>,
-              Requires<[IsARM, HasV5TE]> {
-  let Inst{5} = 0;
-  let Inst{6} = 1;
-}
+              Requires<[IsARM, HasV5TE]>;
 
-def SMLALTB : AMulxyI<0b0001010,(outs GPR:$ldst,GPR:$hdst),(ins GPR:$a,GPR:$b),
-                      IIC_iMAC64, "smlaltb", "\t$ldst, $hdst, $a, $b",
+def SMLALTB : AMulxyI64<0b0001010, 0b01, (outs GPR:$RdLo, GPR:$RdHi),
+                      (ins GPR:$Rn, GPR:$Rm),
+                      IIC_iMAC64, "smlaltb", "\t$RdLo, $RdHi, $Rn, $Rm",
                       [/* For disassembly only; pattern left blank */]>,
-              Requires<[IsARM, HasV5TE]> {
-  let Inst{5} = 1;
-  let Inst{6} = 0;
-}
+              Requires<[IsARM, HasV5TE]>;
 
-def SMLALTT : AMulxyI<0b0001010,(outs GPR:$ldst,GPR:$hdst),(ins GPR:$a,GPR:$b),
-                      IIC_iMAC64, "smlaltt", "\t$ldst, $hdst, $a, $b",
+def SMLALTT : AMulxyI64<0b0001010, 0b11, (outs GPR:$RdLo, GPR:$RdHi),
+                      (ins GPR:$Rn, GPR:$Rm),
+                      IIC_iMAC64, "smlaltt", "\t$RdLo, $RdHi, $Rn, $Rm",
                       [/* For disassembly only; pattern left blank */]>,
-              Requires<[IsARM, HasV5TE]> {
-  let Inst{5} = 1;
-  let Inst{6} = 1;
-}
+              Requires<[IsARM, HasV5TE]>;
 
 // Helper class for AI_smld -- for disassembly only
-class AMulDualI<bit long, bit sub, bit swap, dag oops, dag iops,
-                InstrItinClass itin, string opc, string asm>
+class AMulDualIbase<bit long, bit sub, bit swap, dag oops, dag iops,
+                    InstrItinClass itin, string opc, string asm>
   : AI<oops, iops, MulFrm, itin, opc, asm, []>, Requires<[IsARM, HasV6]> {
+  bits<4> Rn;
+  bits<4> Rm;
   let Inst{4}     = 1;
   let Inst{5}     = swap;
   let Inst{6}     = sub;
@@ -2417,21 +2496,46 @@ class AMulDualI<bit long, bit sub, bit swap, dag oops, dag iops,
   let Inst{21-20} = 0b00;
   let Inst{22}    = long;
   let Inst{27-23} = 0b01110;
+  let Inst{11-8}  = Rm;
+  let Inst{3-0}   = Rn;
+}
+class AMulDualI<bit long, bit sub, bit swap, dag oops, dag iops,
+                InstrItinClass itin, string opc, string asm>
+  : AMulDualIbase<long, sub, swap, oops, iops, itin, opc, asm> {
+  bits<4> Rd;
+  let Inst{15-12} = 0b1111;
+  let Inst{19-16} = Rd;
+}
+class AMulDualIa<bit long, bit sub, bit swap, dag oops, dag iops,
+                InstrItinClass itin, string opc, string asm>
+  : AMulDualIbase<long, sub, swap, oops, iops, itin, opc, asm> {
+  bits<4> Ra;
+  let Inst{15-12} = Ra;
+}
+class AMulDualI64<bit long, bit sub, bit swap, dag oops, dag iops,
+                  InstrItinClass itin, string opc, string asm>
+  : AMulDualIbase<long, sub, swap, oops, iops, itin, opc, asm> {
+  bits<4> RdLo;
+  bits<4> RdHi;
+  let Inst{19-16} = RdHi;
+  let Inst{15-12} = RdLo;
 }
 
 multiclass AI_smld<bit sub, string opc> {
 
-  def D : AMulDualI<0, sub, 0, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$acc),
-                  NoItinerary, !strconcat(opc, "d"), "\t$dst, $a, $b, $acc">;
+  def D : AMulDualIa<0, sub, 0, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+                  NoItinerary, !strconcat(opc, "d"), "\t$Rd, $Rn, $Rm, $Ra">;
 
-  def DX : AMulDualI<0, sub, 1, (outs GPR:$dst), (ins GPR:$a, GPR:$b, GPR:$acc),
-                  NoItinerary, !strconcat(opc, "dx"), "\t$dst, $a, $b, $acc">;
+  def DX: AMulDualIa<0, sub, 1, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm, GPR:$Ra),
+                  NoItinerary, !strconcat(opc, "dx"), "\t$Rd, $Rn, $Rm, $Ra">;
 
-  def LD : AMulDualI<1, sub, 0, (outs GPR:$ldst,GPR:$hdst), (ins GPR:$a,GPR:$b),
-                  NoItinerary, !strconcat(opc, "ld"), "\t$ldst, $hdst, $a, $b">;
+  def LD: AMulDualI64<1, sub, 0, (outs GPR:$RdLo,GPR:$RdHi),
+                  (ins GPR:$Rn, GPR:$Rm), NoItinerary,
+                  !strconcat(opc, "ld"), "\t$RdLo, $RdHi, $Rn, $Rm">;
 
-  def LDX : AMulDualI<1, sub, 1, (outs GPR:$ldst,GPR:$hdst),(ins GPR:$a,GPR:$b),
-                  NoItinerary, !strconcat(opc, "ldx"),"\t$ldst, $hdst, $a, $b">;
+  def LDX : AMulDualI64<1, sub, 1, (outs GPR:$RdLo,GPR:$RdHi),
+                  (ins GPR:$Rn, GPR:$Rm), NoItinerary,
+                  !strconcat(opc, "ldx"),"\t$RdLo, $RdHi, $Rn, $Rm">;
 
 }
 
@@ -2440,16 +2544,10 @@ defm SMLS : AI_smld<1, "smls">;
 
 multiclass AI_sdml<bit sub, string opc> {
 
-  def D : AMulDualI<0, sub, 0, (outs GPR:$dst), (ins GPR:$a, GPR:$b),
-                    NoItinerary, !strconcat(opc, "d"), "\t$dst, $a, $b"> {
-    let Inst{15-12} = 0b1111;
-  }
-
-  def DX : AMulDualI<0, sub, 1, (outs GPR:$dst), (ins GPR:$a, GPR:$b),
-                    NoItinerary, !strconcat(opc, "dx"), "\t$dst, $a, $b"> {
-    let Inst{15-12} = 0b1111;
-  }
-
+  def D : AMulDualI<0, sub, 0, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm),
+                    NoItinerary, !strconcat(opc, "d"), "\t$Rd, $Rn, $Rm">;
+  def DX : AMulDualI<0, sub, 1, (outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm),
+                    NoItinerary, !strconcat(opc, "dx"), "\t$Rd, $Rn, $Rm">;
 }
 
 defm SMUA : AI_sdml<0, "smua">;
@@ -2459,55 +2557,35 @@ defm SMUS : AI_sdml<1, "smus">;
 //  Misc. Arithmetic Instructions.
 //
 
-def CLZ  : AMiscA1I<0b000010110, (outs GPR:$dst), (ins GPR:$src), IIC_iUNAr,
-              "clz", "\t$dst, $src",
-              [(set GPR:$dst, (ctlz GPR:$src))]>, Requires<[IsARM, HasV5T]> {
-  let Inst{7-4}   = 0b0001;
-  let Inst{11-8}  = 0b1111;
-  let Inst{19-16} = 0b1111;
-}
+def CLZ  : AMiscA1I<0b000010110, 0b0001, (outs GPR:$Rd), (ins GPR:$Rm),
+              IIC_iUNAr, "clz", "\t$Rd, $Rm",
+              [(set GPR:$Rd, (ctlz GPR:$Rm))]>, Requires<[IsARM, HasV5T]>;
 
-def RBIT : AMiscA1I<0b01101111, (outs GPR:$dst), (ins GPR:$src), IIC_iUNAr,
-              "rbit", "\t$dst, $src",
-              [(set GPR:$dst, (ARMrbit GPR:$src))]>,
-           Requires<[IsARM, HasV6T2]> {
-  let Inst{7-4}   = 0b0011;
-  let Inst{11-8}  = 0b1111;
-  let Inst{19-16} = 0b1111;
-}
+def RBIT : AMiscA1I<0b01101111, 0b0011, (outs GPR:$Rd), (ins GPR:$Rm),
+              IIC_iUNAr, "rbit", "\t$Rd, $Rm",
+              [(set GPR:$Rd, (ARMrbit GPR:$Rm))]>,
+           Requires<[IsARM, HasV6T2]>;
 
-def REV  : AMiscA1I<0b01101011, (outs GPR:$dst), (ins GPR:$src), IIC_iUNAr,
-              "rev", "\t$dst, $src",
-              [(set GPR:$dst, (bswap GPR:$src))]>, Requires<[IsARM, HasV6]> {
-  let Inst{7-4}   = 0b0011;
-  let Inst{11-8}  = 0b1111;
-  let Inst{19-16} = 0b1111;
-}
+def REV  : AMiscA1I<0b01101011, 0b0011, (outs GPR:$Rd), (ins GPR:$Rm),
+              IIC_iUNAr, "rev", "\t$Rd, $Rm",
+              [(set GPR:$Rd, (bswap GPR:$Rm))]>, Requires<[IsARM, HasV6]>;
 
-def REV16 : AMiscA1I<0b01101011, (outs GPR:$dst), (ins GPR:$src), IIC_iUNAr,
-               "rev16", "\t$dst, $src",
-               [(set GPR:$dst,
-                   (or (and (srl GPR:$src, (i32 8)), 0xFF),
-                       (or (and (shl GPR:$src, (i32 8)), 0xFF00),
-                           (or (and (srl GPR:$src, (i32 8)), 0xFF0000),
-                               (and (shl GPR:$src, (i32 8)), 0xFF000000)))))]>,
-               Requires<[IsARM, HasV6]> {
-  let Inst{7-4}   = 0b1011;
-  let Inst{11-8}  = 0b1111;
-  let Inst{19-16} = 0b1111;
-}
+def REV16 : AMiscA1I<0b01101011, 0b1011, (outs GPR:$Rd), (ins GPR:$Rm),
+               IIC_iUNAr, "rev16", "\t$Rd, $Rm",
+               [(set GPR:$Rd,
+                   (or (and (srl GPR:$Rm, (i32 8)), 0xFF),
+                       (or (and (shl GPR:$Rm, (i32 8)), 0xFF00),
+                           (or (and (srl GPR:$Rm, (i32 8)), 0xFF0000),
+                               (and (shl GPR:$Rm, (i32 8)), 0xFF000000)))))]>,
+               Requires<[IsARM, HasV6]>;
 
-def REVSH : AMiscA1I<0b01101111, (outs GPR:$dst), (ins GPR:$src), IIC_iUNAr,
-               "revsh", "\t$dst, $src",
-               [(set GPR:$dst,
+def REVSH : AMiscA1I<0b01101111, 0b1011, (outs GPR:$Rd), (ins GPR:$Rm),
+               IIC_iUNAr, "revsh", "\t$Rd, $Rm",
+               [(set GPR:$Rd,
                   (sext_inreg
-                    (or (srl (and GPR:$src, 0xFF00), (i32 8)),
-                        (shl GPR:$src, (i32 8))), i16))]>,
-               Requires<[IsARM, HasV6]> {
-  let Inst{7-4}   = 0b1011;
-  let Inst{11-8}  = 0b1111;
-  let Inst{19-16} = 0b1111;
-}
+                    (or (srl (and GPR:$Rm, 0xFF00), (i32 8)),
+                        (shl GPR:$Rm, (i32 8))), i16))]>,
+               Requires<[IsARM, HasV6]>;
 
 def lsl_shift_imm : SDNodeXForm<imm, [{
   unsigned Sh = ARM_AM::getSORegOpc(ARM_AM::lsl, N->getZExtValue());
@@ -2518,21 +2596,19 @@ def lsl_amt : PatLeaf<(i32 imm), [{
   return (N->getZExtValue() < 32);
 }], lsl_shift_imm>;
 
-def PKHBT : AMiscA1I<0b01101000, (outs GPR:$dst),
-                                 (ins GPR:$src1, GPR:$src2, shift_imm:$sh),
-               IIC_iALUsi, "pkhbt", "\t$dst, $src1, $src2$sh",
-               [(set GPR:$dst, (or (and GPR:$src1, 0xFFFF),
-                                   (and (shl GPR:$src2, lsl_amt:$sh),
-                                        0xFFFF0000)))]>,
-               Requires<[IsARM, HasV6]> {
-  let Inst{6-4} = 0b001;
-}
+def PKHBT : APKHI<0b01101000, 0, (outs GPR:$Rd),
+                              (ins GPR:$Rn, GPR:$Rm, shift_imm:$sh),
+               IIC_iALUsi, "pkhbt", "\t$Rd, $Rn, $Rm$sh",
+               [(set GPR:$Rd, (or (and GPR:$Rn, 0xFFFF),
+                                  (and (shl GPR:$Rm, lsl_amt:$sh),
+                                       0xFFFF0000)))]>,
+               Requires<[IsARM, HasV6]>;
 
 // Alternate cases for PKHBT where identities eliminate some nodes.
-def : ARMV6Pat<(or (and GPR:$src1, 0xFFFF), (and GPR:$src2, 0xFFFF0000)),
-               (PKHBT GPR:$src1, GPR:$src2, 0)>;
-def : ARMV6Pat<(or (and GPR:$src1, 0xFFFF), (shl GPR:$src2, imm16_31:$sh)),
-               (PKHBT GPR:$src1, GPR:$src2, (lsl_shift_imm imm16_31:$sh))>;
+def : ARMV6Pat<(or (and GPR:$Rn, 0xFFFF), (and GPR:$Rm, 0xFFFF0000)),
+               (PKHBT GPR:$Rn, GPR:$Rm, 0)>;
+def : ARMV6Pat<(or (and GPR:$Rn, 0xFFFF), (shl GPR:$Rm, imm16_31:$sh)),
+               (PKHBT GPR:$Rn, GPR:$Rm, (lsl_shift_imm imm16_31:$sh))>;
 
 def asr_shift_imm : SDNodeXForm<imm, [{
   unsigned Sh = ARM_AM::getSORegOpc(ARM_AM::asr, N->getZExtValue());
@@ -2545,15 +2621,13 @@ def asr_amt : PatLeaf<(i32 imm), [{
 
 // Note: Shifts of 1-15 bits will be transformed to srl instead of sra and
 // will match the pattern below.
-def PKHTB : AMiscA1I<0b01101000, (outs GPR:$dst),
-                                 (ins GPR:$src1, GPR:$src2, shift_imm:$sh),
-               IIC_iBITsi, "pkhtb", "\t$dst, $src1, $src2$sh",
-               [(set GPR:$dst, (or (and GPR:$src1, 0xFFFF0000),
-                                   (and (sra GPR:$src2, asr_amt:$sh),
-                                        0xFFFF)))]>,
-               Requires<[IsARM, HasV6]> {
-  let Inst{6-4} = 0b101;
-}
+def PKHTB : APKHI<0b01101000, 1, (outs GPR:$Rd),
+                              (ins GPR:$Rn, GPR:$Rm, shift_imm:$sh),
+               IIC_iBITsi, "pkhtb", "\t$Rd, $Rn, $Rm$sh",
+               [(set GPR:$Rd, (or (and GPR:$Rn, 0xFFFF0000),
+                                  (and (sra GPR:$Rm, asr_amt:$sh),
+                                       0xFFFF)))]>,
+               Requires<[IsARM, HasV6]>;
 
 // Alternate cases for PKHTB where identities eliminate some nodes.  Note that
 // a shift amount of 0 is *not legal* here, it is PKHBT instead.
@@ -2582,7 +2656,7 @@ defm CMP  : AI1_cmp_irs<0b1010, "cmp",
 //   mov  r0, #1
 //
 // and:
-// 
+//
 //   cmn  r0, r1
 //   mov  r0, #0
 //   it   ls
@@ -2965,6 +3039,16 @@ def Int_eh_sjlj_longjmp : XI<(outs), (ins GPR:$src, GPR:$scratch),
                          [(ARMeh_sjlj_longjmp GPR:$src, GPR:$scratch)]>,
                                 Requires<[IsARM, IsDarwin]>;
 }
+
+// eh.sjlj.dispatchsetup pseudo-instruction.
+// This pseudo is usef for ARM, Thumb1 and Thumb2. Any differences are
+// handled when the pseudo is expanded (which happens before any passes
+// that need the instruction size).
+let isBarrier = 1, hasSideEffects = 1 in
+def Int_eh_sjlj_dispatchsetup :
+ PseudoInst<(outs), (ins GPR:$src), NoItinerary, "",
+            [(ARMeh_sjlj_dispatchsetup GPR:$src)]>,
+              Requires<[IsDarwin]>;
 
 //===----------------------------------------------------------------------===//
 // Non-Instruction Patterns

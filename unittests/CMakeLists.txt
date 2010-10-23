@@ -13,6 +13,8 @@ function(add_llvm_unittest test_name)
 endfunction()
 
 include_directories(${LLVM_MAIN_SRC_DIR}/utils/unittest/googletest/include)
+set(LLVM_REQUIRES_RTTI 1)
+add_definitions(-DGTEST_HAS_RTTI=0)
 
 set(LLVM_LINK_COMPONENTS
   jit
@@ -90,12 +92,13 @@ add_llvm_unittest(Support
   Support/Casting.cpp
   Support/CommandLineTest.cpp
   Support/ConstantRangeTest.cpp
+  Support/EndianTest.cpp
   Support/LeakDetectorTest.cpp
   Support/MathExtrasTest.cpp
   Support/raw_ostream_test.cpp
   Support/RegexTest.cpp
-  Support/System.cpp
   Support/SwapByteOrderTest.cpp
+  Support/System.cpp
   Support/TypeBuilderTest.cpp
   Support/ValueHandleTest.cpp
   )
