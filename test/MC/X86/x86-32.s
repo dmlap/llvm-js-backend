@@ -57,6 +57,11 @@ rdtscp
 // CHECK: shrl	%eax                    # encoding: [0xd1,0xe8]
         shrl $1, %eax
 
+// CHECK: shll	%eax                    # encoding: [0xd1,0xe0]
+        sall $1, %eax
+// CHECK: shll	%eax                    # encoding: [0xd1,0xe0]
+        sal $1, %eax
+
 // moffset forms of moves, rdar://7947184
 movb	0, %al    // CHECK: movb 0, %al  # encoding: [0xa0,A,A,A,A]
 movw	0, %ax    // CHECK: movw 0, %ax  # encoding: [0x66,0xa1,A,A,A,A]
@@ -702,3 +707,95 @@ pshufw $90, %mm4, %mm0
 // CHECK: sidt	4(%eax)
 // CHECK:  encoding: [0x0f,0x01,0x48,0x04]
         	sidtl	4(%eax)
+
+// CHECK: fcompi	%st(2)
+// CHECK:  encoding: [0xdf,0xf2]
+        	fcompi	%st(2), %st
+
+// CHECK: fcompi	%st(2)
+// CHECK:  encoding: [0xdf,0xf2]
+        	fcompi	%st(2)
+
+// CHECK: fcompi	%st(1)
+// CHECK:  encoding: [0xdf,0xf1]
+        	fcompi
+
+// CHECK: fucompi	%st(2)
+// CHECK:  encoding: [0xdf,0xea]
+        	fucompi	%st(2),%st
+
+// CHECK: fucompi	%st(2)
+// CHECK:  encoding: [0xdf,0xea]
+        	fucompi	%st(2)
+
+// CHECK: fucompi	%st(1)
+// CHECK:  encoding: [0xdf,0xe9]
+        	fucompi
+
+// CHECK: fldcw	32493
+// CHECK:  encoding: [0xd9,0x2d,0xed,0x7e,0x00,0x00]
+        	fldcww	0x7eed
+
+// CHECK: fldcw	32493
+// CHECK:  encoding: [0xd9,0x2d,0xed,0x7e,0x00,0x00]
+        	fldcw	0x7eed
+
+// CHECK: fnstcw	32493
+// CHECK:  encoding: [0xd9,0x3d,0xed,0x7e,0x00,0x00]
+        	fnstcww	0x7eed
+
+// CHECK: fnstcw	32493
+// CHECK:  encoding: [0xd9,0x3d,0xed,0x7e,0x00,0x00]
+        	fnstcw	0x7eed
+
+// CHECK: wait
+// CHECK:  encoding: [0x9b]
+        	fstcww	0x7eed
+
+// CHECK: wait
+// CHECK:  encoding: [0x9b]
+        	fstcw	0x7eed
+
+// CHECK: fnstsw	32493
+// CHECK:  encoding: [0xdd,0x3d,0xed,0x7e,0x00,0x00]
+        	fnstsww	0x7eed
+
+// CHECK: fnstsw	32493
+// CHECK:  encoding: [0xdd,0x3d,0xed,0x7e,0x00,0x00]
+        	fnstsw	0x7eed
+
+// CHECK: wait
+// CHECK:  encoding: [0x9b]
+        	fstsww	0x7eed
+
+// CHECK: wait
+// CHECK:  encoding: [0x9b]
+        	fstsw	0x7eed
+
+// CHECK: verr	32493
+// CHECK:  encoding: [0x0f,0x00,0x25,0xed,0x7e,0x00,0x00]
+        	verrw	0x7eed
+
+// CHECK: verr	32493
+// CHECK:  encoding: [0x0f,0x00,0x25,0xed,0x7e,0x00,0x00]
+        	verr	0x7eed
+
+// CHECK: wait
+// CHECK:  encoding: [0x9b]
+        	fclex
+
+// CHECK: fnclex
+// CHECK:  encoding: [0xdb,0xe2]
+        	fnclex
+
+// CHECK: ud2
+// CHECK:  encoding: [0x0f,0x0b]
+        	ud2
+
+// CHECK: ud2
+// CHECK:  encoding: [0x0f,0x0b]
+        	ud2a
+
+// CHECK: ud2b
+// CHECK:  encoding: [0x0f,0xb9]
+        	ud2b

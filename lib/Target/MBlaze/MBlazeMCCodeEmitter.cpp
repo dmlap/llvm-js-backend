@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "mblaze-emitter"
+#define DEBUG_TYPE "mccodeemitter"
 #include "MBlaze.h"
 #include "MBlazeInstrInfo.h"
 #include "MBlazeFixupKinds.h"
@@ -94,7 +94,7 @@ public:
 
   void EmitConstant(uint64_t Val, unsigned Size, unsigned &CurByte,
                     raw_ostream &OS) const {
-    assert(Size <= 8 && "size too big in emit constant" );
+    assert(Size <= 8 && "size too big in emit constant");
 
     for (unsigned i = 0; i != Size; ++i) {
       EmitByte(Val & 255, CurByte, OS);
@@ -103,6 +103,8 @@ public:
   }
 
   void EmitIMM(const MCOperand &imm, unsigned &CurByte, raw_ostream &OS) const;
+  void EmitIMM(const MCInst &MI, unsigned op, unsigned &CurByte,
+               raw_ostream &OS) const;
 
   void EmitImmediate(const MCInst &MI,
                      unsigned opNo, MCFixupKind FixupKind,
@@ -130,7 +132,7 @@ unsigned MBlazeMCCodeEmitter::getMachineOpValue(const MCInst &MI,
     return MBlazeRegisterInfo::getRegisterNumbering(MO.getReg());
   else if (MO.isImm())
     return static_cast<unsigned>(MO.getImm());
-  else if (MO.isExpr() )
+  else if (MO.isExpr())
       return 0; // The relocation has already been recorded at this point.
   else {
 #ifndef NDEBUG
@@ -144,7 +146,7 @@ unsigned MBlazeMCCodeEmitter::getMachineOpValue(const MCInst &MI,
 void MBlazeMCCodeEmitter::
 EmitIMM(const MCOperand &imm, unsigned &CurByte, raw_ostream &OS) const {
   int32_t val = (int32_t)imm.getImm();
-  if (val > 32767 || val < -32678 ) {
+  if (val > 32767 || val < -32768) {
     EmitByte(0x0D, CurByte, OS);
     EmitByte(0x00, CurByte, OS);
     EmitRawByte((val >> 24) & 0xFF, CurByte, OS);
@@ -153,18 +155,32 @@ EmitIMM(const MCOperand &imm, unsigned &CurByte, raw_ostream &OS) const {
 }
 
 void MBlazeMCCodeEmitter::
+EmitIMM(const MCInst &MI, unsigned op, unsigned &CurByte,
+        raw_ostream &OS) const {
+    MCOperand mcop = MI.getOperand(op);
+    if (mcop.isExpr()) {
+        EmitByte(0x0D, CurByte, OS);
+        EmitByte(0x00, CurByte, OS);
+        EmitRawByte(0, CurByte, OS);
+        EmitRawByte(0, CurByte, OS);
+    }
+}
+
+void MBlazeMCCodeEmitter::
 EmitImmediate(const MCInst &MI, unsigned opNo, MCFixupKind FixupKind,
               unsigned &CurByte, raw_ostream &OS,
               SmallVectorImpl<MCFixup> &Fixups) const {
-  assert( MI.getNumOperands()>opNo && "Not enought operands for instruction" );
+  assert(MI.getNumOperands()>opNo && "Not enought operands for instruction");
 
   MCOperand oper = MI.getOperand(opNo);
   if (oper.isImm()) {
-      EmitIMM( oper, CurByte, OS );
+      EmitIMM(oper, CurByte, OS);
   } else if (oper.isExpr()) {
       Fixups.push_back(MCFixup::Create(0,oper.getExpr(),FixupKind));
   }
 }
+
+
 
 void MBlazeMCCodeEmitter::
 EncodeInstruction(const MCInst &MI, raw_ostream &OS,
@@ -177,26 +193,30 @@ EncodeInstruction(const MCInst &MI, raw_ostream &OS,
 
   switch ((TSFlags & MBlazeII::FormMask)) {
   default: break;
-  case MBlazeII::Pseudo:
+  case MBlazeII::FPseudo:
     // Pseudo instructions don't get encoded.
     return;
 
-  case MBlazeII::RegRegImm:
-    EmitImmediate( MI, 2, FK_Data_4, CurByte, OS, Fixups );
+  case MBlazeII::FRRI:
+    EmitImmediate(MI, 2, FK_Data_4, CurByte, OS, Fixups);
     break;
 
-  case MBlazeII::RegImmReg:
-    EmitImmediate( MI, 1, FK_Data_4, CurByte, OS, Fixups );
+  case MBlazeII::FRIR:
+    EmitImmediate(MI, 1, FK_Data_4, CurByte, OS, Fixups);
     break;
 
-  case MBlazeII::RegImm:
-    EmitImmediate( MI, 1, MCFixupKind(MBlaze::reloc_pcrel_2byte), CurByte, OS,
-                   Fixups );
+  case MBlazeII::FCRI:
+    EmitImmediate(MI, 1, MCFixupKind(MBlaze::reloc_pcrel_2byte), CurByte, OS,
+                  Fixups);
     break;
 
-  case MBlazeII::Imm:
-    EmitImmediate( MI, 0, MCFixupKind(MBlaze::reloc_pcrel_4byte), CurByte, OS,
-                   Fixups );
+  case MBlazeII::FRCI:
+    EmitImmediate(MI, 1, MCFixupKind(MBlaze::reloc_pcrel_4byte), CurByte, OS,
+                  Fixups);
+
+  case MBlazeII::FCCI:
+    EmitImmediate(MI, 0, MCFixupKind(MBlaze::reloc_pcrel_4byte), CurByte, OS,
+                  Fixups);
     break;
   }
 
@@ -207,19 +227,17 @@ EncodeInstruction(const MCInst &MI, raw_ostream &OS,
     EmitConstant(Value, 4, CurByte, OS);
     break;
 
+  case MBlaze::BRLID:
+  case MBlaze::BRALID:
+    EmitIMM(MI,1,CurByte,OS);
+    EmitConstant(Value, 4, CurByte, OS);
+    break;
+
   case MBlaze::BRI:
   case MBlaze::BRAI:
   case MBlaze::BRID:
   case MBlaze::BRAID:
-  case MBlaze::BRLID:
-  case MBlaze::BRALID:
-    MCOperand op = MI.getOperand(0);
-    if (op.isExpr()) {
-        EmitByte(0x0D, CurByte, OS);
-        EmitByte(0x00, CurByte, OS);
-        EmitRawByte(0, CurByte, OS);
-        EmitRawByte(0, CurByte, OS);
-    }
+    EmitIMM(MI,0,CurByte,OS);
     EmitConstant(Value, 4, CurByte, OS);
     break;
   }

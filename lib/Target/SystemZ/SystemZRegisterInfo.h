@@ -34,9 +34,6 @@ struct SystemZRegisterInfo : public SystemZGenRegisterInfo {
 
   BitVector getReservedRegs(const MachineFunction &MF) const;
 
-  bool hasReservedCallFrame(const MachineFunction &MF) const { return true; }
-  bool hasFP(const MachineFunction &MF) const;
-
   int getFrameIndexOffset(const MachineFunction &MF, int FI) const;
 
   void eliminateCallFramePseudoInstr(MachineFunction &MF,
@@ -49,9 +46,6 @@ struct SystemZRegisterInfo : public SystemZGenRegisterInfo {
 
   void processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
                                             RegScavenger *RS) const;
-
-  void emitPrologue(MachineFunction &MF) const;
-  void emitEpilogue(MachineFunction &MF, MachineBasicBlock &MBB) const;
 
   // Debug information queries.
   unsigned getRARegister() const;

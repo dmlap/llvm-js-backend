@@ -10,10 +10,12 @@ function(add_llvm_unittest test_name)
     set(EXCLUDE_FROM_ALL ON)
   endif()
   add_llvm_executable(${test_name}Tests ${ARGN})
+  add_dependencies(UnitTests ${test_name}Tests)
 endfunction()
 
+add_custom_target(UnitTests)
+
 include_directories(${LLVM_MAIN_SRC_DIR}/utils/unittest/googletest/include)
-set(LLVM_REQUIRES_RTTI 1)
 add_definitions(-DGTEST_HAS_RTTI=0)
 
 set(LLVM_LINK_COMPONENTS
@@ -41,8 +43,10 @@ add_llvm_unittest(ADT
   ADT/DeltaAlgorithmTest.cpp
   ADT/DenseMapTest.cpp
   ADT/DenseSetTest.cpp
+  ADT/FoldingSet.cpp
   ADT/ilistTest.cpp
   ADT/ImmutableSetTest.cpp
+  ADT/IntervalMapTest.cpp
   ADT/SmallBitVectorTest.cpp
   ADT/SmallStringTest.cpp
   ADT/SmallVectorTest.cpp
@@ -61,25 +65,40 @@ add_llvm_unittest(ExecutionEngine
   ExecutionEngine/ExecutionEngineTest.cpp
   )
 
-add_llvm_unittest(JIT
+set(JITTestsSources
   ExecutionEngine/JIT/JITEventListenerTest.cpp
   ExecutionEngine/JIT/JITMemoryManagerTest.cpp
   ExecutionEngine/JIT/JITTest.cpp
   ExecutionEngine/JIT/MultiJITTest.cpp
   )
 
+if(MSVC)
+  list(APPEND JITTestsSources ExecutionEngine/JIT/JITTests.def)
+endif()
+
+add_llvm_unittest(JIT ${JITTestsSources})
+
 add_llvm_unittest(Transforms
   Transforms/Utils/Cloning.cpp
   )
 
-add_llvm_unittest(VMCore
+set(VMCoreSources
   VMCore/ConstantsTest.cpp
   VMCore/DerivedTypesTest.cpp
   VMCore/InstructionsTest.cpp
   VMCore/MetadataTest.cpp
   VMCore/PassManagerTest.cpp
+  VMCore/ValueMapTest.cpp
   VMCore/VerifierTest.cpp
   )
+
+# MSVC9 and 8 cannot compile ValueMapTest.cpp due to their bug.
+# See issue#331418 in Visual Studio.
+if(MSVC AND MSVC_VERSION LESS 1600)
+  list(REMOVE_ITEM VMCoreSources VMCore/ValueMapTest.cpp)
+endif()
+
+add_llvm_unittest(VMCore ${VMCoreSources})
 
 set(LLVM_LINK_COMPONENTS
   System

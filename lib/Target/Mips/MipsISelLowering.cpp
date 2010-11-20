@@ -629,8 +629,8 @@ SDValue MipsTargetLowering::LowerVASTART(SDValue Op, SelectionDAG &DAG) const {
 //       go to stack.
 //===----------------------------------------------------------------------===//
 
-static bool CC_MipsO32(unsigned ValNo, EVT ValVT,
-                       EVT LocVT, CCValAssign::LocInfo LocInfo,
+static bool CC_MipsO32(unsigned ValNo, MVT ValVT,
+                       MVT LocVT, CCValAssign::LocInfo LocInfo,
                        ISD::ArgFlagsTy ArgFlags, CCState &State) {
 
   static const unsigned IntRegsSize=4, FloatRegsSize=2; 
@@ -695,8 +695,8 @@ static bool CC_MipsO32(unsigned ValNo, EVT ValVT,
   return false; // CC must always match
 }
 
-static bool CC_MipsO32_VarArgs(unsigned ValNo, EVT ValVT,
-                       EVT LocVT, CCValAssign::LocInfo LocInfo,
+static bool CC_MipsO32_VarArgs(unsigned ValNo, MVT ValVT,
+                       MVT LocVT, CCValAssign::LocInfo LocInfo,
                        ISD::ArgFlagsTy ArgFlags, CCState &State) {
 
   static const unsigned IntRegsSize=4;
@@ -789,7 +789,7 @@ MipsTargetLowering::LowerCall(SDValue Chain, SDValue Callee,
   // To meet O32 ABI, Mips must always allocate 16 bytes on
   // the stack (even if less than 4 are used as arguments)
   if (Subtarget->isABI_O32()) {
-    int VTsize = EVT(MVT::i32).getSizeInBits()/8;
+    int VTsize = MVT(MVT::i32).getSizeInBits()/8;
     MFI->CreateFixedObject(VTsize, (VTsize*3), true);
     CCInfo.AnalyzeCallOperands(Outs, 
                      isVarArg ? CC_MipsO32_VarArgs : CC_MipsO32);
@@ -1267,6 +1267,37 @@ getConstraintType(const std::string &Constraint) const
     }
   }
   return TargetLowering::getConstraintType(Constraint);
+}
+
+/// Examine constraint type and operand type and determine a weight value.
+/// This object must already have been set up with the operand type
+/// and the current alternative constraint selected.
+TargetLowering::ConstraintWeight
+MipsTargetLowering::getSingleConstraintMatchWeight(
+    AsmOperandInfo &info, const char *constraint) const {
+  ConstraintWeight weight = CW_Invalid;
+  Value *CallOperandVal = info.CallOperandVal;
+    // If we don't have a value, we can't do a match,
+    // but allow it at the lowest weight.
+  if (CallOperandVal == NULL)
+    return CW_Default;
+  const Type *type = CallOperandVal->getType();
+  // Look at the constraint type.
+  switch (*constraint) {
+  default:
+    weight = TargetLowering::getSingleConstraintMatchWeight(info, constraint);
+    break;
+  case 'd':     
+  case 'y': 
+    if (type->isIntegerTy())
+      weight = CW_Register;
+    break;
+  case 'f':
+    if (type->isFloatTy())
+      weight = CW_Register;
+    break;
+  }
+  return weight;
 }
 
 /// getRegClassForInlineAsmConstraint - Given a constraint letter (e.g. "r"),

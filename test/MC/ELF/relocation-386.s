@@ -50,6 +50,55 @@
 // CHECK-NEXT:  ('r_type', 0x00000003
 // CHECK-NEXT: ),
 
+// Relocation 5 (foo@TLSGD) is of type R_386_TLS_GD
+// CHECK-NEXT: # Relocation 0x00000005
+// CHECK-NEXT: (('r_offset', 0x00000020)
+// CHECK-NEXT:  ('r_sym', 0x0000000b)
+// CHECK-NEXT:  ('r_type', 0x00000012)
+// CHECK-NEXT: ),
+
+// Relocation 6 ($foo@TPOFF) is of type R_386_TLS_LE_32
+// CHECK-NEXT: # Relocation 0x00000006
+// CHECK-NEXT: (('r_offset', 0x00000025)
+// CHECK-NEXT:  ('r_sym', 0x0000000b)
+// CHECK-NEXT:  ('r_type', 0x00000022)
+// CHECK-NEXT: ),
+
+// Relocation 7 (foo@INDNTPOFF) is of type R_386_TLS_IE
+// CHECK-NEXT: # Relocation 0x00000007
+// CHECK-NEXT: (('r_offset', 0x0000002b)
+// CHECK-NEXT:  ('r_sym', 0x0000000b)
+// CHECK-NEXT:  ('r_type', 0x0000000f)
+// CHECK-NEXT: ),
+
+// Relocation 8 (foo@NTPOFF) is of type R_386_TLS_LE
+// CHECK-NEXT: # Relocation 0x00000008
+// CHECK-NEXT: (('r_offset', 0x00000031)
+// CHECK-NEXT:  ('r_sym', 0x0000000b)
+// CHECK-NEXT:  ('r_type', 0x00000011)
+// CHECK-NEXT: ),
+
+// Relocation 9 (foo@GOTNTPOFF) is of type R_386_TLS_GOTIE
+// CHECK-NEXT: # Relocation 0x00000009
+// CHECK-NEXT: (('r_offset', 0x00000037)
+// CHECK-NEXT:  ('r_sym', 0x0000000b)
+// CHECK-NEXT:  ('r_type', 0x00000010)
+// CHECK-NEXT: ),
+
+// Relocation 10 (foo@TLSLDM) is of type R_386_TLS_LDM
+// CHECK-NEXT: # Relocation 0x0000000a
+// CHECK-NEXT: (('r_offset', 0x0000003d)
+// CHECK-NEXT:  ('r_sym', 0x0000000b)
+// CHECK-NEXT:  ('r_type', 0x00000013)
+// CHECK-NEXT: ),
+
+// Relocation 11 (foo@DTPOFF) is of type R_386_TLS_LDO_32
+// CHECK-NEXT: # Relocation 0x0000000b
+// CHECK-NEXT: (('r_offset', 0x00000043)
+// CHECK-NEXT:  ('r_sym', 0x0000000b)
+// CHECK-NEXT:  ('r_type', 0x00000020)
+// CHECK-NEXT: ),
+
         .text
 bar:
 	leal	.Lfoo@GOTOFF(%ebx), %eax
@@ -65,6 +114,14 @@ bar2:
 	.comm	bar3,1,1
 
         movl	bar2j@GOT(%eax), %eax
+
+        leal foo@TLSGD(, %ebx,1), %eax
+        movl $foo@TPOFF, %edx
+        movl foo@INDNTPOFF, %ecx
+        addl foo@NTPOFF(%eax), %eax
+        addl foo@GOTNTPOFF(%ebx), %ecx
+        leal foo@TLSLDM(%ebx), %eax
+        leal foo@DTPOFF(%eax), %edx
 
         .section	.rodata.str1.16,"aMS",@progbits,1
 .Lfoo:

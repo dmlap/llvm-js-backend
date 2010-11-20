@@ -109,7 +109,6 @@ namespace {
     const char *getPassName() const { return "Machine Instruction LICM"; }
 
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
-      AU.setPreservesCFG();
       AU.addRequired<MachineLoopInfo>();
       AU.addRequired<MachineDominatorTree>();
       AU.addRequired<AliasAnalysis>();
@@ -173,7 +172,10 @@ namespace {
     /// HasHighOperandLatency - Compute operand latency between a def of 'Reg'
     /// and an use in the current loop, return true if the target considered
     /// it 'high'.
-    bool HasHighOperandLatency(MachineInstr &MI, unsigned DefIdx, unsigned Reg);
+    bool HasHighOperandLatency(MachineInstr &MI, unsigned DefIdx,
+                               unsigned Reg) const;
+
+    bool IsCheapInstruction(MachineInstr &MI) const;
 
     /// CanCauseHighRegPressure - Visit BBs from header to current BB,
     /// check if hoisting an instruction of the given cost matrix can cause high
@@ -795,13 +797,15 @@ bool MachineLICM::isLoadFromConstantMemory(MachineInstr *MI) {
 /// and an use in the current loop, return true if the target considered
 /// it 'high'.
 bool MachineLICM::HasHighOperandLatency(MachineInstr &MI,
-                                        unsigned DefIdx, unsigned Reg) {
-  if (MRI->use_nodbg_empty(Reg))
+                                        unsigned DefIdx, unsigned Reg) const {
+  if (!InstrItins || InstrItins->isEmpty() || MRI->use_nodbg_empty(Reg))
     return false;
 
   for (MachineRegisterInfo::use_nodbg_iterator I = MRI->use_nodbg_begin(Reg),
          E = MRI->use_nodbg_end(); I != E; ++I) {
     MachineInstr *UseMI = &*I;
+    if (UseMI->isCopyLike())
+      continue;
     if (!CurLoop->contains(UseMI->getParent()))
       continue;
     for (unsigned i = 0, e = UseMI->getNumOperands(); i != e; ++i) {
@@ -821,6 +825,33 @@ bool MachineLICM::HasHighOperandLatency(MachineInstr &MI,
   }
 
   return false;
+}
+
+/// IsCheapInstruction - Return true if the instruction is marked "cheap" or
+/// the operand latency between its def and a use is one or less.
+bool MachineLICM::IsCheapInstruction(MachineInstr &MI) const {
+  if (MI.getDesc().isAsCheapAsAMove() || MI.isCopyLike())
+    return true;
+  if (!InstrItins || InstrItins->isEmpty())
+    return false;
+
+  bool isCheap = false;
+  unsigned NumDefs = MI.getDesc().getNumDefs();
+  for (unsigned i = 0, e = MI.getNumOperands(); NumDefs && i != e; ++i) {
+    MachineOperand &DefMO = MI.getOperand(i);
+    if (!DefMO.isReg() || !DefMO.isDef())
+      continue;
+    --NumDefs;
+    unsigned Reg = DefMO.getReg();
+    if (TargetRegisterInfo::isPhysicalRegister(Reg))
+      continue;
+
+    if (!TII->hasLowDefLatency(InstrItins, &MI, i))
+      return false;
+    isCheap = true;
+  }
+
+  return isCheap;
 }
 
 /// CanCauseHighRegPressure - Visit BBs from header to current BB, check
@@ -905,7 +936,7 @@ bool MachineLICM::IsProfitableToHoist(MachineInstr &MI) {
   // trade off is it may cause spill in high pressure situation. It will end up
   // adding a store in the loop preheader. But the reload is no more expensive.
   // The side benefit is these loads are frequently CSE'ed.
-  if (MI.getDesc().isAsCheapAsAMove()) {
+  if (IsCheapInstruction(MI)) {
     if (!TII->isTriviallyReMaterializable(&MI, AA))
       return false;
   } else {
@@ -913,6 +944,8 @@ bool MachineLICM::IsProfitableToHoist(MachineInstr &MI) {
     // In low register pressure situation, we can be more aggressive about 
     // hoisting. Also, favors hoisting long latency instructions even in
     // moderately high pressure situation.
+    // FIXME: If there are long latency loop-invariant instructions inside the
+    // loop at this point, why didn't the optimizer's LICM hoist them?
     DenseMap<unsigned, int> Cost;
     for (unsigned i = 0, e = MI.getDesc().getNumOperands(); i != e; ++i) {
       const MachineOperand &MO = MI.getOperand(i);

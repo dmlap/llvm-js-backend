@@ -232,10 +232,35 @@ enum {
   R_386_GOTOFF        = 9,
   R_386_GOTPC         = 10,
   R_386_32PLT         = 11,
+  R_386_TLS_TPOFF     = 14,
+  R_386_TLS_IE        = 15,
+  R_386_TLS_GOTIE     = 16,
+  R_386_TLS_LE        = 17,
+  R_386_TLS_GD        = 18,
+  R_386_TLS_LDM       = 19,
   R_386_16            = 20,
   R_386_PC16          = 21,
   R_386_8             = 22,
-  R_386_PC8           = 23
+  R_386_PC8           = 23,
+  R_386_TLS_GD_32     = 24,
+  R_386_TLS_GD_PUSH   = 25,
+  R_386_TLS_GD_CALL   = 26,
+  R_386_TLS_GD_POP    = 27,
+  R_386_TLS_LDM_32    = 28,
+  R_386_TLS_LDM_PUSH  = 29,
+  R_386_TLS_LDM_CALL  = 30,
+  R_386_TLS_LDM_POP   = 31,
+  R_386_TLS_LDO_32    = 32,
+  R_386_TLS_IE_32     = 33,
+  R_386_TLS_LE_32     = 34,
+  R_386_TLS_DTPMOD32  = 35,
+  R_386_TLS_DTPOFF32  = 36,
+  R_386_TLS_TPOFF32   = 37,
+  R_386_TLS_GOTDESC   = 39,
+  R_386_TLS_DESC_CALL = 40,
+  R_386_TLS_DESC      = 41,
+  R_386_IRELATIVE     = 42,
+  R_386_NUM           = 43
 };
 
 // Section header.
@@ -274,6 +299,7 @@ enum {
   SHN_HIPROC    = 0xff1f, // Highest processor-specific index
   SHN_ABS       = 0xfff1, // Symbol has absolute value; does not need relocation
   SHN_COMMON    = 0xfff2, // FORTRAN COMMON or C external global variables
+  SHN_XINDEX    = 0xffff, // Mark that the index is >= SHN_LORESERVE
   SHN_HIRESERVE = 0xffff  // Highest reserved index
 };
 
@@ -299,6 +325,16 @@ enum {
   SHT_LOOS          = 0x60000000, // Lowest operating system-specific type.
   SHT_HIOS          = 0x6fffffff, // Highest operating system-specific type.
   SHT_LOPROC        = 0x70000000, // Lowest processor architecture-specific type.
+  // Fixme: All this is duplicated in MCSectionELF. Why??
+  // Exception Index table
+  SHT_ARM_EXIDX           = 0x70000001U,
+  // BPABI DLL dynamic linking pre-emption map
+  SHT_ARM_PREEMPTMAP      = 0x70000002U,
+  //  Object file compatibility attributes
+  SHT_ARM_ATTRIBUTES      = 0x70000003U,
+  SHT_ARM_DEBUGOVERLAY    = 0x70000004U,
+  SHT_ARM_OVERLAYSECTION  = 0x70000005U,
+
   SHT_HIPROC        = 0x7fffffff, // Highest processor architecture-specific type.
   SHT_LOUSER        = 0x80000000, // Lowest type reserved for applications.
   SHT_HIUSER        = 0xffffffff  // Highest type reserved for applications.
@@ -310,6 +346,13 @@ enum {
   SHF_ALLOC     = 0x2, // Section occupies memory during program execution.
   SHF_EXECINSTR = 0x4, // Section contains executable machine instructions.
   SHF_MASKPROC  = 0xf0000000 // Bits indicating processor-specific flags.
+};
+
+// Section Group Flags
+enum {
+  GRP_COMDAT = 0x1,
+  GRP_MASKOS = 0x0ff00000,
+  GRP_MASKPROC = 0xf0000000
 };
 
 // Symbol table entries for ELF32.

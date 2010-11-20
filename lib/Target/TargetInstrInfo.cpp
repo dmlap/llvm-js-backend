@@ -50,8 +50,8 @@ TargetInstrInfo::~TargetInstrInfo() {
 }
 
 unsigned
-TargetInstrInfo::getNumMicroOps(const MachineInstr *MI,
-                                const InstrItineraryData *ItinData) const {
+TargetInstrInfo::getNumMicroOps(const InstrItineraryData *ItinData,
+                                const MachineInstr *MI) const {
   if (!ItinData || ItinData->isEmpty())
     return 1;
 
@@ -94,6 +94,36 @@ TargetInstrInfo::getOperandLatency(const InstrItineraryData *ItinData,
   return ItinData->getOperandLatency(DefClass, DefIdx, UseClass, UseIdx);
 }
 
+int TargetInstrInfo::getInstrLatency(const InstrItineraryData *ItinData,
+                                     const MachineInstr *MI,
+                                     unsigned *PredCost) const {
+  if (!ItinData || ItinData->isEmpty())
+    return 1;
+
+  return ItinData->getStageLatency(MI->getDesc().getSchedClass());
+}
+
+int TargetInstrInfo::getInstrLatency(const InstrItineraryData *ItinData,
+                                     SDNode *N) const {
+  if (!ItinData || ItinData->isEmpty())
+    return 1;
+
+  if (!N->isMachineOpcode())
+    return 1;
+
+  return ItinData->getStageLatency(get(N->getMachineOpcode()).getSchedClass());
+}
+
+bool TargetInstrInfo::hasLowDefLatency(const InstrItineraryData *ItinData,
+                                       const MachineInstr *DefMI,
+                                       unsigned DefIdx) const {
+  if (!ItinData || ItinData->isEmpty())
+    return false;
+
+  unsigned DefClass = DefMI->getDesc().getSchedClass();
+  int DefCycle = ItinData->getOperandCycle(DefClass, DefIdx);
+  return (DefCycle != -1 && DefCycle <= 1);
+}
 
 /// insertNoop - Insert a noop into the instruction stream at the specified
 /// point.

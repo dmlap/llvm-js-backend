@@ -21,6 +21,14 @@
 #include "llvm/Target/TargetRegistry.h"
 using namespace llvm;
 
+static MCAsmInfo *createMCAsmInfo(const Target &T, StringRef TT) {
+  Triple TheTriple(TT);
+  switch (TheTriple.getOS()) {
+  default:
+    return new MBlazeMCAsmInfo();
+  }
+}
+
 static MCStreamer *createMCStreamer(const Target &T, const std::string &TT,
                                     MCContext &Ctx, TargetAsmBackend &TAB,
                                     raw_ostream &_OS,
@@ -46,12 +54,14 @@ static MCStreamer *createMCStreamer(const Target &T, const std::string &TT,
 extern "C" void LLVMInitializeMBlazeTarget() {
   // Register the target.
   RegisterTargetMachine<MBlazeTargetMachine> X(TheMBlazeTarget);
-  RegisterAsmInfo<MBlazeMCAsmInfo> A(TheMBlazeTarget);
+
+  // Register the target asm info.
+  RegisterAsmInfoFn A(TheMBlazeTarget, createMCAsmInfo);
 
   // Register the MC code emitter
   TargetRegistry::RegisterCodeEmitter(TheMBlazeTarget,
                                       llvm::createMBlazeMCCodeEmitter);
-  
+
   // Register the asm backend
   TargetRegistry::RegisterAsmBackend(TheMBlazeTarget,
                                      createMBlazeAsmBackend);
@@ -75,7 +85,7 @@ MBlazeTargetMachine(const Target &T, const std::string &TT,
   Subtarget(TT, FS),
   DataLayout("E-p:32:32:32-i8:8:8-i16:16:16"),
   InstrInfo(*this),
-  FrameInfo(TargetFrameInfo::StackGrowsUp, 8, 0),
+  FrameInfo(Subtarget),
   TLInfo(*this), TSInfo(*this), ELFWriterInfo(*this) {
   if (getRelocationModel() == Reloc::Default) {
       setRelocationModel(Reloc::Static);

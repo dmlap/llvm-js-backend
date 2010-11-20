@@ -66,6 +66,9 @@ namespace llvm {
 
   extern char &PreAllocSplittingID;
 
+  /// LiveStacks pass. An analysis keeping track of the liveness of stack slots.
+  extern char &LiveStacksID;
+
   /// SimpleRegisterCoalescing pass.  Aggressively coalesces every register
   /// copy it can.
   ///
@@ -209,6 +212,10 @@ namespace llvm {
   /// be out of range of normal frame pointer or stack pointer index
   /// addressing.
   FunctionPass *createLocalStackSlotAllocationPass();
+
+  /// createExpandISelPseudosPass - This pass expands pseudo-instructions.
+  ///
+  FunctionPass *createExpandISelPseudosPass();
 
 } // End llvm namespace
 

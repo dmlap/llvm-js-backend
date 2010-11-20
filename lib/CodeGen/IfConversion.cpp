@@ -28,6 +28,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/DepthFirstIterator.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/STLExtras.h"
 using namespace llvm;
@@ -93,6 +94,8 @@ namespace {
     /// ClobbersPred    - True if BB could modify predicates (e.g. has
     ///                   cmp, call, etc.)
     /// NonPredSize     - Number of non-predicated instructions.
+    /// ExtraCost       - Extra cost for multi-cycle instructions.
+    /// ExtraCost2      - Some instructions are slower when predicated
     /// BB              - Corresponding MachineBasicBlock.
     /// TrueBB / FalseBB- See AnalyzeBranch().
     /// BrCond          - Conditions for end of block conditional branches.
@@ -108,6 +111,8 @@ namespace {
       bool CannotBeCopied  : 1;
       bool ClobbersPred    : 1;
       unsigned NonPredSize;
+      unsigned ExtraCost;
+      unsigned ExtraCost2;
       MachineBasicBlock *BB;
       MachineBasicBlock *TrueBB;
       MachineBasicBlock *FalseBB;
@@ -117,7 +122,7 @@ namespace {
                  IsAnalyzed(false), IsEnqueued(false), IsBrAnalyzable(false),
                  HasFallThrough(false), IsUnpredicable(false),
                  CannotBeCopied(false), ClobbersPred(false), NonPredSize(0),
-                 BB(0), TrueBB(0), FalseBB(0) {}
+                 ExtraCost(0), ExtraCost2(0), BB(0), TrueBB(0), FalseBB(0) {}
     };
 
     /// IfcvtToken - Record information about pending if-conversions to attempt:
@@ -201,17 +206,20 @@ namespace {
                                bool IgnoreBr = false);
     void MergeBlocks(BBInfo &ToBBI, BBInfo &FromBBI, bool AddEdges = true);
 
-    bool MeetIfcvtSizeLimit(MachineBasicBlock &BB, unsigned Size,
+    bool MeetIfcvtSizeLimit(MachineBasicBlock &BB,
+                            unsigned Cycle, unsigned Extra,
                             float Prediction, float Confidence) const {
-      return Size > 0 && TII->isProfitableToIfCvt(BB, Size,
-                                                  Prediction, Confidence);
+      return Cycle > 0 && TII->isProfitableToIfCvt(BB, Cycle, Extra,
+                                                   Prediction, Confidence);
     }
 
-    bool MeetIfcvtSizeLimit(MachineBasicBlock &TBB, unsigned TSize,
-                            MachineBasicBlock &FBB, unsigned FSize,
+    bool MeetIfcvtSizeLimit(MachineBasicBlock &TBB,
+                            unsigned TCycle, unsigned TExtra,
+                            MachineBasicBlock &FBB,
+                            unsigned FCycle, unsigned FExtra,
                             float Prediction, float Confidence) const {
-      return TSize > 0 && FSize > 0 &&
-        TII->isProfitableToIfCvt(TBB, TSize, FBB, FSize,
+      return TCycle > 0 && FCycle > 0 &&
+        TII->isProfitableToIfCvt(TBB, TCycle, TExtra, FBB, FCycle, FExtra,
                                  Prediction, Confidence);
     }
 
@@ -518,18 +526,6 @@ bool IfConverter::ValidTriangle(BBInfo &TrueBBI, BBInfo &FalseBBI,
   return TExit && TExit == FalseBBI.BB;
 }
 
-static
-MachineBasicBlock::iterator firstNonBranchInst(MachineBasicBlock *BB,
-                                               const TargetInstrInfo *TII) {
-  MachineBasicBlock::iterator I = BB->end();
-  while (I != BB->begin()) {
-    --I;
-    if (!I->getDesc().isBranch())
-      break;
-  }
-  return I;
-}
-
 /// ValidDiamond - Returns true if the 'true' and 'false' blocks (along
 /// with their common predecessor) forms a valid diamond shape for ifcvt.
 bool IfConverter::ValidDiamond(BBInfo &TrueBBI, BBInfo &FalseBBI,
@@ -558,64 +554,70 @@ bool IfConverter::ValidDiamond(BBInfo &TrueBBI, BBInfo &FalseBBI,
       (TrueBBI.ClobbersPred && FalseBBI.ClobbersPred))
     return false;
 
-  MachineBasicBlock::iterator TI = TrueBBI.BB->begin();
-  MachineBasicBlock::iterator FI = FalseBBI.BB->begin();
-  MachineBasicBlock::iterator TIE = TrueBBI.BB->end();
-  MachineBasicBlock::iterator FIE = FalseBBI.BB->end();
-  // Skip dbg_value instructions
-  while (TI != TIE && TI->isDebugValue())
-    ++TI;
-  while (FI != FIE && FI->isDebugValue())
-    ++FI;
-  while (TI != TIE && FI != FIE) {
-    // Skip dbg_value instructions. These do not count.
-    if (TI->isDebugValue()) {
-      while (TI != TIE && TI->isDebugValue())
-        ++TI;
-      if (TI == TIE)
-        break;
-    }
-    if (FI->isDebugValue()) {
-      while (FI != FIE && FI->isDebugValue())
-        ++FI;
-      if (FI == FIE)
-        break;
-    }
-    if (!TI->isIdenticalTo(FI))
-      break;
-    ++Dups1;
-    ++TI;
-    ++FI;
-  }
-
-  TI = firstNonBranchInst(TrueBBI.BB, TII);
-  FI = firstNonBranchInst(FalseBBI.BB, TII);
+  // Count duplicate instructions at the beginning of the true and false blocks.
   MachineBasicBlock::iterator TIB = TrueBBI.BB->begin();
   MachineBasicBlock::iterator FIB = FalseBBI.BB->begin();
-  // Skip dbg_value instructions at end of the bb's.
-  while (TI != TIB && TI->isDebugValue())
-    --TI;
-  while (FI != FIB && FI->isDebugValue())
-    --FI;
-  while (TI != TIB && FI != FIB) {
+  MachineBasicBlock::iterator TIE = TrueBBI.BB->end();
+  MachineBasicBlock::iterator FIE = FalseBBI.BB->end();
+  while (TIB != TIE && FIB != FIE) {
     // Skip dbg_value instructions. These do not count.
-    if (TI->isDebugValue()) {
-      while (TI != TIB && TI->isDebugValue())
-        --TI;
-      if (TI == TIB)
+    if (TIB->isDebugValue()) {
+      while (TIB != TIE && TIB->isDebugValue())
+        ++TIB;
+      if (TIB == TIE)
         break;
     }
-    if (FI->isDebugValue()) {
-      while (FI != FIB && FI->isDebugValue())
-        --FI;
-      if (FI == FIB)
+    if (FIB->isDebugValue()) {
+      while (FIB != FIE && FIB->isDebugValue())
+        ++FIB;
+      if (FIB == FIE)
         break;
     }
-    if (!TI->isIdenticalTo(FI))
+    if (!TIB->isIdenticalTo(FIB))
+      break;
+    ++Dups1;
+    ++TIB;
+    ++FIB;
+  }
+
+  // Now, in preparation for counting duplicate instructions at the ends of the
+  // blocks, move the end iterators up past any branch instructions.
+  while (TIE != TIB) {
+    --TIE;
+    if (!TIE->getDesc().isBranch())
+      break;
+  }
+  while (FIE != FIB) {
+    --FIE;
+    if (!FIE->getDesc().isBranch())
+      break;
+  }
+
+  // If Dups1 includes all of a block, then don't count duplicate
+  // instructions at the end of the blocks.
+  if (TIB == TIE || FIB == FIE)
+    return true;
+
+  // Count duplicate instructions at the ends of the blocks.
+  while (TIE != TIB && FIE != FIB) {
+    // Skip dbg_value instructions. These do not count.
+    if (TIE->isDebugValue()) {
+      while (TIE != TIB && TIE->isDebugValue())
+        --TIE;
+      if (TIE == TIB)
+        break;
+    }
+    if (FIE->isDebugValue()) {
+      while (FIE != FIB && FIE->isDebugValue())
+        --FIE;
+      if (FIE == FIB)
+        break;
+    }
+    if (!TIE->isIdenticalTo(FIE))
       break;
     ++Dups2;
-    --TI;
-    --FI;
+    --TIE;
+    --FIE;
   }
 
   return true;
@@ -652,6 +654,8 @@ void IfConverter::ScanInstructions(BBInfo &BBI) {
 
   // Then scan all the instructions.
   BBI.NonPredSize = 0;
+  BBI.ExtraCost = 0;
+  BBI.ExtraCost2 = 0;
   BBI.ClobbersPred = false;
   for (MachineBasicBlock::iterator I = BBI.BB->begin(), E = BBI.BB->end();
        I != E; ++I) {
@@ -667,8 +671,13 @@ void IfConverter::ScanInstructions(BBInfo &BBI) {
 
     if (!isCondBr) {
       if (!isPredicated) {
-        unsigned NumOps = TII->getNumMicroOps(&*I, InstrItins);
-        BBI.NonPredSize += NumOps;
+        BBI.NonPredSize++;
+        unsigned ExtraPredCost = 0;
+        unsigned NumCycles = TII->getInstrLatency(InstrItins, &*I,
+                                                  &ExtraPredCost);
+        if (NumCycles > 1)
+          BBI.ExtraCost += NumCycles-1;
+        BBI.ExtraCost2 += ExtraPredCost;
       } else if (!AlreadyPredicated) {
         // FIXME: This instruction is already predicated before the
         // if-conversion pass. It's probably something like a conditional move.
@@ -815,8 +824,10 @@ IfConverter::BBInfo &IfConverter::AnalyzeBlock(MachineBasicBlock *BB,
   }
   
   if (CanRevCond && ValidDiamond(TrueBBI, FalseBBI, Dups, Dups2) &&
-      MeetIfcvtSizeLimit(*TrueBBI.BB, TrueBBI.NonPredSize - (Dups + Dups2),
-                         *FalseBBI.BB, FalseBBI.NonPredSize - (Dups + Dups2),
+      MeetIfcvtSizeLimit(*TrueBBI.BB, (TrueBBI.NonPredSize - (Dups + Dups2) +
+                                       TrueBBI.ExtraCost), TrueBBI.ExtraCost2,
+                         *FalseBBI.BB, (FalseBBI.NonPredSize - (Dups + Dups2) +
+                                        FalseBBI.ExtraCost),FalseBBI.ExtraCost2,
                          Prediction, Confidence) &&
       FeasibilityAnalysis(TrueBBI, BBI.BrCond) &&
       FeasibilityAnalysis(FalseBBI, RevCond)) {
@@ -834,8 +845,8 @@ IfConverter::BBInfo &IfConverter::AnalyzeBlock(MachineBasicBlock *BB,
   }
 
   if (ValidTriangle(TrueBBI, FalseBBI, false, Dups, Prediction, Confidence) &&
-      MeetIfcvtSizeLimit(*TrueBBI.BB, TrueBBI.NonPredSize,
-                         Prediction, Confidence) &&
+      MeetIfcvtSizeLimit(*TrueBBI.BB, TrueBBI.NonPredSize + TrueBBI.ExtraCost,
+                         TrueBBI.ExtraCost2, Prediction, Confidence) &&
       FeasibilityAnalysis(TrueBBI, BBI.BrCond, true)) {
     // Triangle:
     //   EBB
@@ -849,16 +860,16 @@ IfConverter::BBInfo &IfConverter::AnalyzeBlock(MachineBasicBlock *BB,
   }
 
   if (ValidTriangle(TrueBBI, FalseBBI, true, Dups, Prediction, Confidence) &&
-      MeetIfcvtSizeLimit(*TrueBBI.BB, TrueBBI.NonPredSize,
-                         Prediction, Confidence) &&
+      MeetIfcvtSizeLimit(*TrueBBI.BB, TrueBBI.NonPredSize + TrueBBI.ExtraCost,
+                         TrueBBI.ExtraCost2, Prediction, Confidence) &&
       FeasibilityAnalysis(TrueBBI, BBI.BrCond, true, true)) {
     Tokens.push_back(new IfcvtToken(BBI, ICTriangleRev, TNeedSub, Dups));
     Enqueued = true;
   }
 
   if (ValidSimple(TrueBBI, Dups, Prediction, Confidence) &&
-      MeetIfcvtSizeLimit(*TrueBBI.BB, TrueBBI.NonPredSize,
-                         Prediction, Confidence) &&
+      MeetIfcvtSizeLimit(*TrueBBI.BB, TrueBBI.NonPredSize + TrueBBI.ExtraCost,
+                         TrueBBI.ExtraCost2, Prediction, Confidence) &&
       FeasibilityAnalysis(TrueBBI, BBI.BrCond)) {
     // Simple (split, no rejoin):
     //   EBB
@@ -875,8 +886,9 @@ IfConverter::BBInfo &IfConverter::AnalyzeBlock(MachineBasicBlock *BB,
     // Try the other path...
     if (ValidTriangle(FalseBBI, TrueBBI, false, Dups,
                       1.0-Prediction, Confidence) &&
-        MeetIfcvtSizeLimit(*FalseBBI.BB, FalseBBI.NonPredSize,
-                           1.0-Prediction, Confidence) &&
+        MeetIfcvtSizeLimit(*FalseBBI.BB,
+                           FalseBBI.NonPredSize + FalseBBI.ExtraCost,
+                           FalseBBI.ExtraCost2, 1.0-Prediction, Confidence) &&
         FeasibilityAnalysis(FalseBBI, RevCond, true)) {
       Tokens.push_back(new IfcvtToken(BBI, ICTriangleFalse, FNeedSub, Dups));
       Enqueued = true;
@@ -884,16 +896,18 @@ IfConverter::BBInfo &IfConverter::AnalyzeBlock(MachineBasicBlock *BB,
 
     if (ValidTriangle(FalseBBI, TrueBBI, true, Dups,
                       1.0-Prediction, Confidence) &&
-        MeetIfcvtSizeLimit(*FalseBBI.BB, FalseBBI.NonPredSize,
-                           1.0-Prediction, Confidence) &&
+        MeetIfcvtSizeLimit(*FalseBBI.BB,
+                           FalseBBI.NonPredSize + FalseBBI.ExtraCost,
+                           FalseBBI.ExtraCost2, 1.0-Prediction, Confidence) &&
         FeasibilityAnalysis(FalseBBI, RevCond, true, true)) {
       Tokens.push_back(new IfcvtToken(BBI, ICTriangleFRev, FNeedSub, Dups));
       Enqueued = true;
     }
 
     if (ValidSimple(FalseBBI, Dups, 1.0-Prediction, Confidence) &&
-        MeetIfcvtSizeLimit(*FalseBBI.BB, FalseBBI.NonPredSize,
-                           1.0-Prediction, Confidence) &&
+        MeetIfcvtSizeLimit(*FalseBBI.BB,
+                           FalseBBI.NonPredSize + FalseBBI.ExtraCost,
+                           FalseBBI.ExtraCost2, 1.0-Prediction, Confidence) &&
         FeasibilityAnalysis(FalseBBI, RevCond)) {
       Tokens.push_back(new IfcvtToken(BBI, ICSimpleFalse, FNeedSub, Dups));
       Enqueued = true;
@@ -1422,8 +1436,12 @@ void IfConverter::CopyAndPredicateBlock(BBInfo &ToBBI, BBInfo &FromBBI,
 
     MachineInstr *MI = MF.CloneMachineInstr(I);
     ToBBI.BB->insert(ToBBI.BB->end(), MI);
-    unsigned NumOps = TII->getNumMicroOps(MI, InstrItins);
-    ToBBI.NonPredSize += NumOps;
+    ToBBI.NonPredSize++;
+    unsigned ExtraPredCost = 0;
+    unsigned NumCycles = TII->getInstrLatency(InstrItins, &*I, &ExtraPredCost);
+    if (NumCycles > 1)
+      ToBBI.ExtraCost += NumCycles-1;
+    ToBBI.ExtraCost2 += ExtraPredCost;
 
     if (!TII->isPredicated(I) && !MI->isDebugValue()) {
       if (!TII->PredicateInstruction(MI, Cond)) {
@@ -1497,7 +1515,11 @@ void IfConverter::MergeBlocks(BBInfo &ToBBI, BBInfo &FromBBI, bool AddEdges) {
   FromBBI.Predicate.clear();
 
   ToBBI.NonPredSize += FromBBI.NonPredSize;
+  ToBBI.ExtraCost += FromBBI.ExtraCost;
+  ToBBI.ExtraCost2 += FromBBI.ExtraCost2;
   FromBBI.NonPredSize = 0;
+  FromBBI.ExtraCost = 0;
+  FromBBI.ExtraCost2 = 0;
 
   ToBBI.ClobbersPred |= FromBBI.ClobbersPred;
   ToBBI.HasFallThrough = FromBBI.HasFallThrough;

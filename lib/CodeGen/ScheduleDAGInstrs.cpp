@@ -168,9 +168,16 @@ void ScheduleDAGInstrs::AddSchedBarrierDeps() {
     }
   } else {
     // For others, e.g. fallthrough, conditional branch, assume the exit
-    // uses all the registers.
-    for (int i = 0, e = TRI->getNumRegs(); i != e; ++i)
-      Uses[i].push_back(&ExitSU);
+    // uses all the registers that are livein to the successor blocks.
+    SmallSet<unsigned, 8> Seen;
+    for (MachineBasicBlock::succ_iterator SI = BB->succ_begin(),
+           SE = BB->succ_end(); SI != SE; ++SI)
+      for (MachineBasicBlock::livein_iterator I = (*SI)->livein_begin(),
+             E = (*SI)->livein_end(); I != E; ++I) {    
+        unsigned Reg = *I;
+        if (Seen.insert(Reg))
+          Uses[Reg].push_back(&ExitSU);
+      }
   }
 }
 
@@ -231,6 +238,8 @@ void ScheduleDAGInstrs::BuildSchedGraph(AliasAnalysis *AA) {
            "Cannot schedule terminators or labels!");
     // Create the SUnit for this MI.
     SUnit *SU = NewSUnit(MI);
+    SU->isCall = TID.isCall();
+    SU->isCommutable = TID.isCommutable();
 
     // Assign the Latency field of SU using target-provided information.
     if (UnitLatencies)
@@ -557,9 +566,9 @@ void ScheduleDAGInstrs::ComputeLatency(SUnit *SU) {
     // extra time.
     if (SU->getInstr()->getDesc().mayLoad())
       SU->Latency += 2;
-  } else
-    SU->Latency =
-      InstrItins->getStageLatency(SU->getInstr()->getDesc().getSchedClass());
+  } else {
+    SU->Latency = TII->getInstrLatency(InstrItins, SU->getInstr());
+  }
 }
 
 void ScheduleDAGInstrs::ComputeOperandLatency(SUnit *Def, SUnit *Use, 

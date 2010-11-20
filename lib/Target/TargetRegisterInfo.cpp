@@ -82,7 +82,7 @@ BitVector TargetRegisterInfo::getAllocatableSet(const MachineFunction &MF,
 
   // Mask out the reserved registers
   BitVector Reserved = getReservedRegs(MF);
-  Allocatable ^= Reserved & Allocatable;
+  Allocatable &= Reserved.flip();
 
   return Allocatable;
 }
@@ -96,13 +96,6 @@ int TargetRegisterInfo::getFrameIndexOffset(const MachineFunction &MF,
   const MachineFrameInfo *MFI = MF.getFrameInfo();
   return MFI->getObjectOffset(FI) + MFI->getStackSize() -
     TFI.getOffsetOfLocalArea() + MFI->getOffsetAdjustment();
-}
-
-/// getInitialFrameState - Returns a list of machine moves that are assumed
-/// on entry to a function.
-void
-TargetRegisterInfo::getInitialFrameState(std::vector<MachineMove> &Moves) const{
-  // Default is to do nothing.
 }
 
 const TargetRegisterClass *

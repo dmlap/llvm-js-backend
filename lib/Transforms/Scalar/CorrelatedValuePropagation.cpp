@@ -16,10 +16,10 @@
 #include "llvm/Function.h"
 #include "llvm/Instructions.h"
 #include "llvm/Pass.h"
+#include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/LazyValueInfo.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Transforms/Utils/Local.h"
-#include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/Statistic.h"
 using namespace llvm;
 
@@ -97,13 +97,13 @@ bool CorrelatedValuePropagation::processPHI(PHINode *P) {
     P->setIncomingValue(i, C);
     Changed = true;
   }
-  
-  if (Value *ConstVal = P->hasConstantValue()) {
-    P->replaceAllUsesWith(ConstVal);
+
+  if (Value *V = SimplifyInstruction(P)) {
+    P->replaceAllUsesWith(V);
     P->eraseFromParent();
     Changed = true;
   }
-  
+
   ++NumPhis;
   
   return Changed;
@@ -172,10 +172,7 @@ bool CorrelatedValuePropagation::runOnFunction(Function &F) {
   
   bool FnChanged = false;
   
-  // Perform a depth-first walk of the CFG so that we don't waste time
-  // optimizing unreachable blocks.
-  for (df_iterator<BasicBlock*> FI = df_begin(&F.getEntryBlock()),
-       FE = df_end(&F.getEntryBlock()); FI != FE; ++FI) {
+  for (Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
     bool BBChanged = false;
     for (BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; ) {
       Instruction *II = BI++;
@@ -196,11 +193,6 @@ bool CorrelatedValuePropagation::runOnFunction(Function &F) {
         break;
       }
     }
-    
-    // Propagating correlated values might leave cruft around.
-    // Try to clean it up before we continue.
-    if (BBChanged)
-      SimplifyInstructionsInBlock(*FI);
     
     FnChanged |= BBChanged;
   }

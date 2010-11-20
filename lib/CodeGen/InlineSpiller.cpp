@@ -12,29 +12,43 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "spiller"
+#define DEBUG_TYPE "regalloc"
 #include "Spiller.h"
 #include "LiveRangeEdit.h"
 #include "SplitKit.h"
 #include "VirtRegMap.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
+#include "llvm/CodeGen/LiveStackAnalysis.h"
+#include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetInstrInfo.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
+
+static cl::opt<bool>
+VerifySpills("verify-spills", cl::desc("Verify after each spill/split"));
+
+static cl::opt<bool>
+ExtraSpillerSplits("extra-spiller-splits",
+                   cl::desc("Enable additional splitting during splitting"));
 
 namespace {
 class InlineSpiller : public Spiller {
   MachineFunctionPass &pass_;
   MachineFunction &mf_;
   LiveIntervals &lis_;
+  LiveStacks &lss_;
+  MachineDominatorTree &mdt_;
   MachineLoopInfo &loops_;
+  AliasAnalysis *aa_;
   VirtRegMap &vrm_;
   MachineFrameInfo &mfi_;
   MachineRegisterInfo &mri_;
@@ -61,7 +75,10 @@ public:
     : pass_(pass),
       mf_(mf),
       lis_(pass.getAnalysis<LiveIntervals>()),
+      lss_(pass.getAnalysis<LiveStacks>()),
+      mdt_(pass.getAnalysis<MachineDominatorTree>()),
       loops_(pass.getAnalysis<MachineLoopInfo>()),
+      aa_(&pass.getAnalysis<AliasAnalysis>()),
       vrm_(vrm),
       mfi_(*mf.getFrameInfo()),
       mri_(mf.getRegInfo()),
@@ -72,7 +89,7 @@ public:
 
   void spill(LiveInterval *li,
              SmallVectorImpl<LiveInterval*> &newIntervals,
-             SmallVectorImpl<LiveInterval*> &spillIs);
+             const SmallVectorImpl<LiveInterval*> &spillIs);
 
   void spill(LiveRangeEdit &);
 
@@ -94,6 +111,8 @@ namespace llvm {
 Spiller *createInlineSpiller(MachineFunctionPass &pass,
                              MachineFunction &mf,
                              VirtRegMap &vrm) {
+  if (VerifySpills)
+    mf.verify(&pass);
   return new InlineSpiller(pass, mf, vrm);
 }
 }
@@ -104,25 +123,31 @@ bool InlineSpiller::split() {
   splitAnalysis_.analyze(&edit_->getParent());
 
   // Try splitting around loops.
-  if (const MachineLoop *loop = splitAnalysis_.getBestSplitLoop()) {
-    SplitEditor(splitAnalysis_, lis_, vrm_, *edit_)
-      .splitAroundLoop(loop);
-    return true;
+  if (ExtraSpillerSplits) {
+    const MachineLoop *loop = splitAnalysis_.getBestSplitLoop();
+    if (loop) {
+      SplitEditor(splitAnalysis_, lis_, vrm_, mdt_, *edit_)
+        .splitAroundLoop(loop);
+      return true;
+    }
   }
 
   // Try splitting into single block intervals.
   SplitAnalysis::BlockPtrSet blocks;
   if (splitAnalysis_.getMultiUseBlocks(blocks)) {
-    SplitEditor(splitAnalysis_, lis_, vrm_, *edit_)
+    SplitEditor(splitAnalysis_, lis_, vrm_, mdt_, *edit_)
       .splitSingleBlocks(blocks);
     return true;
   }
 
   // Try splitting inside a basic block.
-  if (const MachineBasicBlock *MBB = splitAnalysis_.getBlockForInsideSplit()) {
-    SplitEditor(splitAnalysis_, lis_, vrm_, *edit_)
-      .splitInsideBlock(MBB);
-    return true;
+  if (ExtraSpillerSplits) {
+    const MachineBasicBlock *MBB = splitAnalysis_.getBlockForInsideSplit();
+    if (MBB){
+      SplitEditor(splitAnalysis_, lis_, vrm_, mdt_, *edit_)
+        .splitInsideBlock(MBB);
+      return true;
+    }
   }
 
   return false;
@@ -145,9 +170,8 @@ bool InlineSpiller::reMaterializeFor(MachineBasicBlock::iterator MI) {
     return true;
   }
 
-  LiveRangeEdit::Remat RM = edit_->canRematerializeAt(OrigVNI, UseIdx, false,
-                                                      lis_);
-  if (!RM) {
+  LiveRangeEdit::Remat RM(OrigVNI);
+  if (!edit_->canRematerializeAt(RM, UseIdx, false, lis_)) {
     usedValues_.insert(OrigVNI);
     DEBUG(dbgs() << "\tcannot remat for " << UseIdx << '\t' << *MI);
     return false;
@@ -198,7 +222,7 @@ bool InlineSpiller::reMaterializeFor(MachineBasicBlock::iterator MI) {
 /// and trim the live ranges after.
 void InlineSpiller::reMaterializeAll() {
   // Do a quick scan of the interval values to find if any are remattable.
-  if (!edit_->anyRematerializable(lis_, tii_, 0))
+  if (!edit_->anyRematerializable(lis_, tii_, aa_))
     return;
 
   usedValues_.clear();
@@ -319,7 +343,13 @@ void InlineSpiller::insertReload(LiveInterval &NewLI,
 void InlineSpiller::insertSpill(LiveInterval &NewLI,
                                 MachineBasicBlock::iterator MI) {
   MachineBasicBlock &MBB = *MI->getParent();
+
+  // Get the defined value. It could be an early clobber so keep the def index.
   SlotIndex Idx = lis_.getInstructionIndex(MI).getDefIndex();
+  VNInfo *VNI = edit_->getParent().getVNInfoAt(Idx);
+  assert(VNI && VNI->def.getDefIndex() == Idx && "Inconsistent VNInfo");
+  Idx = VNI->def;
+
   tii_.storeRegToStackSlot(MBB, ++MI, NewLI.reg, true, stackSlot_, rc_, &tri_);
   --MI; // Point to store instruction.
   SlotIndex StoreIdx = lis_.InsertMachineInstrInMaps(MI).getDefIndex();
@@ -331,17 +361,21 @@ void InlineSpiller::insertSpill(LiveInterval &NewLI,
 
 void InlineSpiller::spill(LiveInterval *li,
                           SmallVectorImpl<LiveInterval*> &newIntervals,
-                          SmallVectorImpl<LiveInterval*> &spillIs) {
+                          const SmallVectorImpl<LiveInterval*> &spillIs) {
   LiveRangeEdit edit(*li, newIntervals, spillIs);
   spill(edit);
+  if (VerifySpills)
+    mf_.verify(&pass_);
 }
 
 void InlineSpiller::spill(LiveRangeEdit &edit) {
   edit_ = &edit;
-  DEBUG(dbgs() << "Inline spilling " << edit.getParent() << "\n");
+  assert(!edit.getParent().isStackSlot() && "Trying to spill a stack slot.");
+  DEBUG(dbgs() << "Inline spilling "
+               << mri_.getRegClass(edit.getReg())->getName()
+               << ':' << edit.getParent() << "\n");
   assert(edit.getParent().isSpillable() &&
          "Attempting to spill already spilled value.");
-  assert(!edit.getParent().isStackSlot() && "Trying to spill a stack slot.");
 
   if (split())
     return;
@@ -353,7 +387,13 @@ void InlineSpiller::spill(LiveRangeEdit &edit) {
     return;
 
   rc_ = mri_.getRegClass(edit.getReg());
-  stackSlot_ = edit.assignStackSlot(vrm_);
+  stackSlot_ = vrm_.assignVirt2StackSlot(edit_->getReg());
+
+  // Update LiveStacks now that we are committed to spilling.
+  LiveInterval &stacklvr = lss_.getOrCreateInterval(stackSlot_, rc_);
+  assert(stacklvr.empty() && "Just created stack slot not empty");
+  stacklvr.getNextValue(SlotIndex(), 0, lss_.getVNInfoAllocator());
+  stacklvr.MergeRangesInAsValue(edit_->getParent(), stacklvr.getValNumInfo(0));
 
   // Iterate over instructions using register.
   for (MachineRegisterInfo::reg_iterator RI = mri_.reg_begin(edit.getReg());

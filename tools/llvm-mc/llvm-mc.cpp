@@ -23,6 +23,7 @@
 #include "llvm/Target/TargetAsmParser.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Target/TargetRegistry.h"
+#include "llvm/Target/SubtargetFeature.h" // FIXME.
 #include "llvm/Target/TargetMachine.h"  // FIXME.
 #include "llvm/Target/TargetSelect.h"
 #include "llvm/ADT/OwningPtr.h"
@@ -94,6 +95,12 @@ ArchName("arch", cl::desc("Target arch to assemble for, "
 static cl::opt<std::string>
 TripleName("triple", cl::desc("Target triple to assemble for, "
                               "see -version for available targets"));
+
+static cl::opt<std::string>
+MCPU("mcpu",
+     cl::desc("Target a specific cpu type (-mcpu=help for details)"),
+     cl::value_desc("cpu-name"),
+     cl::init(""));
 
 static cl::opt<bool>
 NoInitialTextSection("n", cl::desc(
@@ -194,7 +201,9 @@ static int AsLexInput(const char *ProgName) {
 
   bool Error = false;
   while (Lexer.Lex().isNot(AsmToken::Eof)) {
-    switch (Lexer.getKind()) {
+    AsmToken Tok = Lexer.getTok();
+
+    switch (Tok.getKind()) {
     default:
       SrcMgr.PrintMessage(Lexer.getLoc(), "unknown token", "warning");
       Error = true;
@@ -203,58 +212,63 @@ static int AsLexInput(const char *ProgName) {
       Error = true; // error already printed.
       break;
     case AsmToken::Identifier:
-      Out->os() << "identifier: " << Lexer.getTok().getString() << '\n';
+      Out->os() << "identifier: " << Lexer.getTok().getString();
       break;
     case AsmToken::Integer:
-      Out->os() << "int: " << Lexer.getTok().getString() << '\n';
+      Out->os() << "int: " << Lexer.getTok().getString();
       break;
     case AsmToken::Real:
-      Out->os() << "real: " << Lexer.getTok().getString() << '\n';
+      Out->os() << "real: " << Lexer.getTok().getString();
       break;
     case AsmToken::Register:
-      Out->os() << "register: " << Lexer.getTok().getRegVal() << '\n';
+      Out->os() << "register: " << Lexer.getTok().getRegVal();
       break;
     case AsmToken::String:
-      Out->os() << "string: " << Lexer.getTok().getString() << '\n';
+      Out->os() << "string: " << Lexer.getTok().getString();
       break;
 
-    case AsmToken::Amp:            Out->os() << "Amp\n"; break;
-    case AsmToken::AmpAmp:         Out->os() << "AmpAmp\n"; break;
-    case AsmToken::At:             Out->os() << "At\n"; break;
-    case AsmToken::Caret:          Out->os() << "Caret\n"; break;
-    case AsmToken::Colon:          Out->os() << "Colon\n"; break;
-    case AsmToken::Comma:          Out->os() << "Comma\n"; break;
-    case AsmToken::Dollar:         Out->os() << "Dollar\n"; break;
-    case AsmToken::Dot:            Out->os() << "Dot\n"; break;
-    case AsmToken::EndOfStatement: Out->os() << "EndOfStatement\n"; break;
-    case AsmToken::Eof:            Out->os() << "Eof\n"; break;
-    case AsmToken::Equal:          Out->os() << "Equal\n"; break;
-    case AsmToken::EqualEqual:     Out->os() << "EqualEqual\n"; break;
-    case AsmToken::Exclaim:        Out->os() << "Exclaim\n"; break;
-    case AsmToken::ExclaimEqual:   Out->os() << "ExclaimEqual\n"; break;
-    case AsmToken::Greater:        Out->os() << "Greater\n"; break;
-    case AsmToken::GreaterEqual:   Out->os() << "GreaterEqual\n"; break;
-    case AsmToken::GreaterGreater: Out->os() << "GreaterGreater\n"; break;
-    case AsmToken::Hash:           Out->os() << "Hash\n"; break;
-    case AsmToken::LBrac:          Out->os() << "LBrac\n"; break;
-    case AsmToken::LCurly:         Out->os() << "LCurly\n"; break;
-    case AsmToken::LParen:         Out->os() << "LParen\n"; break;
-    case AsmToken::Less:           Out->os() << "Less\n"; break;
-    case AsmToken::LessEqual:      Out->os() << "LessEqual\n"; break;
-    case AsmToken::LessGreater:    Out->os() << "LessGreater\n"; break;
-    case AsmToken::LessLess:       Out->os() << "LessLess\n"; break;
-    case AsmToken::Minus:          Out->os() << "Minus\n"; break;
-    case AsmToken::Percent:        Out->os() << "Percent\n"; break;
-    case AsmToken::Pipe:           Out->os() << "Pipe\n"; break;
-    case AsmToken::PipePipe:       Out->os() << "PipePipe\n"; break;
-    case AsmToken::Plus:           Out->os() << "Plus\n"; break;
-    case AsmToken::RBrac:          Out->os() << "RBrac\n"; break;
-    case AsmToken::RCurly:         Out->os() << "RCurly\n"; break;
-    case AsmToken::RParen:         Out->os() << "RParen\n"; break;
-    case AsmToken::Slash:          Out->os() << "Slash\n"; break;
-    case AsmToken::Star:           Out->os() << "Star\n"; break;
-    case AsmToken::Tilde:          Out->os() << "Tilde\n"; break;
+    case AsmToken::Amp:            Out->os() << "Amp"; break;
+    case AsmToken::AmpAmp:         Out->os() << "AmpAmp"; break;
+    case AsmToken::At:             Out->os() << "At"; break;
+    case AsmToken::Caret:          Out->os() << "Caret"; break;
+    case AsmToken::Colon:          Out->os() << "Colon"; break;
+    case AsmToken::Comma:          Out->os() << "Comma"; break;
+    case AsmToken::Dollar:         Out->os() << "Dollar"; break;
+    case AsmToken::Dot:            Out->os() << "Dot"; break;
+    case AsmToken::EndOfStatement: Out->os() << "EndOfStatement"; break;
+    case AsmToken::Eof:            Out->os() << "Eof"; break;
+    case AsmToken::Equal:          Out->os() << "Equal"; break;
+    case AsmToken::EqualEqual:     Out->os() << "EqualEqual"; break;
+    case AsmToken::Exclaim:        Out->os() << "Exclaim"; break;
+    case AsmToken::ExclaimEqual:   Out->os() << "ExclaimEqual"; break;
+    case AsmToken::Greater:        Out->os() << "Greater"; break;
+    case AsmToken::GreaterEqual:   Out->os() << "GreaterEqual"; break;
+    case AsmToken::GreaterGreater: Out->os() << "GreaterGreater"; break;
+    case AsmToken::Hash:           Out->os() << "Hash"; break;
+    case AsmToken::LBrac:          Out->os() << "LBrac"; break;
+    case AsmToken::LCurly:         Out->os() << "LCurly"; break;
+    case AsmToken::LParen:         Out->os() << "LParen"; break;
+    case AsmToken::Less:           Out->os() << "Less"; break;
+    case AsmToken::LessEqual:      Out->os() << "LessEqual"; break;
+    case AsmToken::LessGreater:    Out->os() << "LessGreater"; break;
+    case AsmToken::LessLess:       Out->os() << "LessLess"; break;
+    case AsmToken::Minus:          Out->os() << "Minus"; break;
+    case AsmToken::Percent:        Out->os() << "Percent"; break;
+    case AsmToken::Pipe:           Out->os() << "Pipe"; break;
+    case AsmToken::PipePipe:       Out->os() << "PipePipe"; break;
+    case AsmToken::Plus:           Out->os() << "Plus"; break;
+    case AsmToken::RBrac:          Out->os() << "RBrac"; break;
+    case AsmToken::RCurly:         Out->os() << "RCurly"; break;
+    case AsmToken::RParen:         Out->os() << "RParen"; break;
+    case AsmToken::Slash:          Out->os() << "Slash"; break;
+    case AsmToken::Star:           Out->os() << "Star"; break;
+    case AsmToken::Tilde:          Out->os() << "Tilde"; break;
     }
+
+    // Print the token string.
+    Out->os() << " (\"";
+    Out->os().write_escaped(Tok.getString());
+    Out->os() << "\")\n";
   }
 
   // Keep output if no errors.
@@ -294,8 +308,20 @@ static int AssembleInput(const char *ProgName) {
   
   MCContext Ctx(*MAI);
 
+  // Package up features to be passed to target/subtarget
+  std::string FeaturesStr;
+  if (MCPU.size()) {
+    SubtargetFeatures Features;
+    Features.setCPU(MCPU);
+    FeaturesStr = Features.getString();
+  }
+
   // FIXME: We shouldn't need to do this (and link in codegen).
-  OwningPtr<TargetMachine> TM(TheTarget->createTargetMachine(TripleName, ""));
+  //        When we split this out, we should do it in a way that makes
+  //        it straightforward to switch subtargets on the fly (.e.g,
+  //        the .cpu and .code16 directives).
+  OwningPtr<TargetMachine> TM(TheTarget->createTargetMachine(TripleName,
+                                                             FeaturesStr));
 
   if (!TM) {
     errs() << ProgName << ": error: could not create target for triple '"
@@ -316,9 +342,9 @@ static int AssembleInput(const char *ProgName) {
     MCCodeEmitter *CE = 0;
     if (ShowEncoding)
       CE = TheTarget->createCodeEmitter(*TM, Ctx);
-    Str.reset(createAsmStreamer(Ctx, FOS,
-                                TM->getTargetData()->isLittleEndian(),
-                                /*asmverbose*/true, IP, CE, ShowInst));
+    Str.reset(TheTarget->createAsmStreamer(Ctx, FOS,
+                                           TM->getTargetData()->isLittleEndian(),
+                                           /*asmverbose*/true, IP, CE, ShowInst));
   } else if (FileType == OFT_Null) {
     Str.reset(createNullStreamer(Ctx));
   } else {

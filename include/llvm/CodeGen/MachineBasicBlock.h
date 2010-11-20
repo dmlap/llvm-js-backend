@@ -23,6 +23,7 @@ class Pass;
 class BasicBlock;
 class MachineFunction;
 class MCSymbol;
+class SlotIndexes;
 class StringRef;
 class raw_ostream;
 
@@ -289,6 +290,11 @@ public:
   /// Returns end() is there's no non-PHI instruction.
   iterator getFirstNonPHI();
 
+  /// SkipPHIsAndLabels - Return the first instruction in MBB after I that is
+  /// not a PHI or a label. This is the correct point to insert copies at the
+  /// beginning of a basic block.
+  iterator SkipPHIsAndLabels(iterator I);
+
   /// getFirstTerminator - returns an iterator to the first terminator
   /// instruction of this basic block. If a terminator does not exist,
   /// it returns end()
@@ -361,7 +367,7 @@ public:
 
   // Debugging methods.
   void dump() const;
-  void print(raw_ostream &OS) const;
+  void print(raw_ostream &OS, SlotIndexes* = 0) const;
 
   /// getNumber - MachineBasicBlocks are uniquely numbered at the function
   /// level, unless they're not in a MachineFunction yet, in which case this

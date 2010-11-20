@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "InstPrinter/X86ATTInstPrinter.h"
 #include "X86MCInstLower.h"
 #include "X86AsmPrinter.h"
 #include "X86COFFMachineModuleInfo.h"
@@ -37,11 +38,6 @@ MachineModuleInfoMachO &X86MCInstLower::getMachOMMI() const {
   return MF.getMMI().getObjFileInfo<MachineModuleInfoMachO>();
 }
 
-
-MCSymbol *X86MCInstLower::GetPICBaseSymbol() const {
-  return static_cast<const X86TargetLowering*>(TM.getTargetLowering())->
-    getPICBaseSymbol(&MF, Ctx);
-}
 
 /// GetSymbolFromOperand - Lower an MO_GlobalAddress or MO_ExternalSymbol
 /// operand to an MCSymbol.
@@ -154,7 +150,7 @@ MCOperand X86MCInstLower::LowerSymbolOperand(const MachineOperand &MO,
     Expr = MCSymbolRefExpr::Create(Sym, MCSymbolRefExpr::VK_TLVP, Ctx);
     // Subtract the pic base.
     Expr = MCBinaryExpr::CreateSub(Expr,
-                                   MCSymbolRefExpr::Create(GetPICBaseSymbol(),
+                                  MCSymbolRefExpr::Create(MF.getPICBaseSymbol(),
                                                            Ctx),
                                    Ctx);
     break;
@@ -173,7 +169,7 @@ MCOperand X86MCInstLower::LowerSymbolOperand(const MachineOperand &MO,
     Expr = MCSymbolRefExpr::Create(Sym, Ctx);
     // Subtract the pic base.
     Expr = MCBinaryExpr::CreateSub(Expr, 
-                               MCSymbolRefExpr::Create(GetPICBaseSymbol(), Ctx),
+                            MCSymbolRefExpr::Create(MF.getPICBaseSymbol(), Ctx),
                                    Ctx);
     if (MO.isJTI() && MAI.hasSetDirective()) {
       // If .set directive is supported, use it to reduce the number of
@@ -326,8 +322,6 @@ void X86MCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
                        MO.getMBB()->getSymbol(), Ctx));
       break;
     case MachineOperand::MO_GlobalAddress:
-      MCOp = LowerSymbolOperand(MO, GetSymbolFromOperand(MO));
-      break;
     case MachineOperand::MO_ExternalSymbol:
       MCOp = LowerSymbolOperand(MO, GetSymbolFromOperand(MO));
       break;
@@ -412,6 +406,13 @@ ReSimplify:
     OutMI = MCInst();
     OutMI.setOpcode(Opcode);
     OutMI.addOperand(Saved);
+    break;
+  }
+
+  case X86::EH_RETURN:
+  case X86::EH_RETURN64: {
+    OutMI = MCInst();
+    OutMI.setOpcode(X86::RET);
     break;
   }
 
@@ -543,6 +544,15 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
       OutStreamer.EmitRawText(StringRef("\t#MEMBARRIER"));
     return;
         
+
+  case X86::EH_RETURN:
+  case X86::EH_RETURN64: {
+    // Lower these as normal, but add some comments.
+    unsigned Reg = MI->getOperand(0).getReg();
+    OutStreamer.AddComment(StringRef("eh_return, addr: %") +
+                           X86ATTInstPrinter::getRegisterName(Reg));
+    break;
+  }
   case X86::TAILJMPr:
   case X86::TAILJMPd:
   case X86::TAILJMPd64:
@@ -559,7 +569,7 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
     //     popl %esi
     
     // Emit the call.
-    MCSymbol *PICBase = MCInstLowering.GetPICBaseSymbol();
+    MCSymbol *PICBase = MF->getPICBaseSymbol();
     TmpInst.setOpcode(X86::CALLpcrel32);
     // FIXME: We would like an efficient form for this, so we don't have to do a
     // lot of extra uniquing.
@@ -597,7 +607,7 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
     
     const MCExpr *DotExpr = MCSymbolRefExpr::Create(DotSym, OutContext);
     const MCExpr *PICBase =
-      MCSymbolRefExpr::Create(MCInstLowering.GetPICBaseSymbol(), OutContext);
+      MCSymbolRefExpr::Create(MF->getPICBaseSymbol(), OutContext);
     DotExpr = MCBinaryExpr::CreateSub(DotExpr, PICBase, OutContext);
     
     DotExpr = MCBinaryExpr::CreateAdd(MCSymbolRefExpr::Create(OpSym,OutContext), 

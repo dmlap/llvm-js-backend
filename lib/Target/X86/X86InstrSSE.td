@@ -654,10 +654,10 @@ defm Int_VCVTTSS2SI64 : sse12_cvt_sint<0x2C, VR128, GR64,
                                     int_x86_sse_cvttss2si64, f32mem, load,
                                     "cvttss2si">, XS, VEX, VEX_W;
 defm Int_VCVTTSD2SI : sse12_cvt_sint<0x2C, VR128, GR32, int_x86_sse2_cvttsd2si,
-                                    f128mem, load, "cvttss2si">, XD, VEX;
+                                    f128mem, load, "cvttsd2si">, XD, VEX;
 defm Int_VCVTTSD2SI64 : sse12_cvt_sint<0x2C, VR128, GR64,
                                     int_x86_sse2_cvttsd2si64, f128mem, load,
-                                    "cvttss2si">, XD, VEX, VEX_W;
+                                    "cvttsd2si">, XD, VEX, VEX_W;
 }
 defm Int_CVTTSS2SI : sse12_cvt_sint<0x2C, VR128, GR32, int_x86_sse_cvttss2si,
                                     f32mem, load, "cvttss2si">, XS;
@@ -665,10 +665,10 @@ defm Int_CVTTSS2SI64 : sse12_cvt_sint<0x2C, VR128, GR64,
                                     int_x86_sse_cvttss2si64, f32mem, load,
                                     "cvttss2si{q}">, XS, REX_W;
 defm Int_CVTTSD2SI : sse12_cvt_sint<0x2C, VR128, GR32, int_x86_sse2_cvttsd2si,
-                                    f128mem, load, "cvttss2si">, XD;
+                                    f128mem, load, "cvttsd2si">, XD;
 defm Int_CVTTSD2SI64 : sse12_cvt_sint<0x2C, VR128, GR64,
                                     int_x86_sse2_cvttsd2si64, f128mem, load,
-                                    "cvttss2si{q}">, XD, REX_W;
+                                    "cvttsd2si{q}">, XD, REX_W;
 
 let isAsmParserOnly = 1, Pattern = []<dag> in {
 defm VCVTSS2SI   : sse12_cvt_s<0x2D, FR32, GR32, undef, f32mem, load,
@@ -5775,6 +5775,12 @@ def : Pat<(v4i32 (X86Movlps VR128:$src1, (load addr:$src2))),
 def : Pat<(X86Movlps VR128:$src1,
                     (bc_v4f32 (v2f64 (scalar_to_vector (loadf64 addr:$src2))))),
           (MOVLPSrm VR128:$src1, addr:$src2)>;
+// FIXME: Instead of a X86Movlps there should be a X86Movsd here, the problem
+// is during lowering, where it's not possible to recognize the load fold cause
+// it has two uses through a bitcast. One use disappears at isel time and the
+// fold opportunity reappears.
+def : Pat<(v4f32 (X86Movlps VR128:$src1, VR128:$src2)),
+          (MOVSDrr VR128:$src1, (EXTRACT_SUBREG (v4f32 VR128:$src2), sub_sd))>;
 
 // Shuffle with MOVLPD
 def : Pat<(v2f64 (X86Movlpd VR128:$src1, (load addr:$src2))),
