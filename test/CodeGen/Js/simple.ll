@@ -19,7 +19,7 @@ define i32 @main() {
   store i32 0, i32* %1
 ; CHECK: { "ident": "v2", "intertype": "call", "lineNum": 4, "operands": [{ "value": { "intertype": "getelementptr", "operands": [{ "value": "_OC_str", "type": "[15 x i8]*" }, { "value": 0, "type": "i32" }, { "value": 0, "type": "i32" }], "type": "i8*" }, { "value": "printf", "type": "i32 (i8*, ...)*" }]
   %2 = call i32 (i8*, ...)* @printf(i8* getelementptr inbounds ([15 x i8]* @.str, i32 0, i32 0)) ; [#uses=0]
-; CHECK: { "intertype": "return", "lineNum": 5, "type": "void", "operands": [{ "value": 0, "type": "i32" }]}
+; CHECK: { "intertype": "ret", "lineNum": 5, "type": "void", "operands": [{ "value": 0, "type": "i32" }]}
   ret i32 0
 }
 
