@@ -105,16 +105,17 @@ namespace {
     std::set<Function*> intrinsicPrototypesAlreadyGenerated;
     std::set<const Argument*> ByValParams;
     unsigned FPCounter;
-    unsigned OpaqueCounter;
+    unsigned LineNumber;
     DenseMap<const Value*, unsigned> AnonValueNumbers;
     unsigned NextAnonValueNumber;
+    bool initialized;
 
   public:
     static char ID;
     explicit JsWriter(formatted_raw_ostream &o)
       : FunctionPass(ID), Out(o), IL(0), Mang(0), LI(0), 
-        TheModule(0), TAsm(0), TCtx(0), TD(0), OpaqueCounter(0),
-        NextAnonValueNumber(0) {
+        TheModule(0), TAsm(0), TCtx(0), TD(0), LineNumber(0),
+        NextAnonValueNumber(0), initialized(false) {
       initializeLoopInfoPass(*PassRegistry::getPassRegistry());
       FPCounter = 0;
     }
@@ -141,16 +142,7 @@ namespace {
     }
 
     virtual bool doFinalization(Module &M) {
-      Function *Main = M.getFunction("main");
-      if(Main) {
-	Out << "_.main();\n";
-      }
-      Out << "})(window);\n";
-      if(Main) {
-	Out << "</script>\n";
-	Out << "</body>\n";
-	Out << "</html>";
-      }
+      Out << "]";
       // Free memory...
       delete IL;
       delete TD;
@@ -177,7 +169,6 @@ namespace {
     }
     
     void writeOperand(Value *Operand, bool Static = false);
-    void writeInstComputationInline(Instruction &I);
     void writeOperandInternal(Value *Operand, bool Static = false);
     void writeOperandWithCast(Value* Operand, const ICmpInst &I);
 
@@ -189,7 +180,6 @@ namespace {
 
     void printModule(Module *M);
     std::string getOperand(Value *Operand, bool Static = false);
-    void printFunctionSignature(const Function *F, bool Prototype);
 
     void printFunction(Function &);
     void printBasicBlock(BasicBlock *BB);
@@ -199,6 +189,10 @@ namespace {
     void printConstant(Constant *CPV, bool Static);
     void printConstantArray(ConstantArray *CPA, bool Static);
     void printConstantVector(ConstantVector *CV, bool Static);
+
+    void writeOperands(User::const_op_iterator OI,
+		       User::const_op_iterator OE);
+    void writeOperands(const Instruction &I);
 
     /// isAddressExposed - Return true if the specified value's name needs to
     /// have its address taken in order to get a C value of the correct type.
@@ -330,8 +324,6 @@ namespace {
                                     BasicBlock *Successor, unsigned Indent);
     void printBranchToBlock(BasicBlock *CurBlock, BasicBlock *SuccBlock,
                             unsigned Indent);
-    void printGEPExpression(Value *Ptr, gep_type_iterator I,
-                            gep_type_iterator E, bool Static);
 
     std::string GetValueName(const Value *Operand);
   };
@@ -534,7 +526,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
     case Instruction::PtrToInt:
     case Instruction::IntToPtr:
     case Instruction::BitCast:
-      Out << "(";
+      Out << "\"(";
       if (CE->getOpcode() == Instruction::SExt &&
           CE->getOperand(0)->getType() == Type::getInt1Ty(CPV->getContext())) {
         // Make sure we really sext from bool here by subtracting from 0
@@ -549,23 +541,28 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
         // Make sure we really truncate to bool here by anding with 1
         Out << "&1u";
       }
-      Out << ')';
+      Out << ")\"";
       return;
 
     case Instruction::GetElementPtr:
-      Out << "(";
-      printGEPExpression(CE->getOperand(0), gep_type_begin(CPV),
-                         gep_type_end(CPV), Static);
-      Out << ")";
+      // If there are no indices, just print out the pointer.
+      if (CE->getNumOperands() <= 1) {
+	writeOperand(CE->getOperand(0));
+	return;
+      }
+
+      Out << "{ \"intertype\": \"getelementptr\", ";
+      Out << "\"operands\": ";
+      writeOperands(CE->op_begin(), CE->op_end());
       return;
     case Instruction::Select:
-      Out << '(';
+      Out << "\"(";
       printConstant(CE->getOperand(0), Static);
       Out << '?';
       printConstant(CE->getOperand(1), Static);
       Out << ':';
       printConstant(CE->getOperand(2), Static);
-      Out << ')';
+      Out << ")\"";
       return;
     case Instruction::Add:
     case Instruction::FAdd:
@@ -587,7 +584,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
     case Instruction::LShr:
     case Instruction::AShr:
     {
-      Out << '(';
+      Out << "\"(";
       printConstant(CE->getOperand(0), Static);
       switch (CE->getOpcode()) {
       case Instruction::Add:
@@ -626,11 +623,11 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
       default: llvm_unreachable("Illegal opcode here!");
       }
       printConstant(CE->getOperand(1), Static);
-      Out << ')';
+      Out << ")\"";
       return;
     }
     case Instruction::FCmp: {
-      Out << '('; 
+      Out << "\"("; 
       if (CE->getPredicate() == FCmpInst::FCMP_FALSE)
         Out << "0";
       else if (CE->getPredicate() == FCmpInst::FCMP_TRUE)
@@ -660,7 +657,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
         printConstant(CE->getOperand(1), Static);
         Out << ")";
       }
-      Out << ')';
+      Out << ")\"";
       return;
     }
     default:
@@ -837,41 +834,51 @@ std::string JsWriter::GetValueName(const Value *Operand) {
   return "v" + VarName;
 }
 
-/// writeInstComputationInline - Emit the computation for the specified
-/// instruction inline, with no destination provided.
-void JsWriter::writeInstComputationInline(Instruction &I) {
-  // We can't currently support integer types other than 1, 8, 16, 32, 64.
-  // Validate this.
-  const Type *Ty = I.getType();
-  if (Ty->isIntegerTy() && (Ty!=Type::getInt1Ty(I.getContext()) &&
-        Ty!=Type::getInt8Ty(I.getContext()) && 
-        Ty!=Type::getInt16Ty(I.getContext()) &&
-        Ty!=Type::getInt32Ty(I.getContext()) &&
-        Ty!=Type::getInt64Ty(I.getContext()))) {
-      report_fatal_error("The Javascript backend does not currently support integer "
-                        "types of widths other than 1, 8, 16, 32, 64.\n");
-  }
-  visit(I);
-}
-
-
 void JsWriter::writeOperandInternal(Value *Operand, bool Static) {
-  if (Instruction *I = dyn_cast<Instruction>(Operand))
-    // Should we inline this instruction to build a tree?
-    if (isInlinableInst(*I) && !isDirectAlloca(I)) {
-      Out << '(';
-      writeInstComputationInline(*I);
-      Out << ')';
-      return;
-    }
-
   Constant* CPV = dyn_cast<Constant>(Operand);
 
   if (CPV && !isa<GlobalValue>(CPV)) {
     printConstant(CPV, Static);
   } else {
-    Out << GetValueName(Operand);
+    Out << "\"" << GetValueName(Operand) << "\"";
   }
+}
+
+void JsWriter::writeOperands(User::const_op_iterator OI, User::const_op_iterator OE) {
+  Out << "[";
+  if(OI != OE) {
+    Out << "{ \"value\": ";
+    writeOperand(*OI);
+    Out << ", \"type\": \"";
+    Out << OI->get()->getType()->getDescription() << "\" }";
+    ++OI;
+    for(; OI != OE; ++OI) {
+      Out << ", { \"value\": ";
+      writeOperand(*OI);
+      Out << ", \"type\": \"";
+      Out << OI->get()->getType()->getDescription() << "\" }";
+    }
+  }
+  Out << "]";
+}
+
+void JsWriter::writeOperands(const Instruction &I) {
+  Out << "[";
+  if(I.getNumOperands()) {
+    User::const_op_iterator OI = I.op_begin(), OE = I.op_end();
+    Out << "{ \"value\": ";
+    writeOperand(*OI);
+    Out << ", \"type\": \"";
+    Out << OI->get()->getType()->getDescription() << "\" }";
+    ++OI;
+    for(; OI != OE; ++OI) {
+      Out << ", { \"value\": ";
+      writeOperand(*OI);
+      Out << ", \"type\": \"";
+      Out << OI->get()->getType()->getDescription() << "\" }";
+    }
+  }
+  Out << "]";
 }
 
 void JsWriter::writeOperand(Value *Operand, bool Static) {
@@ -902,77 +909,6 @@ void JsWriter::writeOperandWithCast(Value* Operand, const ICmpInst &Cmp) {
   Out << " & " << (1 << Operand->getType()->getPrimitiveSizeInBits()) - 1 << ')';
 }
 
-/// FindStaticTors - Given a static ctor/dtor list, unpack its contents into
-/// the StaticTors set.
-static void FindStaticTors(GlobalVariable *GV, std::set<Function*> &StaticTors){
-  ConstantArray *InitList = dyn_cast<ConstantArray>(GV->getInitializer());
-  if (!InitList) return;
-  
-  for (unsigned i = 0, e = InitList->getNumOperands(); i != e; ++i)
-    if (ConstantStruct *CS = dyn_cast<ConstantStruct>(InitList->getOperand(i))){
-      if (CS->getNumOperands() != 2) return;  // Not array of 2-element structs.
-      
-      if (CS->getOperand(1)->isNullValue())
-        return;  // Found a null terminator, exit printing.
-      Constant *FP = CS->getOperand(1);
-      if (ConstantExpr *CE = dyn_cast<ConstantExpr>(FP))
-        if (CE->isCast())
-          FP = CE->getOperand(0);
-      if (Function *F = dyn_cast<Function>(FP))
-        StaticTors.insert(F);
-    }
-}
-
-enum SpecialGlobalClass {
-  NotSpecial = 0,
-  GlobalCtors, GlobalDtors,
-  NotPrinted
-};
-
-/// getGlobalVariableClass - If this is a global that is specially recognized
-/// by LLVM, return a code that indicates how we should handle it.
-static SpecialGlobalClass getGlobalVariableClass(const GlobalVariable *GV) {
-  // If this is a global ctors/dtors list, handle it now.
-  if (GV->hasAppendingLinkage() && GV->use_empty()) {
-    if (GV->getName() == "llvm.global_ctors")
-      return GlobalCtors;
-    else if (GV->getName() == "llvm.global_dtors")
-      return GlobalDtors;
-  }
-  
-  // Otherwise, if it is other metadata, don't print it.  This catches things
-  // like debug information.
-  if (GV->getSection() == "llvm.metadata")
-    return NotPrinted;
-  
-  return NotSpecial;
-}
-
-// PrintEscapedString - Print each character of the specified string, escaping
-// it if it is not printable or if it is an escape char.
-static void PrintEscapedString(const char *Str, unsigned Length,
-                               raw_ostream &Out) {
-  for (unsigned i = 0; i != Length; ++i) {
-    unsigned char C = Str[i];
-    if (isprint(C) && C != '\\' && C != '"')
-      Out << C;
-    else if (C == '\\')
-      Out << "\\\\";
-    else if (C == '\"')
-      Out << "\\\"";
-    else if (C == '\t')
-      Out << "\\t";
-    else
-      Out << "\\x" << hexdigit(C >> 4) << hexdigit(C & 0x0F);
-  }
-}
-
-// PrintEscapedString - Print each character of the specified string, escaping
-// it if it is not printable or if it is an escape char.
-static void PrintEscapedString(const std::string &Str, raw_ostream &Out) {
-  PrintEscapedString(Str.c_str(), Str.size(), Out);
-}
-
 bool JsWriter::doInitialization(Module &M) {
   FunctionPass::doInitialization(M);
   
@@ -986,169 +922,33 @@ bool JsWriter::doInitialization(Module &M) {
   TAsm = new JsBEMCAsmInfo();
   TCtx = new MCContext(*TAsm);
   Mang = new Mangler(*TCtx, *TD);
-
-  if(M.getFunction("main")) {
-    Out << "<!doctype html>\n";
-    Out << "<html>\n";
-    Out << "<head>\n";
-    Out << "<title>" << M.getModuleIdentifier() << "</title>\n";
-    Out << "</head>\n";
-    Out << "<body>\n";
-    Out << "<script>\n";
+  Out << "[";
+  if(M.global_empty()) {
+    return false;
   }
-  Out << "(function($w) {\n";
-  Out << "$w[\"" << M.getModuleIdentifier() << "\"] = {};\n";
-  Out << "var _ = $w[\"" << M.getModuleIdentifier() << "\"];\n";
-  Out << "function _a(o, x) {\n";
-  Out << "  var o = o, x = x || 0, r = function(e) {\n";
-  Out << "    return o[(x + e || x)];\n";
-  Out << "  };\n";
-  Out << "  r.s = function(e) {\n";
-  Out << "    o[x] = e;\n";
-  Out << "  };\n";
-  Out << "  return r;\n";
-  Out << "}\n";
-  Out << "function _p(o, x) {\n";
-  Out << "  return _a(o === undefined? [] : [o], x);\n";
-  Out << "}\n";
-
-  // Keep track of which functions are static ctors/dtors so they can have
-  // an attribute added to their prototypes.
-  std::set<Function*> StaticCtors, StaticDtors;
-  for (Module::global_iterator I = M.global_begin(), E = M.global_end();
-       I != E; ++I) {
-    switch (getGlobalVariableClass(I)) {
-    default: break;
-    case GlobalCtors:
-      FindStaticTors(I, StaticCtors);
-      break;
-    case GlobalDtors:
-      FindStaticTors(I, StaticDtors);
+  Module::global_iterator I = M.global_begin(), E = M.global_end();
+  for(; I != E; ++I) {
+    if (!I->isDeclaration() &&
+	(I->hasLocalLinkage() || I->hasHiddenVisibility())) {
+      Out << "{ \"ident\": \"" << GetValueName(I);
+      Out << "\", \"intertype\": \"globalVariable\", ";
+      Out << "\"lineNum\": " << LineNumber++ << ", ";
+      Out << "\"type\": \"" << I->getType()->getDescription() << "\", ";
+      Out << "\"value\": { \"text\": ";
+      writeOperand(I->getInitializer(), true);
+      Out << " }}";
+      initialized = true;
+      ++I;
       break;
     }
   }
-  
-  if (!M.getModuleInlineAsm().empty()) {
-    Out << "/* Module asm statements */\n";
-
-    // Split the string into lines, to make it easier to read the .ll file.
-    std::string Asm = M.getModuleInlineAsm();
-    size_t CurPos = 0;
-    size_t NewLine = Asm.find_first_of('\n', CurPos);
-    while (NewLine != std::string::npos) {
-      // We found a newline, print the portion of the asm string from the
-      // last newline up to this newline.
-      Out << "\"";
-      PrintEscapedString(std::string(Asm.begin()+CurPos, Asm.begin()+NewLine),
-                         Out);
-      Out << "\\n\"\n";
-      CurPos = NewLine+1;
-      NewLine = Asm.find_first_of('\n', CurPos);
+  for(; I != E; ++I) {
+    if (!I->isDeclaration() &&
+	(I->hasLocalLinkage() || I->hasHiddenVisibility())) {
+      writeOperand(I->getInitializer(), true);
     }
-    Out << "\"";
-    PrintEscapedString(std::string(Asm.begin()+CurPos, Asm.end()), Out);
-    Out << "/* End Module asm statements */\n";
-  }
-
-  // Output the module-level locals
-  if (!M.global_empty()) {
-    Module::global_iterator I = M.global_begin(), E = M.global_end();
-    bool Found = false;
-    for(;I != E; ++I) {
-      if (!I->isDeclaration() && !getGlobalVariableClass(I) && (I->hasLocalLinkage() || I->hasHiddenVisibility())) {
-	Out << "\n/* Module Local Variables */\n";
-	Out << "var " << GetValueName(I) << " = _p(";
-	writeOperand(I->getInitializer(), true);
-	Out << ")";
-	Found = true;
-	++I;
-	break;
-      }
-    }
-    for (; I != E; ++I) {
-      if (!I->isDeclaration() && !getGlobalVariableClass(I) && (I->hasLocalLinkage() || I->hasHiddenVisibility())) {      
-	Out << ", " << GetValueName(I) << " = _p(";
-	writeOperand(I->getInitializer(), true);
-	Out << ")";
-	continue;
-      }
-    }
-    if(Found) {
-      Out << ";\n";
-    }
-  }
-  
-  // Output the module members
-  if (!M.global_empty()) {
-    Module::global_iterator I = M.global_begin(), E = M.global_end();
-    for(;I != E; ++I) {
-      if (!I->isDeclaration() && !getGlobalVariableClass(I) && !(I->hasLocalLinkage() || I->hasHiddenVisibility())) {
-        if (I->hasDLLImportLinkage()) {
-          // can't import from DLLs
-          llvm_unreachable(0);
-        }
-        if (I->hasDLLExportLinkage()) {
-          // can't export to DLLs
-          llvm_unreachable(0);
-        }
-        if (I->isThreadLocal()) {
-          // no support for thread locals
-          llvm_unreachable(0);
-        }
-        Out << "\n/* Module Members */\n";
-
-        Out << "var " << GetValueName(I) << " = _." << GetValueName(I) << " = _p(";
-        writeOperand(I->getInitializer(), true);
-        Out << ");\n";
-        ++I;
-        break;
-      }
-    }
-    for (; I != E; ++I) {
-      if (!I->isDeclaration() && !getGlobalVariableClass(I) && !(I->hasLocalLinkage() || I->hasHiddenVisibility())) {
-        if (I->hasDLLImportLinkage()) {
-          // can't import from DLLs
-          llvm_unreachable(0);
-        }
-        if (I->hasDLLExportLinkage()) {
-          // can't export to DLLs
-          llvm_unreachable(0);
-        }
-        if (I->isThreadLocal()) {
-          // no support for thread locals
-          llvm_unreachable(0);
-        }
-
-        Out << "_." << GetValueName(I) << " = ";
-        writeOperand(I->getInitializer(), true);
-        Out << ";\n";
-        continue;
-      }
-    }
-  }
-
-  if (!M.empty()) {
-    Out << "\n/* Module Methods */\n";
   }
   return false;
-}
-
-void JsWriter::printFunctionSignature(const Function *F, bool Prototype) {
-  if(Prototype || F->isDeclaration()) {
-    Out << "var " << GetValueName(F);
-    return;
-  } 
-  Out << "function " << GetValueName(F) << "(";
-  if(!F->arg_empty()) {
-    // print out arguments
-    Function::const_arg_iterator AI = F->arg_begin(), AE = F->arg_end();
-    Out << GetValueName(AI);
-    ++AI;
-    for(; AI != AE; ++AI) {
-      Out << ", " << GetValueName(AI);
-    }
-  }
-  Out << ")";
 }
 
 static inline bool isFPIntBitCast(const Instruction &I) {
@@ -1161,57 +961,36 @@ static inline bool isFPIntBitCast(const Instruction &I) {
 }
 
 void JsWriter::printFunction(Function &F) {
-  printFunctionSignature(&F, false);
-  Out << " {\n";
-  
-  bool PrintedVar = false;
-  
-  // print local variable information for the function
-  for (inst_iterator I = inst_begin(&F), E = inst_end(&F); I != E; ++I) {
-    if (isDirectAlloca(&*I) || (I->getType() != Type::getVoidTy(F.getContext()) &&
-						       !isInlinableInst(*I))) {
-      if(!PrintedVar) {
-	Out << "  var " << GetValueName(&*I);
-	PrintedVar = true;
-      } else {
-	Out << ", " << GetValueName(&*I);
-      }
-      if(isa<PHINode>(*I)) {
-	Out << ", " << GetValueName(&*I) << "_";
-      }
-    }
-    // We need a temporary for the BitCast to use so it can pluck a value out
-    // of a union to do the BitCast. This is separate from the need for a
-    // variable to hold the result of the BitCast. 
-    if (isFPIntBitCast(*I)) {
-      Out << "  llvmBitCastUnion " << GetValueName(&*I)
-          << "__BITCAST_TEMPORARY;\n";
-      PrintedVar = true;
+  if(initialized) {
+    Out << ",\n";
+  } else {
+    initialized = true;
+  }
+  Out << "{ \"ident\": \"" << GetValueName(&F) << "\", ";
+  Out << "\"intertype\": \"function\", \"lineNum\": " << LineNumber++;
+  Out << ", \"params\": [";
+  if(!F.arg_empty()) {
+    Function::const_arg_iterator AI = F.arg_begin(), AE = F.arg_end();
+    Out << "{ \"item\": \"" << GetValueName(AI) << "\", ";
+    Out << "\"intertype\": \"\" }";
+    ++AI;
+    for(; AI != AE; ++AI) {
+      Out << ", { \"item\": \"" << GetValueName(AI) << "\", ";
+      Out << "\"intertype\": \"\" }";
     }
   }
-
-  if (PrintedVar) {
-    Out << ";\n";
-  }
-
-  std::string cls = "";
-  raw_string_ostream Closing(cls);
+  Out << "]";
+  Out << ", \"returnType\": \"" << F.getReturnType()->getDescription() << "\" }";
 
   // print the basic blocks
   Function::iterator BB = F.begin(), E = F.end();
   if(BB != E) {
-    Out << "  var _ = '" << GetValueName(BB) << "'; /* jump variable */\n";
-    Out << "  while(1) {\n";
-    Out << "    switch(_) {\n";
     if (Loop *L = LI->getLoopFor(BB)) {
       if (L->getHeader() == BB && L->getParentLoop() == 0)
         printLoop(L);
     } else {
       printBasicBlock(BB);
     }
-    
-    Closing << "    }\n";
-    Closing << "  }\n";
     ++BB;
   }
   for(; BB != E; ++BB) {
@@ -1222,10 +1001,8 @@ void JsWriter::printFunction(Function &F) {
       printBasicBlock(BB);
     }
   }
-
-  Out << Closing.str();
-  Out << "};\n";
-  Out << "_." << GetValueName(&F) << " = " << GetValueName(&F) << ";\n";
+  Out << ",\n{ \"intertype\": \"functionEnd\", \"lineNum\": ";
+  Out << LineNumber++ <<" }";
 }
 
 void JsWriter::printLoop(Loop *L) {
@@ -1240,48 +1017,27 @@ void JsWriter::printLoop(Loop *L) {
 }
 
 void JsWriter::printBasicBlock(BasicBlock *BB) {
-  Out << "      case '" << GetValueName(BB) << "':\n";
   // Output all of the instructions in the basic block...
   for (BasicBlock::iterator II = BB->begin(), E = --BB->end(); II != E;
-       ++II) {
-    if (!isInlinableInst(*II)) {
-      Out << "        ";
-      if (II->getType() != Type::getVoidTy(BB->getContext()) &&
-          !isInlineAsm(*II)) {
-	outputLValue(II);
-      }
-      writeInstComputationInline(*II);
-      Out << ";\n";
-    }
+       ++II, LineNumber++) {
+    Out << ",\n{ \"ident\": \"" << GetValueName(II) << "\", ";
+    Out << "\"intertype\": \"" << II->getOpcodeName() << "\", ";
+    Out << "\"lineNum\": " << LineNumber << ", ";
+    Out << "\"operands\": ";
+    writeOperands(*II);
   }
-
-  // Don't emit prefix or suffix for the terminator.
   visit(*BB->getTerminator());
 }
 
 
 // Specific Instruction type classes...
 void JsWriter::visitReturnInst(ReturnInst &I) {
-  if (I.getNumOperands() > 1) {
-    Out << "  return [\n";
-    for (unsigned i = 0, e = I.getNumOperands(); i != e; ++i) {
-      Out << "      ";
-      writeOperand(I.getOperand(i));
-      if (i != e - 1)
-        Out << ",";
-      Out << "\n";
-    }
-    Out << "    ];\n";
-    Out << "  }\n";
-    return;
-  }
-
-  Out << "        return";
-  if (I.getNumOperands()) {
-    Out << ' ';
-    writeOperand(I.getOperand(0));
-  }
-  Out << ";\n";
+  Out << ",\n{ \"intertype\": \"return\", \"lineNum\": ";
+  Out << LineNumber++ << ", \"type\": \"";
+  Out << I.getType()->getDescription() << "\", ";
+  Out << "\"operands\": ";
+  writeOperands(I);
+  Out << "}";
 }
 
 void JsWriter::visitSwitchInst(SwitchInst &SI) {
@@ -2008,41 +1764,6 @@ void JsWriter::visitAllocaInst(AllocaInst &I) {
   Out << ")";
 }
 
-void JsWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
-                                 gep_type_iterator E, bool Static) {
-  
-  // If there are no indices, just print out the pointer.
-  if (I == E) {
-    writeOperand(Ptr);
-    return;
-  }
-  Out << "_a(";
-  gep_type_iterator N = I;
-  ++N;
-  writeOperand(Ptr);
-  for(; N != E; ++I, ++N) {
-    if(I->isPointerTy()) {
-      Out << "(";
-      writeOperand(I.getOperand());
-      Out << ")";
-    } else {
-      Out << "[";
-      writeOperand(I.getOperand());
-      Out << "]";
-    }
-  }
-  // unrolled last iteration
-  Value *LastOp = I.getOperand();
-  if(isa<Constant>(LastOp) && cast<Constant>(LastOp)->isNullValue()) {
-    // forall i: &i == &i[0] so drop the last index
-    Out << ")";
-    return;
-  }
-  Out << ",";
-  writeOperand(I.getOperand());
-  Out << ")";
-}
-
 void JsWriter::writeMemoryAccess(Value *Operand, const Type *OperandType,
                                 bool IsVolatile, unsigned Alignment) {
   writeOperand(Operand);
@@ -2077,8 +1798,8 @@ void JsWriter::visitStoreInst(StoreInst &I) {
 }
 
 void JsWriter::visitGetElementPtrInst(GetElementPtrInst &I) {
-  printGEPExpression(I.getPointerOperand(), gep_type_begin(I),
-                     gep_type_end(I), false);
+  //printGEPExpression(I.getPointerOperand(), gep_type_begin(I),
+  //                 gep_type_end(I), false);
 }
 
 void JsWriter::visitVAArgInst(VAArgInst &I) {
