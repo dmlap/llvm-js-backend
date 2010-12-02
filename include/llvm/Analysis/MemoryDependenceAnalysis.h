@@ -47,6 +47,9 @@ namespace llvm {
       /// pair holds the instruction that clobbers the memory.  For example,
       /// this occurs when we see a may-aliased store to the memory location we
       /// care about.
+      ///
+      /// A dependence query on the first instruction of the entry block will
+      /// return a clobber(self) result.
       Clobber,
 
       /// Def - This is a dependence on the specified instruction which
@@ -335,11 +338,19 @@ namespace llvm {
     /// critical edges.
     void invalidateCachedPredecessors();
     
-  private:
+    /// getPointerDependencyFrom - Return the instruction on which a memory
+    /// location depends.  If isLoad is true, this routine ignores may-aliases
+    /// with read-only operations.  If isLoad is false, this routine ignores
+    /// may-aliases with reads from read-only locations.
+    ///
+    /// Note that this is an uncached query, and thus may be inefficient.
+    ///
     MemDepResult getPointerDependencyFrom(const AliasAnalysis::Location &Loc,
                                           bool isLoad, 
                                           BasicBlock::iterator ScanIt,
                                           BasicBlock *BB);
+    
+  private:
     MemDepResult getCallSiteDependencyFrom(CallSite C, bool isReadOnlyCall,
                                            BasicBlock::iterator ScanIt,
                                            BasicBlock *BB);

@@ -17,6 +17,9 @@ add_custom_target(UnitTests)
 
 include_directories(${LLVM_MAIN_SRC_DIR}/utils/unittest/googletest/include)
 add_definitions(-DGTEST_HAS_RTTI=0)
+if (NOT LLVM_ENABLE_THREADS)
+  add_definitions(-DGTEST_HAS_PTHREAD=0)
+endif()
 
 set(LLVM_LINK_COMPONENTS
   jit
@@ -26,13 +29,13 @@ set(LLVM_LINK_COMPONENTS
   BitReader
   AsmParser
   Core
-  System
   Support
   )
 
 set(LLVM_USED_LIBS
   gtest
   gtest_main
+  LLVMSupport # gtest needs it for raw_ostream.
   )
 
 add_llvm_unittest(ADT
@@ -78,6 +81,10 @@ endif()
 
 add_llvm_unittest(JIT ${JITTestsSources})
 
+if(MINGW)
+  set_property(TARGET JITTests PROPERTY LINK_FLAGS -Wl,--export-all-symbols)
+endif()
+
 add_llvm_unittest(Transforms
   Transforms/Utils/Cloning.cpp
   )
@@ -101,7 +108,6 @@ endif()
 add_llvm_unittest(VMCore ${VMCoreSources})
 
 set(LLVM_LINK_COMPONENTS
-  System
   Support
   Core
   )
@@ -114,10 +120,11 @@ add_llvm_unittest(Support
   Support/EndianTest.cpp
   Support/LeakDetectorTest.cpp
   Support/MathExtrasTest.cpp
+  Support/Path.cpp
   Support/raw_ostream_test.cpp
   Support/RegexTest.cpp
   Support/SwapByteOrderTest.cpp
-  Support/System.cpp
+  Support/TimeValue.cpp
   Support/TypeBuilderTest.cpp
   Support/ValueHandleTest.cpp
   )

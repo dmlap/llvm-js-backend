@@ -53,6 +53,19 @@ Instruction *InstCombiner::commonShiftTransforms(BinaryOperator &I) {
   if (ConstantInt *CUI = dyn_cast<ConstantInt>(Op1))
     if (Instruction *Res = FoldShiftByConstant(Op0, CUI, I))
       return Res;
+
+  // X shift (A srem B) -> X shift (A and B-1) iff B is a power of 2.
+  // Because shifts by negative values are undefined.
+  if (BinaryOperator *BO = dyn_cast<BinaryOperator>(Op1))
+    if (BO->hasOneUse() && BO->getOpcode() == Instruction::SRem)
+      if (ConstantInt *CI = dyn_cast<ConstantInt>(BO->getOperand(1)))
+        if (CI->getValue().isPowerOf2()) {
+          Constant *C = ConstantInt::get(BO->getType(), CI->getValue()-1);
+          Value *Rem = Builder->CreateAnd(BO->getOperand(0), C, BO->getName());
+          I.setOperand(1, Rem);
+          return &I;
+        }
+
   return 0;
 }
 

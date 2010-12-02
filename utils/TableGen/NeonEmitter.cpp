@@ -89,7 +89,7 @@ static char Narrow(const char t) {
       return 'i';
     case 'f':
       return 'h';
-    default: throw "unhandled type in widen!";
+    default: throw "unhandled type in narrow!";
   }
   return '\0';
 }
@@ -159,6 +159,10 @@ static char ModType(const char mod, char type, bool &quad, bool &poly,
       break;
     case 'n':
       type = Widen(type);
+      break;
+    case 'i':
+      type = 'i';
+      scal = true;
       break;
     case 'l':
       type = 'l';
@@ -293,9 +297,9 @@ static std::string BuiltinTypeString(const char mod, StringRef typestr,
   bool pntr = false;
   
   if (mod == 'v')
-    return "v";
+    return "v"; // void
   if (mod == 'i')
-    return "i";
+    return "i"; // int
   
   // base type to get the type string for.
   char type = ClassifyType(typestr, quad, poly, usgn);
@@ -303,11 +307,13 @@ static std::string BuiltinTypeString(const char mod, StringRef typestr,
   // Based on the modifying character, change the type and width if necessary.
   type = ModType(mod, type, quad, poly, usgn, scal, cnst, pntr);
 
+  // All pointers are void* pointers.  Change type to 'v' now.
   if (pntr) {
     usgn = false;
     poly = false;
     type = 'v';
   }
+  // Treat half-float ('h') types as unsigned short ('s') types.
   if (type == 'h') {
     type = 's';
     usgn = true;
@@ -319,8 +325,10 @@ static std::string BuiltinTypeString(const char mod, StringRef typestr,
 
     if (usgn)
       s.push_back('U');
+    else if (type == 'c')
+      s.push_back('S'); // make chars explicitly signed
     
-    if (type == 'l')
+    if (type == 'l') // 64-bit long
       s += "LLi";
     else
       s.push_back(type);
@@ -337,8 +345,8 @@ static std::string BuiltinTypeString(const char mod, StringRef typestr,
   // returning structs of 2, 3, or 4 vectors which are returned in a sret-like
   // fashion, storing them to a pointer arg.
   if (ret) {
-    if (mod == '2' || mod == '3' || mod == '4')
-      return "vv*";
+    if (mod >= '2' && mod <= '4')
+      return "vv*"; // void result with void* first argument
     if (mod == 'f' || (ck != ClassB && type == 'f'))
       return quad ? "V4f" : "V2f";
     if (ck != ClassB && type == 's')
@@ -348,16 +356,16 @@ static std::string BuiltinTypeString(const char mod, StringRef typestr,
     if (ck != ClassB && type == 'l')
       return quad ? "V2LLi" : "V1LLi";
     
-    return quad ? "V16c" : "V8c";
+    return quad ? "V16Sc" : "V8Sc";
   }    
 
   // Non-return array types are passed as individual vectors.
   if (mod == '2')
-    return quad ? "V16cV16c" : "V8cV8c";
+    return quad ? "V16ScV16Sc" : "V8ScV8Sc";
   if (mod == '3')
-    return quad ? "V16cV16cV16c" : "V8cV8cV8c";
+    return quad ? "V16ScV16ScV16Sc" : "V8ScV8ScV8Sc";
   if (mod == '4')
-    return quad ? "V16cV16cV16cV16c" : "V8cV8cV8cV8c";
+    return quad ? "V16ScV16ScV16ScV16Sc" : "V8ScV8ScV8ScV8Sc";
 
   if (mod == 'f' || (ck != ClassB && type == 'f'))
     return quad ? "V4f" : "V2f";
@@ -368,7 +376,7 @@ static std::string BuiltinTypeString(const char mod, StringRef typestr,
   if (ck != ClassB && type == 'l')
     return quad ? "V2LLi" : "V1LLi";
   
-  return quad ? "V16c" : "V8c";
+  return quad ? "V16Sc" : "V8Sc";
 }
 
 /// MangleName - Append a type or width suffix to a base neon function name, 
@@ -589,7 +597,7 @@ static std::string GenOpString(OpKind op, const std::string &proto,
     s += "(" + ts + ")a";
     break;
   case OpConcat:
-    s += "__builtin_shufflevector((int64x1_t)a";
+    s += "(" + ts + ")__builtin_shufflevector((int64x1_t)a";
     s += ", (int64x1_t)b, 0, 1)";
     break;
   case OpHi:
@@ -603,9 +611,10 @@ static std::string GenOpString(OpKind op, const std::string &proto,
     break;
   case OpSelect:
     // ((0 & 1) | (~0 & 2))
+    s += "(" + ts + ")";
     ts = TypeString(proto[1], typestr);
-    s += "(a & (" + ts + ")b) | ";
-    s += "(~a & (" + ts + ")c)";
+    s += "((a & (" + ts + ")b) | ";
+    s += "(~a & (" + ts + ")c))";
     break;
   case OpRev16:
     s += "__builtin_shufflevector(a, a";
@@ -697,23 +706,21 @@ static unsigned GetNeonEnum(const std::string &proto, StringRef typestr) {
 // Generate the definition for this intrinsic, e.g. __builtin_neon_cls(a)
 static std::string GenBuiltin(const std::string &name, const std::string &proto,
                               StringRef typestr, ClassKind ck) {
-  bool quad;
-  unsigned nElts = GetNumElements(typestr, quad);
   char arg = 'a';
   std::string s;
 
   // If this builtin returns a struct 2, 3, or 4 vectors, pass it as an implicit
   // sret-like argument.
-  bool sret = (proto[0] == '2' || proto[0] == '3' || proto[0] == '4');
+  bool sret = (proto[0] >= '2' && proto[0] <= '4');
 
   // If this builtin takes an immediate argument, we need to #define it rather
   // than use a standard declaration, so that SemaChecking can range check
   // the immediate passed by the user.
   bool define = proto.find('i') != std::string::npos;
 
-  // If all types are the same size, bitcasting the args will take care 
-  // of arg checking.  The actual signedness etc. will be taken care of with
-  // special enums.
+  // Check if the prototype has a scalar operand with the type of the vector
+  // elements.  If not, bitcasting the args will take care of arg checking.
+  // The actual signedness etc. will be taken care of with special enums.
   if (proto.find('s') == std::string::npos)
     ck = ClassB;
 
@@ -723,12 +730,12 @@ static std::string GenBuiltin(const std::string &name, const std::string &proto,
     if (define) {
       if (sret)
         s += "({ " + ts + " r; ";
-      else if (proto[0] != 's')
+      else
         s += "(" + ts + ")";
     } else if (sret) {
       s += ts + " r; ";
     } else {
-      s += ts + " r; r = ";
+      s += ts + " r; r = (" + ts + ")";
     }
   }
   
@@ -736,6 +743,7 @@ static std::string GenBuiltin(const std::string &name, const std::string &proto,
   
   s += "__builtin_neon_";
   if (splat) {
+    // Call the non-splat builtin: chop off the "_n" suffix from the name.
     std::string vname(name, 0, name.size()-2);
     s += MangleName(vname, typestr, ck);
   } else {
@@ -750,12 +758,27 @@ static std::string GenBuiltin(const std::string &name, const std::string &proto,
   
   for (unsigned i = 1, e = proto.size(); i != e; ++i, ++arg) {
     std::string args = std::string(&arg, 1);
+
+    // Wrap macro arguments in parenthesis.
     if (define)
       args = "(" + args + ")";
-    
+
+    bool argQuad = false;
+    bool argPoly = false;
+    bool argUsgn = false;
+    bool argScalar = false;
+    bool dummy = false;
+    char argType = ClassifyType(typestr, argQuad, argPoly, argUsgn);
+    argType = ModType(proto[i], argType, argQuad, argPoly, argUsgn, argScalar,
+                      dummy, dummy);
+
     // Handle multiple-vector values specially, emitting each subvector as an
     // argument to the __builtin.
-    if (proto[i] == '2' || proto[i] == '3' || proto[i] == '4') {
+    if (proto[i] >= '2' && proto[i] <= '4') {
+      // Check if an explicit cast is needed.
+      if (argType != 'c' || argPoly || argUsgn)
+        args = (argQuad ? "(int8x16_t)" : "(int8x8_t)") + args;
+
       for (unsigned vi = 0, ve = proto[i] - '0'; vi != ve; ++vi) {
         s += args + ".val[" + utostr(vi) + "]";
         if ((vi + 1) < ve)
@@ -767,10 +790,21 @@ static std::string GenBuiltin(const std::string &name, const std::string &proto,
       continue;
     }
     
-    if (splat && (i + 1) == e) 
-      s += Duplicate(nElts, typestr, args);
-    else
-      s += args;
+    if (splat && (i + 1) == e)
+      args = Duplicate(GetNumElements(typestr, argQuad), typestr, args);
+
+    // Check if an explicit cast is needed.
+    if ((splat || !argScalar) &&
+        ((ck == ClassB && argType != 'c') || argPoly || argUsgn)) {
+      std::string argTypeStr = "c";
+      if (ck != ClassB)
+        argTypeStr = argType;
+      if (argQuad)
+        argTypeStr = "Q" + argTypeStr;
+      args = "(" + TypeString('d', argTypeStr) + ")" + args;
+    }
+    
+    s += args;
     if ((i + 1) < e)
       s += ", ";
   }
@@ -1131,7 +1165,7 @@ void NeonEmitter::runHeader(raw_ostream &OS) {
       
       // Builtins that return a struct of multiple vectors have an extra
       // leading arg for the struct return.
-      if (Proto[0] == '2' || Proto[0] == '3' || Proto[0] == '4')
+      if (Proto[0] >= '2' && Proto[0] <= '4')
         ++immidx;
       
       // Add one to the index for each argument until we reach the immediate 

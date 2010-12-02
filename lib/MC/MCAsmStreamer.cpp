@@ -149,8 +149,6 @@ public:
 
   virtual void EmitValue(const MCExpr *Value, unsigned Size,unsigned AddrSpace);
 
-  virtual void EmitIntValue(uint64_t Value, unsigned Size, unsigned AddrSpace);
-
   virtual void EmitULEB128Value(const MCExpr *Value, unsigned AddrSpace = 0);
 
   virtual void EmitSLEB128Value(const MCExpr *Value, unsigned AddrSpace = 0);
@@ -176,6 +174,14 @@ public:
   virtual void EmitDwarfLocDirective(unsigned FileNo, unsigned Line,
                                      unsigned Column, unsigned Flags,
                                      unsigned Isa, unsigned Discriminator);
+
+  virtual bool EmitCFIStartProc();
+  virtual bool EmitCFIEndProc();
+  virtual bool EmitCFIDefCfaOffset(int64_t Offset);
+  virtual bool EmitCFIDefCfaRegister(int64_t Register);
+  virtual bool EmitCFIOffset(int64_t Register, int64_t Offset);
+  virtual bool EmitCFIPersonality(const MCSymbol *Sym);
+  virtual bool EmitCFILsda(const MCSymbol *Sym);
 
   virtual void EmitInstruction(const MCInst &Inst);
 
@@ -488,10 +494,8 @@ void MCAsmStreamer::EmitBytes(StringRef Data, unsigned AddrSpace) {
   EmitEOL();
 }
 
-/// EmitIntValue - Special case of EmitValue that avoids the client having
-/// to pass in a MCExpr for constant integers.
-void MCAsmStreamer::EmitIntValue(uint64_t Value, unsigned Size,
-                                 unsigned AddrSpace) {
+void MCAsmStreamer::EmitValue(const MCExpr *Value, unsigned Size,
+                              unsigned AddrSpace) {
   assert(CurSection && "Cannot emit contents before setting section!");
   const char *Directive = 0;
   switch (Size) {
@@ -503,31 +507,17 @@ void MCAsmStreamer::EmitIntValue(uint64_t Value, unsigned Size,
     Directive = MAI.getData64bitsDirective(AddrSpace);
     // If the target doesn't support 64-bit data, emit as two 32-bit halves.
     if (Directive) break;
+    int64_t IntValue;
+    if (!Value->EvaluateAsAbsolute(IntValue))
+      report_fatal_error("Don't know how to emit this value.");
     if (isLittleEndian()) {
-      EmitIntValue((uint32_t)(Value >> 0 ), 4, AddrSpace);
-      EmitIntValue((uint32_t)(Value >> 32), 4, AddrSpace);
+      EmitIntValue((uint32_t)(IntValue >> 0 ), 4, AddrSpace);
+      EmitIntValue((uint32_t)(IntValue >> 32), 4, AddrSpace);
     } else {
-      EmitIntValue((uint32_t)(Value >> 32), 4, AddrSpace);
-      EmitIntValue((uint32_t)(Value >> 0 ), 4, AddrSpace);
+      EmitIntValue((uint32_t)(IntValue >> 32), 4, AddrSpace);
+      EmitIntValue((uint32_t)(IntValue >> 0 ), 4, AddrSpace);
     }
     return;
-  }
-
-  assert(Directive && "Invalid size for machine code value!");
-  OS << Directive << truncateToSize(Value, Size);
-  EmitEOL();
-}
-
-void MCAsmStreamer::EmitValue(const MCExpr *Value, unsigned Size,
-                              unsigned AddrSpace) {
-  assert(CurSection && "Cannot emit contents before setting section!");
-  const char *Directive = 0;
-  switch (Size) {
-  default: break;
-  case 1: Directive = MAI.getData8bitsDirective(AddrSpace); break;
-  case 2: Directive = MAI.getData16bitsDirective(AddrSpace); break;
-  case 4: Directive = MAI.getData32bitsDirective(AddrSpace); break;
-  case 8: Directive = MAI.getData64bitsDirective(AddrSpace); break;
   }
 
   assert(Directive && "Invalid size for machine code value!");
@@ -702,6 +692,76 @@ void MCAsmStreamer::EmitDwarfLocDirective(unsigned FileNo, unsigned Line,
   EmitEOL();
 }
 
+bool MCAsmStreamer::EmitCFIStartProc() {
+  if (this->MCStreamer::EmitCFIStartProc())
+    return true;
+
+  OS << ".cfi_startproc";
+  EmitEOL();
+
+  return false;
+}
+
+bool MCAsmStreamer::EmitCFIEndProc() {
+  if (this->MCStreamer::EmitCFIEndProc())
+    return true;
+
+  OS << ".cfi_endproc";
+  EmitEOL();
+
+  return false;
+}
+
+bool MCAsmStreamer::EmitCFIDefCfaOffset(int64_t Offset) {
+  if (this->MCStreamer::EmitCFIDefCfaOffset(Offset))
+    return true;
+
+  OS << ".cfi_def_cfa_offset " << Offset;
+  EmitEOL();
+
+  return false;
+}
+
+bool MCAsmStreamer::EmitCFIDefCfaRegister(int64_t Register) {
+  if (this->MCStreamer::EmitCFIDefCfaRegister(Register))
+    return true;
+
+  OS << ".cfi_def_cfa_register " << Register;
+  EmitEOL();
+
+  return false;
+}
+
+bool MCAsmStreamer::EmitCFIOffset(int64_t Register, int64_t Offset) {
+  if (this->MCStreamer::EmitCFIOffset(Register, Offset))
+    return true;
+
+  OS << ".cfi_offset " << Register << ", " << Offset;
+  EmitEOL();
+
+  return false;
+}
+
+bool MCAsmStreamer::EmitCFIPersonality(const MCSymbol *Sym) {
+  if (this->MCStreamer::EmitCFIPersonality(Sym))
+    return true;
+
+  OS << ".cfi_personality 0, " << *Sym;
+  EmitEOL();
+
+  return false;
+}
+
+bool MCAsmStreamer::EmitCFILsda(const MCSymbol *Sym) {
+  if (this->MCStreamer::EmitCFILsda(Sym))
+    return true;
+
+  OS << ".cfi_lsda 0, " << *Sym;
+  EmitEOL();
+
+  return false;
+}
+
 void MCAsmStreamer::AddEncodingComment(const MCInst &Inst) {
   raw_ostream &OS = GetCommentOS();
   SmallString<256> Code;
@@ -816,7 +876,7 @@ void MCAsmStreamer::EmitRawText(StringRef String) {
 
 void MCAsmStreamer::Finish() {
   // Dump out the dwarf file & directory tables and line tables.
-  if (getContext().hasDwarfFiles() && TLOF) {
+  if (getContext().hasDwarfFiles() && getContext().hasDwarfLines() && TLOF) {
     MCDwarfFileTable::Emit(this, TLOF->getDwarfLineSection(), NULL,
                            PointerSize);
   }

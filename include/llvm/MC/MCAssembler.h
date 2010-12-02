@@ -17,7 +17,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCInst.h"
-#include "llvm/System/DataTypes.h"
+#include "llvm/Support/DataTypes.h"
 #include <vector> // FIXME: Shouldn't be needed.
 
 namespace llvm {
@@ -717,7 +717,7 @@ private:
 
   /// Compute the effective fragment size assuming it is layed out at the given
   /// \arg SectionAddress and \arg FragmentOffset.
-  uint64_t ComputeFragmentSize(MCAsmLayout &Layout, const MCFragment &F,
+  uint64_t ComputeFragmentSize(const MCFragment &F,
                                uint64_t SectionAddress,
                                uint64_t FragmentOffset) const;
 

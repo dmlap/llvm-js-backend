@@ -33,7 +33,7 @@
 #ifndef LLVM_C_CORE_H
 #define LLVM_C_CORE_H
 
-#include "llvm/System/DataTypes.h"
+#include "llvm/Support/DataTypes.h"
 
 #ifdef __cplusplus
 
@@ -329,6 +329,9 @@ void LLVMDumpModule(LLVMModuleRef M);
 /** See Module::setModuleInlineAsm. */
 void LLVMSetModuleInlineAsm(LLVMModuleRef M, const char *Asm);
 
+/** See Module::getContext. */
+LLVMContextRef LLVMGetModuleContext(LLVMModuleRef M);
+
 /*===-- Types -------------------------------------------------------------===*/
 
 /* LLVM types conform to the following hierarchy:
@@ -547,6 +550,9 @@ LLVMValueRef LLVMMDNode(LLVMValueRef *Vals, unsigned Count);
 /* Operations on scalar constants */
 LLVMValueRef LLVMConstInt(LLVMTypeRef IntTy, unsigned long long N,
                           LLVMBool SignExtend);
+LLVMValueRef LLVMConstIntOfArbitraryPrecision(LLVMTypeRef IntTy,
+                                              unsigned NumWords,
+                                              const uint64_t Words[]);
 LLVMValueRef LLVMConstIntOfString(LLVMTypeRef IntTy, const char *Text,
                                   uint8_t Radix);
 LLVMValueRef LLVMConstIntOfStringAndSize(LLVMTypeRef IntTy, const char *Text,

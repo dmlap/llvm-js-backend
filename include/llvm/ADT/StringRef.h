@@ -132,7 +132,7 @@ namespace llvm {
     /// numbers.
     int compare_numeric(StringRef RHS) const;
 
-    /// \brief Determine the edit distance between this string and another 
+    /// \brief Determine the edit distance between this string and another
     /// string.
     ///
     /// \param Other the string to compare this string against.
@@ -255,6 +255,18 @@ namespace llvm {
     ///
     /// Note: O(size() + Chars.size())
     size_type find_first_not_of(StringRef Chars, size_t From = 0) const;
+
+    /// find_last_of - Find the last character in the string that is \arg C, or
+    /// npos if not found.
+    size_type find_last_of(char C, size_t From = npos) const {
+      return rfind(C, From);
+    }
+
+    /// find_last_of - Find the last character in the string that is in \arg C,
+    /// or npos if not found.
+    ///
+    /// Note: O(size() + Chars.size())
+    size_type find_last_of(StringRef Chars, size_t From = npos) const;
 
     /// @}
     /// @name Helpful Algorithms
@@ -436,6 +448,10 @@ namespace llvm {
   }
 
   /// @}
+
+  // StringRefs can be treated like a POD type.
+  template <typename T> struct isPodLike;
+  template <> struct isPodLike<StringRef> { static const bool value = true; };
 
 }
 

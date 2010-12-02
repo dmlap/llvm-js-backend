@@ -15,9 +15,8 @@
 #define LLVM_SUPPORT_MEMORYBUFFER_H
 
 #include "llvm/ADT/StringRef.h"
-#include "llvm/System/DataTypes.h"
+#include "llvm/Support/DataTypes.h"
 #include <string>
-#include <sys/stat.h>
 
 namespace llvm {
 
@@ -61,15 +60,18 @@ public:
   /// MemoryBuffer if successful, otherwise returning null.  If FileSize is
   /// specified, this means that the client knows that the file exists and that
   /// it has the specified size.
-  static MemoryBuffer *getFile(StringRef Filename,
-                               std::string *ErrStr = 0,
-                               int64_t FileSize = -1,
-                               struct stat *FileInfo = 0);
-  static MemoryBuffer *getFile(const char *Filename,
-                               std::string *ErrStr = 0,
-                               int64_t FileSize = -1,
-                               struct stat *FileInfo = 0);
+  static MemoryBuffer *getFile(StringRef Filename, std::string *ErrStr = 0,
+                               int64_t FileSize = -1);
+  static MemoryBuffer *getFile(const char *Filename, std::string *ErrStr = 0,
+                               int64_t FileSize = -1);
 
+  /// getOpenFile - Given an already-open file descriptor, read the file and
+  /// return a MemoryBuffer.  This takes ownership of the descriptor,
+  /// immediately closing it after reading the file.
+  static MemoryBuffer *getOpenFile(int FD, const char *Filename,
+                                   std::string *ErrStr = 0,
+                                   int64_t FileSize = -1);
+  
   /// getMemBuffer - Open the specified memory range as a MemoryBuffer.  Note
   /// that InputData must be null terminated.
   static MemoryBuffer *getMemBuffer(StringRef InputData,
@@ -104,12 +106,10 @@ public:
   /// in *ErrStr with a reason.
   static MemoryBuffer *getFileOrSTDIN(StringRef Filename,
                                       std::string *ErrStr = 0,
-                                      int64_t FileSize = -1,
-                                      struct stat *FileInfo = 0);
+                                      int64_t FileSize = -1);
   static MemoryBuffer *getFileOrSTDIN(const char *Filename,
                                       std::string *ErrStr = 0,
-                                      int64_t FileSize = -1,
-                                      struct stat *FileInfo = 0);
+                                      int64_t FileSize = -1);
 };
 
 } // end namespace llvm

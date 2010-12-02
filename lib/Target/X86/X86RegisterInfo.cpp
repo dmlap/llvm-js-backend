@@ -464,41 +464,6 @@ bool X86RegisterInfo::hasReservedSpillSlot(const MachineFunction &MF,
   return false;
 }
 
-int
-X86RegisterInfo::getFrameIndexOffset(const MachineFunction &MF, int FI) const {
-  const TargetFrameInfo *TFI = MF.getTarget().getFrameInfo();
-  const MachineFrameInfo *MFI = MF.getFrameInfo();
-  int Offset = MFI->getObjectOffset(FI) - TFI->getOffsetOfLocalArea();
-  uint64_t StackSize = MFI->getStackSize();
-
-  if (needsStackRealignment(MF)) {
-    if (FI < 0) {
-      // Skip the saved EBP.
-      Offset += SlotSize;
-    } else {
-      unsigned Align = MFI->getObjectAlignment(FI);
-      assert((-(Offset + StackSize)) % Align == 0);
-      Align = 0;
-      return Offset + StackSize;
-    }
-    // FIXME: Support tail calls
-  } else {
-    if (!TFI->hasFP(MF))
-      return Offset + StackSize;
-
-    // Skip the saved EBP.
-    Offset += SlotSize;
-
-    // Skip the RETADDR move area
-    const X86MachineFunctionInfo *X86FI = MF.getInfo<X86MachineFunctionInfo>();
-    int TailCallReturnAddrDelta = X86FI->getTCReturnAddrDelta();
-    if (TailCallReturnAddrDelta < 0)
-      Offset -= TailCallReturnAddrDelta;
-  }
-
-  return Offset;
-}
-
 static unsigned getSUBriOpcode(unsigned is64Bit, int64_t Imm) {
   if (is64Bit) {
     if (isInt<8>(Imm))
@@ -631,7 +596,7 @@ X86RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     const MachineFrameInfo *MFI = MF.getFrameInfo();
     FIOffset = MFI->getObjectOffset(FrameIndex) - TFI->getOffsetOfLocalArea();
   } else
-    FIOffset = getFrameIndexOffset(MF, FrameIndex);
+    FIOffset = TFI->getFrameIndexOffset(MF, FrameIndex);
 
   if (MI.getOperand(i+3).isImm()) {
     // Offset is a 32-bit integer.
@@ -641,46 +606,6 @@ X86RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     // Offset is symbolic. This is extremely rare.
     uint64_t Offset = FIOffset + (uint64_t)MI.getOperand(i+3).getOffset();
     MI.getOperand(i+3).setOffset(Offset);
-  }
-}
-
-void
-X86RegisterInfo::processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
-                                                      RegScavenger *RS) const {
-  MachineFrameInfo *MFI = MF.getFrameInfo();
-  const TargetFrameInfo *TFI = MF.getTarget().getFrameInfo();
-
-  X86MachineFunctionInfo *X86FI = MF.getInfo<X86MachineFunctionInfo>();
-  int32_t TailCallReturnAddrDelta = X86FI->getTCReturnAddrDelta();
-
-  if (TailCallReturnAddrDelta < 0) {
-    // create RETURNADDR area
-    //   arg
-    //   arg
-    //   RETADDR
-    //   { ...
-    //     RETADDR area
-    //     ...
-    //   }
-    //   [EBP]
-    MFI->CreateFixedObject(-TailCallReturnAddrDelta,
-                           (-1U*SlotSize)+TailCallReturnAddrDelta, true);
-  }
-
-  if (TFI->hasFP(MF)) {
-    assert((TailCallReturnAddrDelta <= 0) &&
-           "The Delta should always be zero or negative");
-    const TargetFrameInfo &TFI = *MF.getTarget().getFrameInfo();
-
-    // Create a frame entry for the EBP register that must be saved.
-    int FrameIdx = MFI->CreateFixedObject(SlotSize,
-                                          -(int)SlotSize +
-                                          TFI.getOffsetOfLocalArea() +
-                                          TailCallReturnAddrDelta,
-                                          true);
-    assert(FrameIdx == MFI->getObjectIndexBegin() &&
-           "Slot for EBP register must be last in order to be found!");
-    FrameIdx = 0;
   }
 }
 

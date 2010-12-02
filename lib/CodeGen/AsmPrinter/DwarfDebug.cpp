@@ -39,7 +39,7 @@
 #include "llvm/Support/ValueHandle.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/Timer.h"
-#include "llvm/System/Path.h"
+#include "llvm/Support/Path.h"
 using namespace llvm;
 
 static cl::opt<bool> PrintDbgScope("print-dbgscope", cl::Hidden,
@@ -594,8 +594,8 @@ void DwarfDebug::addSourceLine(DIE *Die, DINameSpace NS) {
 void DwarfDebug::addVariableAddress(DbgVariable *&DV, DIE *Die, int64_t FI) {
   MachineLocation Location;
   unsigned FrameReg;
-  const TargetRegisterInfo *RI = Asm->TM.getRegisterInfo();
-  int Offset = RI->getFrameIndexReference(*Asm->MF, FI, FrameReg);
+  const TargetFrameInfo *TFI = Asm->TM.getFrameInfo();
+  int Offset = TFI->getFrameIndexReference(*Asm->MF, FI, FrameReg);
   Location.set(FrameReg, Offset);
 
   if (DV->variableHasComplexAddress())

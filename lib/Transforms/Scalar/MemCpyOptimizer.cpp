@@ -16,7 +16,6 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/IntrinsicInst.h"
 #include "llvm/Instructions.h"
-#include "llvm/LLVMContext.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/Dominators.h"
@@ -39,8 +38,6 @@ STATISTIC(NumMoveToCpy,   "Number of memmoves converted to memcpy");
 /// i16 0xF0F0, double 0.0 etc.  If the value can't be handled with a repeated
 /// byte store (e.g. i16 0x1234), return null.
 static Value *isBytewiseValue(Value *V) {
-  LLVMContext &Context = V->getContext();
-  
   // All byte-wide stores are splatable, even of arbitrary variables.
   if (V->getType()->isIntegerTy(8)) return V;
   
@@ -48,9 +45,9 @@ static Value *isBytewiseValue(Value *V) {
   // corresponding integer value is "byteable".  An important case is 0.0. 
   if (ConstantFP *CFP = dyn_cast<ConstantFP>(V)) {
     if (CFP->getType()->isFloatTy())
-      V = ConstantExpr::getBitCast(CFP, Type::getInt32Ty(Context));
+      V = ConstantExpr::getBitCast(CFP, Type::getInt32Ty(V->getContext()));
     if (CFP->getType()->isDoubleTy())
-      V = ConstantExpr::getBitCast(CFP, Type::getInt64Ty(Context));
+      V = ConstantExpr::getBitCast(CFP, Type::getInt64Ty(V->getContext()));
     // Don't handle long double formats, which have strange constraints.
   }
   
@@ -73,7 +70,7 @@ static Value *isBytewiseValue(Value *V) {
         if (Val != Val2)
           return 0;
       }
-      return ConstantInt::get(Context, Val);
+      return ConstantInt::get(V->getContext(), Val);
     }
   }
   
@@ -301,11 +298,13 @@ void MemsetRanges::addStore(int64_t Start, StoreInst *SI) {
 
 namespace {
   class MemCpyOpt : public FunctionPass {
+    MemoryDependenceAnalysis *MD;
     bool runOnFunction(Function &F);
   public:
     static char ID; // Pass identification, replacement for typeid
     MemCpyOpt() : FunctionPass(ID) {
       initializeMemCpyOptPass(*PassRegistry::getPassRegistry());
+      MD = 0;
     }
 
   private:
@@ -327,6 +326,7 @@ namespace {
                               uint64_t cpyLen, CallInst *C);
     bool processMemCpyMemCpyDependence(MemCpyInst *M, MemCpyInst *MDep,
                                        uint64_t MSize);
+    bool processByValArgument(CallSite CS, unsigned ArgNo);
     bool iterateOnFunction(Function &F);
   };
   
@@ -359,9 +359,7 @@ bool MemCpyOpt::processStore(StoreInst *SI, BasicBlock::iterator &BBI) {
   // a memcpy.
   if (LoadInst *LI = dyn_cast<LoadInst>(SI->getOperand(0))) {
     if (!LI->isVolatile() && LI->hasOneUse()) {
-      MemoryDependenceAnalysis &MD = getAnalysis<MemoryDependenceAnalysis>();
-
-      MemDepResult dep = MD.getDependency(LI);
+      MemDepResult dep = MD->getDependency(LI);
       CallInst *C = 0;
       if (dep.isClobber() && !isa<MemCpyInst>(dep.getInst()))
         C = dyn_cast<CallInst>(dep.getInst());
@@ -372,7 +370,7 @@ bool MemCpyOpt::processStore(StoreInst *SI, BasicBlock::iterator &BBI) {
                         LI->getPointerOperand()->stripPointerCasts(),
                         TD->getTypeStoreSize(SI->getOperand(0)->getType()), C);
         if (changed) {
-          MD.removeInstruction(SI);
+          MD->removeInstruction(SI);
           SI->eraseFromParent();
           LI->eraseFromParent();
           ++NumMemCpyInstr;
@@ -496,7 +494,7 @@ bool MemCpyOpt::processStore(StoreInst *SI, BasicBlock::iterator &BBI) {
       // align
       ConstantInt::get(Type::getInt32Ty(Context), Alignment),
       // volatile
-      ConstantInt::get(Type::getInt1Ty(Context), 0),
+      ConstantInt::getFalse(Context),
     };
     const Type *Tys[] = { Ops[0]->getType(), Ops[2]->getType() };
 
@@ -505,8 +503,8 @@ bool MemCpyOpt::processStore(StoreInst *SI, BasicBlock::iterator &BBI) {
     Value *C = CallInst::Create(MemSetF, Ops, Ops+5, "", InsertPt);
     DEBUG(dbgs() << "Replace stores:\n";
           for (unsigned i = 0, e = Range.TheStores.size(); i != e; ++i)
-            dbgs() << *Range.TheStores[i];
-          dbgs() << "With: " << *C); C=C;
+            dbgs() << *Range.TheStores[i] << '\n';
+          dbgs() << "With: " << *C << '\n'); C=C;
   
     // Don't invalidate the iterator
     BBI = BI;
@@ -657,11 +655,10 @@ bool MemCpyOpt::performCallSlotOptzn(Instruction *cpy,
 
   // Drop any cached information about the call, because we may have changed
   // its dependence information by changing its parameter.
-  MemoryDependenceAnalysis &MD = getAnalysis<MemoryDependenceAnalysis>();
-  MD.removeInstruction(C);
+  MD->removeInstruction(C);
 
-  // Remove the memcpy
-  MD.removeInstruction(cpy);
+  // Remove the memcpy.
+  MD->removeInstruction(cpy);
   ++NumMemCpyInstr;
 
   return true;
@@ -675,7 +672,7 @@ bool MemCpyOpt::processMemCpyMemCpyDependence(MemCpyInst *M, MemCpyInst *MDep,
                                               uint64_t MSize) {
   // We can only transforms memcpy's where the dest of one is the source of the
   // other.
-  if (M->getSource() != MDep->getDest())
+  if (M->getSource() != MDep->getDest() || MDep->isVolatile())
     return false;
   
   // Second, the length of the memcpy's must be the same, or the preceeding one
@@ -684,27 +681,44 @@ bool MemCpyOpt::processMemCpyMemCpyDependence(MemCpyInst *M, MemCpyInst *MDep,
   if (!C1) return false;
   
   uint64_t DepSize = C1->getValue().getZExtValue();
-  
   if (DepSize < MSize)
     return false;
   
-  Intrinsic::ID ResultFn = Intrinsic::memcpy;
+  AliasAnalysis &AA = getAnalysis<AliasAnalysis>();
+
+  // Verify that the copied-from memory doesn't change in between the two
+  // transfers.  For example, in:
+  //    memcpy(a <- b)
+  //    *b = 42;
+  //    memcpy(c <- a)
+  // It would be invalid to transform the second memcpy into memcpy(c <- b).
+  //
+  // TODO: If the code between M and MDep is transparent to the destination "c",
+  // then we could still perform the xform by moving M up to the first memcpy.
+  //
+  // NOTE: This is conservative, it will stop on any read from the source loc,
+  // not just the defining memcpy.
+  MemDepResult SourceDep =
+    MD->getPointerDependencyFrom(AA.getLocationForSource(MDep),
+                                 false, M, M->getParent());
+  if (!SourceDep.isClobber() || SourceDep.getInst() != MDep)
+    return false;
   
   // If the dest of the second might alias the source of the first, then the
   // source and dest might overlap.  We still want to eliminate the intermediate
   // value, but we have to generate a memmove instead of memcpy.
-  AliasAnalysis &AA = getAnalysis<AliasAnalysis>();
+  Intrinsic::ID ResultFn = Intrinsic::memcpy;
   if (!AA.isNoAlias(M->getRawDest(), MSize, MDep->getRawSource(), DepSize))
     ResultFn = Intrinsic::memmove;
   
-  // If all checks passed, then we can transform these memcpy's
+  // If all checks passed, then we can transform M.
   const Type *ArgTys[3] = {
     M->getRawDest()->getType(),
     MDep->getRawSource()->getType(),
     M->getLength()->getType()
   };
   Function *MemCpyFun =
-    Intrinsic::getDeclaration(M->getParent()->getParent()->getParent(),
+    Intrinsic::getDeclaration(MDep->getParent()->getParent()->getParent(),
                               ResultFn, ArgTys, 3);
   
   // Make sure to use the lesser of the alignment of the source and the dest
@@ -717,29 +731,13 @@ bool MemCpyOpt::processMemCpyMemCpyDependence(MemCpyInst *M, MemCpyInst *MDep,
     M->getRawDest(),
     MDep->getRawSource(), 
     M->getLength(),
-    ConstantInt::get(Type::getInt32Ty(M->getContext()), Align), 
+    ConstantInt::get(Type::getInt32Ty(MemCpyFun->getContext()), Align), 
     M->getVolatileCst()
   };
-  CallInst *C = CallInst::Create(MemCpyFun, Args, Args+5, "", M);
-  
-  
-  MemoryDependenceAnalysis &MD = getAnalysis<MemoryDependenceAnalysis>();
+  CallInst::Create(MemCpyFun, Args, Args+5, "", M);
 
-  // Verify that the copied-from memory doesn't change in between the two
-  // transfers.  For example, in:
-  //    memcpy(a <- b)
-  //    *b = 42;
-  //    memcpy(c <- a)
-  // It would be invalid to transform the second memcpy into memcpy(c <- b).
-  MemDepResult NewDep = MD.getDependency(C);
-  if (!NewDep.isClobber() || NewDep.getInst() != MDep) {
-    MD.removeInstruction(C);
-    C->eraseFromParent();
-    return false;
-  }
-
-  // Otherwise we're good!  Nuke the instruction we're replacing.
-  MD.removeInstruction(M);
+  // Remove the instruction we're replacing.
+  MD->removeInstruction(M);
   M->eraseFromParent();
   ++NumMemCpyInstr;
   return true;
@@ -752,25 +750,23 @@ bool MemCpyOpt::processMemCpyMemCpyDependence(MemCpyInst *M, MemCpyInst *MDep,
 /// circumstances). This allows later passes to remove the first memcpy
 /// altogether.
 bool MemCpyOpt::processMemCpy(MemCpyInst *M) {
-  MemoryDependenceAnalysis &MD = getAnalysis<MemoryDependenceAnalysis>();
-
-  // We can only optimize statically-sized memcpy's.
-  ConstantInt *cpyLen = dyn_cast<ConstantInt>(M->getLength());
-  if (!cpyLen) return false;
+  // We can only optimize statically-sized memcpy's that are non-volatile.
+  ConstantInt *CopySize = dyn_cast<ConstantInt>(M->getLength());
+  if (CopySize == 0 || M->isVolatile()) return false;
 
   // The are two possible optimizations we can do for memcpy:
   //   a) memcpy-memcpy xform which exposes redundance for DSE.
   //   b) call-memcpy xform for return slot optimization.
-  MemDepResult dep = MD.getDependency(M);
-  if (!dep.isClobber())
+  MemDepResult DepInfo = MD->getDependency(M);
+  if (!DepInfo.isClobber())
     return false;
   
-  if (MemCpyInst *MDep = dyn_cast<MemCpyInst>(dep.getInst()))
-    return processMemCpyMemCpyDependence(M, MDep, cpyLen->getZExtValue());
+  if (MemCpyInst *MDep = dyn_cast<MemCpyInst>(DepInfo.getInst()))
+    return processMemCpyMemCpyDependence(M, MDep, CopySize->getZExtValue());
     
-  if (CallInst *C = dyn_cast<CallInst>(dep.getInst())) {
+  if (CallInst *C = dyn_cast<CallInst>(DepInfo.getInst())) {
     bool changed = performCallSlotOptzn(M, M->getDest(), M->getSource(),
-                                        cpyLen->getZExtValue(), C);
+                                        CopySize->getZExtValue(), C);
     if (changed) M->eraseFromParent();
     return changed;
   }
@@ -805,33 +801,106 @@ bool MemCpyOpt::processMemMove(MemMoveInst *M) {
 
   // MemDep may have over conservative information about this instruction, just
   // conservatively flush it from the cache.
-  getAnalysis<MemoryDependenceAnalysis>().removeInstruction(M);
+  MD->removeInstruction(M);
 
   ++NumMoveToCpy;
   return true;
 }
   
+/// processByValArgument - This is called on every byval argument in call sites.
+bool MemCpyOpt::processByValArgument(CallSite CS, unsigned ArgNo) {
+  TargetData *TD = getAnalysisIfAvailable<TargetData>();
+  if (!TD) return false;
 
-// MemCpyOpt::iterateOnFunction - Executes one iteration of GVN.
+  // Find out what feeds this byval argument.
+  Value *ByValArg = CS.getArgument(ArgNo);
+  const Type *ByValTy =cast<PointerType>(ByValArg->getType())->getElementType();
+  uint64_t ByValSize = TD->getTypeAllocSize(ByValTy);
+  MemDepResult DepInfo =
+    MD->getPointerDependencyFrom(AliasAnalysis::Location(ByValArg, ByValSize),
+                                 true, CS.getInstruction(),
+                                 CS.getInstruction()->getParent());
+  if (!DepInfo.isClobber())
+    return false;
+
+  // If the byval argument isn't fed by a memcpy, ignore it.  If it is fed by
+  // a memcpy, see if we can byval from the source of the memcpy instead of the
+  // result.
+  MemCpyInst *MDep = dyn_cast<MemCpyInst>(DepInfo.getInst());
+  if (MDep == 0 || MDep->isVolatile() ||
+      ByValArg->stripPointerCasts() != MDep->getDest())
+    return false;
+  
+  // The length of the memcpy must be larger or equal to the size of the byval.
+  ConstantInt *C1 = dyn_cast<ConstantInt>(MDep->getLength());
+  if (C1 == 0 || C1->getValue().getZExtValue() < ByValSize)
+    return false;
+
+  // Get the alignment of the byval.  If it is greater than the memcpy, then we
+  // can't do the substitution.  If the call doesn't specify the alignment, then
+  // it is some target specific value that we can't know.
+  unsigned ByValAlign = CS.getParamAlignment(ArgNo+1);
+  if (ByValAlign == 0 || MDep->getAlignment() < ByValAlign)
+    return false;  
+  
+  // Verify that the copied-from memory doesn't change in between the memcpy and
+  // the byval call.
+  //    memcpy(a <- b)
+  //    *b = 42;
+  //    foo(*a)
+  // It would be invalid to transform the second memcpy into foo(*b).
+  //
+  // NOTE: This is conservative, it will stop on any read from the source loc,
+  // not just the defining memcpy.
+  MemDepResult SourceDep =
+    MD->getPointerDependencyFrom(AliasAnalysis::getLocationForSource(MDep),
+                                 false, CS.getInstruction(), MDep->getParent());
+  if (!SourceDep.isClobber() || SourceDep.getInst() != MDep)
+    return false;
+  
+  Value *TmpCast = MDep->getSource();
+  if (MDep->getSource()->getType() != ByValArg->getType())
+    TmpCast = new BitCastInst(MDep->getSource(), ByValArg->getType(),
+                              "tmpcast", CS.getInstruction());
+  
+  DEBUG(dbgs() << "MemCpyOpt: Forwarding memcpy to byval:\n"
+               << "  " << *MDep << "\n"
+               << "  " << *CS.getInstruction() << "\n");
+  
+  // Otherwise we're good!  Update the byval argument.
+  CS.setArgument(ArgNo, TmpCast);
+  ++NumMemCpyInstr;
+  return true;
+}
+
+/// iterateOnFunction - Executes one iteration of MemCpyOpt.
 bool MemCpyOpt::iterateOnFunction(Function &F) {
   bool MadeChange = false;
 
   // Walk all instruction in the function.
   for (Function::iterator BB = F.begin(), BBE = F.end(); BB != BBE; ++BB) {
-    for (BasicBlock::iterator BI = BB->begin(), BE = BB->end();
-         BI != BE;) {
+    for (BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE;) {
       // Avoid invalidating the iterator.
       Instruction *I = BI++;
       
+      bool RepeatInstruction = false;
+      
       if (StoreInst *SI = dyn_cast<StoreInst>(I))
         MadeChange |= processStore(SI, BI);
-      else if (MemCpyInst *M = dyn_cast<MemCpyInst>(I))
-        MadeChange |= processMemCpy(M);
-      else if (MemMoveInst *M = dyn_cast<MemMoveInst>(I)) {
-        if (processMemMove(M)) {
-          --BI;         // Reprocess the new memcpy.
-          MadeChange = true;
-        }
+      else if (MemCpyInst *M = dyn_cast<MemCpyInst>(I)) {
+        RepeatInstruction = processMemCpy(M);
+      } else if (MemMoveInst *M = dyn_cast<MemMoveInst>(I)) {
+        RepeatInstruction = processMemMove(M);
+      } else if (CallSite CS = (Value*)I) {
+        for (unsigned i = 0, e = CS.arg_size(); i != e; ++i)
+          if (CS.paramHasAttr(i+1, Attribute::ByVal))
+            MadeChange |= processByValArgument(CS, i);
+      }
+
+      // Reprocess the instruction if desired.
+      if (RepeatInstruction) {
+        --BI;
+        MadeChange = true;
       }
     }
   }
@@ -844,12 +913,14 @@ bool MemCpyOpt::iterateOnFunction(Function &F) {
 //
 bool MemCpyOpt::runOnFunction(Function &F) {
   bool MadeChange = false;
+  MD = &getAnalysis<MemoryDependenceAnalysis>();
   while (1) {
     if (!iterateOnFunction(F))
       break;
     MadeChange = true;
   }
   
+  MD = 0;
   return MadeChange;
 }
 

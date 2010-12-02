@@ -154,18 +154,10 @@ public:
 
   bool cannotEliminateFrame(const MachineFunction &MF) const;
 
-  void processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
-                                            RegScavenger *RS = NULL) const;
-
   // Debug information queries.
   unsigned getRARegister() const;
   unsigned getFrameRegister(const MachineFunction &MF) const;
   unsigned getBaseRegister() const { return BasePtr; }
-  int getFrameIndexReference(const MachineFunction &MF, int FI,
-                             unsigned &FrameReg) const;
-  int ResolveFrameIndexReference(const MachineFunction &MF, int FI,
-                                 unsigned &FrameReg, int SPAdj) const;
-  int getFrameIndexOffset(const MachineFunction &MF, int FI) const;
 
   // Exception handling queries.
   unsigned getEHExceptionRegister() const;
@@ -203,8 +195,6 @@ public:
                                    int SPAdj, RegScavenger *RS = NULL) const;
 
 private:
-  unsigned estimateRSStackSizeLimit(MachineFunction &MF) const;
-
   unsigned getRegisterPairEven(unsigned Reg, const MachineFunction &MF) const;
 
   unsigned getRegisterPairOdd(unsigned Reg, const MachineFunction &MF) const;

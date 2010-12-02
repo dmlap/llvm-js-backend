@@ -416,7 +416,7 @@ multiclass ImmLoadAddress
   def lo: ILARegInst<R32C, symbolLo, imm18>;
 
   def lsa: ILAInst<(outs R32C:$rT), (ins symbolLSA:$val),
-                   [/* no pattern */]>;
+                   [(set R32C:$rT, imm18:$val)]>;
 }
 
 defm ILA : ImmLoadAddress;
@@ -2727,6 +2727,8 @@ multiclass RotateMaskQuadByBitCount
   def v8i16: ROTQMBYBIVecInst<v8i16>;
   def v4i32: ROTQMBYBIVecInst<v4i32>;
   def v2i64: ROTQMBYBIVecInst<v2i64>;
+  def r128: ROTQMBYBIInst<(outs GPRC:$rT), (ins GPRC:$rA, R32C:$rB),
+                           [/*no pattern*/]>;
 }
 
 defm ROTQMBYBI: RotateMaskQuadByBitCount;
@@ -2762,8 +2764,9 @@ multiclass RotateMaskQuadByBits
 defm ROTQMBI: RotateMaskQuadByBits;
 
 def : Pat<(srl GPRC:$rA, R32C:$rB),
-          (ROTQMBIr128  GPRC:$rA, 
-                        (SFIr32 R32C:$rB, 0))>;
+          (ROTQMBYBIr128 (ROTQMBIr128  GPRC:$rA, 
+                                       (SFIr32 R32C:$rB, 0)),
+                         (SFIr32 R32C:$rB, 0))>;
 
 
 //-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~-~
@@ -3903,7 +3906,7 @@ def FCGTf32 :
       "fcgt\t$rT, $rA, $rB", SPrecFP,
       [(set R32C:$rT, (setugt R32FP:$rA, R32FP:$rB))]>;
 
-def : Pat<(setugt R32FP:$rA, R32FP:$rB),
+def : Pat<(setogt R32FP:$rA, R32FP:$rB),
           (FCGTf32 R32FP:$rA, R32FP:$rB)>;
 
 def FCMGTf32 :
@@ -3911,7 +3914,7 @@ def FCMGTf32 :
       "fcmgt\t$rT, $rA, $rB", SPrecFP,
       [(set R32C:$rT, (setugt (fabs R32FP:$rA), (fabs R32FP:$rB)))]>;
 
-def : Pat<(setugt (fabs R32FP:$rA), (fabs R32FP:$rB)),
+def : Pat<(setogt (fabs R32FP:$rA), (fabs R32FP:$rB)),
           (FCMGTf32 R32FP:$rA, R32FP:$rB)>;
 
 //--------------------------------------------------------------------------

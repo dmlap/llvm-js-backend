@@ -30,6 +30,7 @@
 #include "llvm/Target/TargetAsmBackend.h"
 
 #include "../Target/X86/X86FixupKinds.h"
+#include "../Target/ARM/ARMFixupKinds.h"
 
 #include <vector>
 using namespace llvm;
@@ -65,17 +66,6 @@ static unsigned GetVisibility(MCSymbolData &SD) {
   return Visibility;
 }
 
-static bool isFixupKindX86PCRel(unsigned Kind) {
-  switch (Kind) {
-  default:
-    return false;
-  case X86::reloc_pcrel_1byte:
-  case X86::reloc_pcrel_4byte:
-  case X86::reloc_riprel_4byte:
-  case X86::reloc_riprel_4byte_movq_load:
-    return true;
-  }
-}
 
 static bool RelocNeedsGOT(MCSymbolRefExpr::VariantKind Variant) {
   switch (Variant) {
@@ -134,6 +124,15 @@ namespace {
       unsigned Type;
       const MCSymbol *Symbol;
       uint64_t r_addend;
+
+      ELFRelocationEntry()
+        : r_offset(0), Index(0), Type(0), Symbol(0), r_addend(0) {}
+
+      ELFRelocationEntry(uint64_t RelocOffset, int Idx,
+                         unsigned RelType, const MCSymbol *Sym,
+                         uint64_t Addend)
+        : r_offset(RelocOffset), Index(Idx), Type(RelType),
+          Symbol(Sym), r_addend(Addend) {}
 
       // Support lexicographic sorting.
       bool operator<(const ELFRelocationEntry &RE) const {
@@ -358,13 +357,27 @@ namespace {
     X86ELFObjectWriter(raw_ostream &_OS, bool _Is64Bit, bool IsLittleEndian,
                        uint16_t _EMachine, bool _HasRelAddend,
                        Triple::OSType _OSType);
-    
+
     virtual ~X86ELFObjectWriter();
     virtual void RecordRelocation(const MCAssembler &Asm,
                                   const MCAsmLayout &Layout,
                                   const MCFragment *Fragment,
                                   const MCFixup &Fixup, MCValue Target,
                                   uint64_t &FixedValue);
+
+  private:
+    static bool isFixupKindPCRel(unsigned Kind) {
+      switch (Kind) {
+      default:
+        return false;
+      case FK_PCRel_1:
+      case FK_PCRel_2:
+      case FK_PCRel_4:
+      case X86::reloc_riprel_4byte:
+      case X86::reloc_riprel_4byte_movq_load:
+        return true;
+      }
+    }
   };
 
 
@@ -375,13 +388,60 @@ namespace {
     ARMELFObjectWriter(raw_ostream &_OS, bool _Is64Bit, bool IsLittleEndian,
                        uint16_t _EMachine, bool _HasRelAddend,
                        Triple::OSType _OSType);
-    
+
     virtual ~ARMELFObjectWriter();
     virtual void RecordRelocation(const MCAssembler &Asm,
                                   const MCAsmLayout &Layout,
                                   const MCFragment *Fragment,
                                   const MCFixup &Fixup, MCValue Target,
                                   uint64_t &FixedValue);
+
+  protected:
+    // Fixme: pull up to ELFObjectWriter
+    unsigned GetRelocType(const MCValue &Target, const MCFixup &Fixup,
+                          bool IsPCRel);
+  private:
+    static bool isFixupKindPCRel(unsigned Kind) {
+      switch (Kind) {
+      default:
+        return false;
+      case FK_PCRel_1:
+      case FK_PCRel_2:
+      case FK_PCRel_4:
+      case ARM::fixup_arm_ldst_pcrel_12:
+      case ARM::fixup_arm_pcrel_10:
+      case ARM::fixup_arm_branch:
+        return true;
+      }
+    }
+  };
+
+  //===- MBlazeELFObjectWriter -------------------------------------------===//
+
+  class MBlazeELFObjectWriter : public ELFObjectWriter {
+  public:
+    MBlazeELFObjectWriter(raw_ostream &_OS, bool _Is64Bit, bool IsLittleEndian,
+                          uint16_t _EMachine, bool _HasRelAddend,
+                          Triple::OSType _OSType);
+
+    virtual ~MBlazeELFObjectWriter();
+    virtual void RecordRelocation(const MCAssembler &Asm,
+                                  const MCAsmLayout &Layout,
+                                  const MCFragment *Fragment,
+                                  const MCFixup &Fixup, MCValue Target,
+                                  uint64_t &FixedValue);
+
+  private:
+    static bool isFixupKindPCRel(unsigned Kind) {
+      switch (Kind) {
+      default:
+        return false;
+      case FK_PCRel_1:
+      case FK_PCRel_2:
+      case FK_PCRel_4:
+        return true;
+      }
+    }
   };
 }
 
@@ -666,9 +726,16 @@ const MCSymbol *ELFObjectWriter::SymbolToReloc(const MCAssembler &Asm,
 
   const MCSectionELF &Section =
     static_cast<const MCSectionELF&>(ASymbol.getSection());
+  const SectionKind secKind = Section.getKind();
 
-  if (Section.getKind().isBSS())
+  if (secKind.isBSS())
     return NULL;
+
+  if (secKind.isThreadLocal()) {
+    if (Renamed)
+      return Renamed;
+    return &Symbol;
+  }
 
   MCSymbolRefExpr::VariantKind Kind = Target.getSymA()->getKind();
   const MCSectionELF &Sec2 =
@@ -948,10 +1015,12 @@ void ELFObjectWriter::WriteRelocationsFragment(const MCAssembler &Asm,
   for (unsigned i = 0, e = Relocs.size(); i != e; ++i) {
     ELFRelocationEntry entry = Relocs[e - i - 1];
 
-    if (entry.Index < 0)
+    if (!entry.Index)
+      ;
+    else if (entry.Index < 0)
       entry.Index = getSymbolIndexInSymbolTable(Asm, entry.Symbol);
     else
-      entry.Index += LocalSymbolData.size() + 1;
+      entry.Index += LocalSymbolData.size();
     if (Is64Bit) {
       String64(*F, entry.r_offset);
 
@@ -1085,12 +1154,21 @@ bool ELFObjectWriter::IsFixupFullyResolved(const MCAssembler &Asm,
   }
 
   const MCSection *SectionB = 0;
+  const MCSymbol *SymbolB = 0;
   if (const MCSymbolRefExpr *B = Target.getSymB()) {
-    SectionB = &B->getSymbol().AliasedSymbol().getSection();
+    SymbolB = &B->getSymbol();
+    SectionB = &SymbolB->AliasedSymbol().getSection();
   }
 
   if (!BaseSection)
     return SectionA == SectionB;
+
+  if (SymbolB)
+    return false;
+
+  // Absolute address but PCrel instruction, so we need a relocation.
+  if (!SymbolA)
+    return false;
 
   // FIXME: This is in here just to match gnu as output. If the two ends
   // are in the same section, there is nothing that the linker can do to
@@ -1099,7 +1177,7 @@ bool ELFObjectWriter::IsFixupFullyResolved(const MCAssembler &Asm,
   if (DataA.isExternal())
     return false;
 
-  return !SectionB && BaseSection == SectionA;
+  return BaseSection == SectionA;
 }
 
 void ELFObjectWriter::CreateGroupSections(MCAssembler &Asm,
@@ -1338,6 +1416,9 @@ MCObjectWriter *llvm::createELFObjectWriter(raw_ostream &OS,
     case ELF::EM_ARM:
       return new ARMELFObjectWriter(OS, Is64Bit, IsLittleEndian, EMachine,
                                     HasRelocationAddend, OSType); break;
+    case ELF::EM_MBLAZE:
+      return new MBlazeELFObjectWriter(OS, Is64Bit, IsLittleEndian, EMachine,
+                                       HasRelocationAddend, OSType); break;
     default: llvm_unreachable("Unsupported architecture"); break;
   }
 }
@@ -1357,37 +1438,128 @@ ARMELFObjectWriter::ARMELFObjectWriter(raw_ostream &_OS, bool _Is64Bit,
 ARMELFObjectWriter::~ARMELFObjectWriter()
 {}
 
+unsigned ARMELFObjectWriter::GetRelocType(const MCValue &Target,
+                                          const MCFixup &Fixup,
+                                          bool IsPCRel) {
+  MCSymbolRefExpr::VariantKind Modifier = Target.isAbsolute() ?
+    MCSymbolRefExpr::VK_None : Target.getSymA()->getKind();
+
+  if (IsPCRel) {
+    switch (Modifier) {
+    default: assert(0 && "Unimplemented Modifier");
+    case MCSymbolRefExpr::VK_None: break;
+    }
+    switch ((unsigned)Fixup.getKind()) {
+    default: assert(0 && "Unimplemented");
+    case ARM::fixup_arm_branch: return ELF::R_ARM_CALL; break;
+    }
+  } else {
+    switch ((unsigned)Fixup.getKind()) {
+    default: llvm_unreachable("invalid fixup kind!");
+    case ARM::fixup_arm_ldst_pcrel_12:
+    case ARM::fixup_arm_pcrel_10:
+    case ARM::fixup_arm_adr_pcrel_12:
+      assert(0 && "Unimplemented"); break;
+    case ARM::fixup_arm_branch:
+      return ELF::R_ARM_CALL; break;
+    case ARM::fixup_arm_movt_hi16: 
+      return ELF::R_ARM_MOVT_ABS; break;
+    case ARM::fixup_arm_movw_lo16:
+      return ELF::R_ARM_MOVW_ABS_NC; break;
+    }
+  }
+
+  if (RelocNeedsGOT(Modifier))
+    NeedsGOT = true;
+  return -1;
+}
+
 void ARMELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
                                           const MCAsmLayout &Layout,
                                           const MCFragment *Fragment,
                                           const MCFixup &Fixup,
                                           MCValue Target,
                                           uint64_t &FixedValue) {
-  assert(0 && "ARMELFObjectWriter::RecordRelocation() unimplemented");
+  int64_t Addend = 0;
+  int Index = 0;
+  int64_t Value = Target.getConstant();
+  const MCSymbol *RelocSymbol = NULL;
+
+  bool IsPCRel = isFixupKindPCRel(Fixup.getKind());
+  if (!Target.isAbsolute()) {
+    const MCSymbol &Symbol = Target.getSymA()->getSymbol();
+    const MCSymbol &ASymbol = Symbol.AliasedSymbol();
+    RelocSymbol = SymbolToReloc(Asm, Target, *Fragment);
+
+    if (const MCSymbolRefExpr *RefB = Target.getSymB()) {
+      const MCSymbol &SymbolB = RefB->getSymbol();
+      MCSymbolData &SDB = Asm.getSymbolData(SymbolB);
+      IsPCRel = true;
+      MCSectionData *Sec = Fragment->getParent();
+
+      // Offset of the symbol in the section
+      int64_t a = Layout.getSymbolAddress(&SDB) - Layout.getSectionAddress(Sec);
+
+      // Ofeset of the relocation in the section
+      int64_t b = Layout.getFragmentOffset(Fragment) + Fixup.getOffset();
+      Value += b - a;
+    }
+
+    if (!RelocSymbol) {
+      MCSymbolData &SD = Asm.getSymbolData(ASymbol);
+      MCFragment *F = SD.getFragment();
+
+      Index = F->getParent()->getOrdinal() + 1;
+
+      MCSectionData *FSD = F->getParent();
+      // Offset of the symbol in the section
+      Value += Layout.getSymbolAddress(&SD) - Layout.getSectionAddress(FSD);
+    } else {
+      if (Asm.getSymbolData(Symbol).getFlags() & ELF_Other_Weakref)
+        WeakrefUsedInReloc.insert(RelocSymbol);
+      else
+        UsedInReloc.insert(RelocSymbol);
+      Index = -1;
+    }
+    Addend = Value;
+    // Compensate for the addend on i386.
+    if (Is64Bit)
+      Value = 0;
+  }
+
+  FixedValue = Value;
+
+  // determine the type of the relocation
+  unsigned Type = GetRelocType(Target, Fixup, IsPCRel);
+
+  uint64_t RelocOffset = Layout.getFragmentOffset(Fragment) +
+    Fixup.getOffset();
+
+  if (!HasRelocationAddend) Addend = 0;
+  ELFRelocationEntry ERE(RelocOffset, Index, Type, RelocSymbol, Addend);
+  Relocations[Fragment->getParent()].push_back(ERE);
 }
 
+//===- MBlazeELFObjectWriter -------------------------------------------===//
 
-
-//===- X86ELFObjectWriter -------------------------------------------===//
-
-
-X86ELFObjectWriter::X86ELFObjectWriter(raw_ostream &_OS, bool _Is64Bit,
-                                       bool _IsLittleEndian,
-                                       uint16_t _EMachine, bool _HasRelocationAddend,
-                                       Triple::OSType _OSType)
+MBlazeELFObjectWriter::MBlazeELFObjectWriter(raw_ostream &_OS, bool _Is64Bit,
+                                             bool _IsLittleEndian,
+                                             uint16_t _EMachine,
+                                             bool _HasRelocationAddend,
+                                             Triple::OSType _OSType)
   : ELFObjectWriter(_OS, _Is64Bit, _IsLittleEndian, _EMachine,
-                    _HasRelocationAddend, _OSType)
-{}
+                    _HasRelocationAddend, _OSType) {
+}
 
-X86ELFObjectWriter::~X86ELFObjectWriter()
-{}
+MBlazeELFObjectWriter::~MBlazeELFObjectWriter() {
+}
 
-void X86ELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
-                                       const MCAsmLayout &Layout,
-                                       const MCFragment *Fragment,
-                                       const MCFixup &Fixup,
-                                       MCValue Target,
-                                       uint64_t &FixedValue) {
+void MBlazeELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
+                                             const MCAsmLayout &Layout,
+                                             const MCFragment *Fragment,
+                                             const MCFixup &Fixup,
+                                             MCValue Target,
+                                             uint64_t &FixedValue) {
   int64_t Addend = 0;
   int Index = 0;
   int64_t Value = Target.getConstant();
@@ -1395,7 +1567,7 @@ void X86ELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
   const MCSymbol &ASymbol = Symbol.AliasedSymbol();
   const MCSymbol *RelocSymbol = SymbolToReloc(Asm, Target, *Fragment);
 
-  bool IsPCRel = isFixupKindX86PCRel(Fixup.getKind());
+  bool IsPCRel = isFixupKindPCRel(Fixup.getKind());
   if (!Target.isAbsolute()) {
     if (const MCSymbolRefExpr *RefB = Target.getSymB()) {
       const MCSymbol &SymbolB = RefB->getSymbol();
@@ -1428,6 +1600,110 @@ void X86ELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
       Index = -1;
     }
     Addend = Value;
+  }
+
+  FixedValue = Value;
+
+  // determine the type of the relocation
+  unsigned Type;
+  if (IsPCRel) {
+    switch ((unsigned)Fixup.getKind()) {
+    default:
+      llvm_unreachable("Unimplemented");
+    case FK_PCRel_4:
+      Type = ELF::R_MICROBLAZE_64_PCREL;
+      break;
+    case FK_PCRel_2:
+      Type = ELF::R_MICROBLAZE_32_PCREL;
+      break;
+    }
+  } else {
+    switch ((unsigned)Fixup.getKind()) {
+    default: llvm_unreachable("invalid fixup kind!");
+    case FK_Data_4:
+      Type = (RelocSymbol || Addend !=0) ? ELF::R_MICROBLAZE_32
+                                         : ELF::R_MICROBLAZE_64;
+      break;
+    case FK_Data_2:
+      Type = ELF::R_MICROBLAZE_32;
+      break;
+    }
+  }
+
+  MCSymbolRefExpr::VariantKind Modifier = Target.getSymA()->getKind();
+  if (RelocNeedsGOT(Modifier))
+    NeedsGOT = true;
+
+  uint64_t RelocOffset = Layout.getFragmentOffset(Fragment) +
+    Fixup.getOffset();
+
+  if (!HasRelocationAddend) Addend = 0;
+  ELFRelocationEntry ERE(RelocOffset, Index, Type, RelocSymbol, Addend);
+  Relocations[Fragment->getParent()].push_back(ERE);
+}
+
+//===- X86ELFObjectWriter -------------------------------------------===//
+
+
+X86ELFObjectWriter::X86ELFObjectWriter(raw_ostream &_OS, bool _Is64Bit,
+                                       bool _IsLittleEndian,
+                                       uint16_t _EMachine, bool _HasRelocationAddend,
+                                       Triple::OSType _OSType)
+  : ELFObjectWriter(_OS, _Is64Bit, _IsLittleEndian, _EMachine,
+                    _HasRelocationAddend, _OSType)
+{}
+
+X86ELFObjectWriter::~X86ELFObjectWriter()
+{}
+
+void X86ELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
+                                       const MCAsmLayout &Layout,
+                                       const MCFragment *Fragment,
+                                       const MCFixup &Fixup,
+                                       MCValue Target,
+                                       uint64_t &FixedValue) {
+  int64_t Addend = 0;
+  int Index = 0;
+  int64_t Value = Target.getConstant();
+  const MCSymbol *RelocSymbol = NULL;
+
+  bool IsPCRel = isFixupKindPCRel(Fixup.getKind());
+  if (!Target.isAbsolute()) {
+    const MCSymbol &Symbol = Target.getSymA()->getSymbol();
+    const MCSymbol &ASymbol = Symbol.AliasedSymbol();
+    RelocSymbol = SymbolToReloc(Asm, Target, *Fragment);
+
+    if (const MCSymbolRefExpr *RefB = Target.getSymB()) {
+      const MCSymbol &SymbolB = RefB->getSymbol();
+      MCSymbolData &SDB = Asm.getSymbolData(SymbolB);
+      IsPCRel = true;
+      MCSectionData *Sec = Fragment->getParent();
+
+      // Offset of the symbol in the section
+      int64_t a = Layout.getSymbolAddress(&SDB) - Layout.getSectionAddress(Sec);
+
+      // Ofeset of the relocation in the section
+      int64_t b = Layout.getFragmentOffset(Fragment) + Fixup.getOffset();
+      Value += b - a;
+    }
+
+    if (!RelocSymbol) {
+      MCSymbolData &SD = Asm.getSymbolData(ASymbol);
+      MCFragment *F = SD.getFragment();
+
+      Index = F->getParent()->getOrdinal() + 1;
+
+      MCSectionData *FSD = F->getParent();
+      // Offset of the symbol in the section
+      Value += Layout.getSymbolAddress(&SD) - Layout.getSectionAddress(FSD);
+    } else {
+      if (Asm.getSymbolData(Symbol).getFlags() & ELF_Other_Weakref)
+        WeakrefUsedInReloc.insert(RelocSymbol);
+      else
+        UsedInReloc.insert(RelocSymbol);
+      Index = -1;
+    }
+    Addend = Value;
     // Compensate for the addend on i386.
     if (Is64Bit)
       Value = 0;
@@ -1437,7 +1713,8 @@ void X86ELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
 
   // determine the type of the relocation
 
-  MCSymbolRefExpr::VariantKind Modifier = Target.getSymA()->getKind();
+  MCSymbolRefExpr::VariantKind Modifier = Target.isAbsolute() ?
+    MCSymbolRefExpr::VK_None : Target.getSymA()->getKind();
   unsigned Type;
   if (Is64Bit) {
     if (IsPCRel) {
@@ -1468,7 +1745,7 @@ void X86ELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
       default: llvm_unreachable("invalid fixup kind!");
       case FK_Data_8: Type = ELF::R_X86_64_64; break;
       case X86::reloc_signed_4byte:
-      case X86::reloc_pcrel_4byte:
+      case FK_PCRel_4:
         assert(isInt<32>(Target.getConstant()));
         switch (Modifier) {
         default:
@@ -1494,7 +1771,7 @@ void X86ELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
         Type = ELF::R_X86_64_32;
         break;
       case FK_Data_2: Type = ELF::R_X86_64_16; break;
-      case X86::reloc_pcrel_1byte:
+      case FK_PCRel_1:
       case FK_Data_1: Type = ELF::R_X86_64_8; break;
       }
     }
@@ -1521,7 +1798,7 @@ void X86ELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
       // FIXME: Should we avoid selecting reloc_signed_4byte in 32 bit mode
       // instead?
       case X86::reloc_signed_4byte:
-      case X86::reloc_pcrel_4byte:
+      case FK_PCRel_4:
       case FK_Data_4:
         switch (Modifier) {
         default:
@@ -1559,7 +1836,7 @@ void X86ELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
         }
         break;
       case FK_Data_2: Type = ELF::R_386_16; break;
-      case X86::reloc_pcrel_1byte:
+      case FK_PCRel_1:
       case FK_Data_1: Type = ELF::R_386_8; break;
       }
     }
@@ -1568,18 +1845,11 @@ void X86ELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
   if (RelocNeedsGOT(Modifier))
     NeedsGOT = true;
 
-  ELFRelocationEntry ERE;
 
-  ERE.Index = Index;
-  ERE.Type = Type;
-  ERE.Symbol = RelocSymbol;
+  uint64_t RelocOffset = Layout.getFragmentOffset(Fragment) +
+    Fixup.getOffset();
 
-  ERE.r_offset = Layout.getFragmentOffset(Fragment) + Fixup.getOffset();
-
-  if (HasRelocationAddend)
-    ERE.r_addend = Addend;
-  else
-    ERE.r_addend = 0; // Silence compiler warning.
-
+  if (!HasRelocationAddend) Addend = 0;
+  ELFRelocationEntry ERE(RelocOffset, Index, Type, RelocSymbol, Addend);
   Relocations[Fragment->getParent()].push_back(ERE);
 }

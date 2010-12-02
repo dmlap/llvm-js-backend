@@ -256,6 +256,12 @@ namespace llvm {
       // WIN_ALLOCA - Windows's _chkstk call to do stack probing.
       WIN_ALLOCA,
 
+      // Memory barrier
+      MEMBARRIER,
+      MFENCE,
+      SFENCE,
+      LFENCE,
+
       // ATOMADD64_DAG, ATOMSUB64_DAG, ATOMOR64_DAG, ATOMAND64_DAG,
       // ATOMXOR64_DAG, ATOMNAND64_DAG, ATOMSWAP64_DAG -
       // Atomic 64-bit binary operations.
@@ -266,12 +272,6 @@ namespace llvm {
       ATOMAND64_DAG,
       ATOMNAND64_DAG,
       ATOMSWAP64_DAG,
-
-      // Memory barrier
-      MEMBARRIER,
-      MFENCE,
-      SFENCE,
-      LFENCE,
 
       // LCMPXCHG_DAG, LCMPXCHG8_DAG - Compare and swap.
       LCMPXCHG_DAG,
@@ -740,7 +740,7 @@ namespace llvm {
     SDValue LowerShift(SDValue Op, SelectionDAG &DAG) const;
     SDValue BuildFILD(SDValue Op, EVT SrcVT, SDValue Chain, SDValue StackSlot,
                       SelectionDAG &DAG) const;
-    SDValue LowerBIT_CONVERT(SDValue op, SelectionDAG &DAG) const;
+    SDValue LowerBITCAST(SDValue op, SelectionDAG &DAG) const;
     SDValue LowerSINT_TO_FP(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerUINT_TO_FP(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerUINT_TO_FP_i64(SDValue Op, SelectionDAG &DAG) const;
@@ -805,6 +805,8 @@ namespace llvm {
                   const SmallVectorImpl<SDValue> &OutVals,
                   DebugLoc dl, SelectionDAG &DAG) const;
 
+    virtual bool isUsedByReturnOnly(SDNode *N) const;
+
     virtual bool
       CanLowerReturn(CallingConv::ID CallConv, bool isVarArg,
                      const SmallVectorImpl<ISD::OutputArg> &Outs,
@@ -820,6 +822,13 @@ namespace llvm {
     /// in memory or not.
     MachineBasicBlock *EmitPCMP(MachineInstr *BInstr, MachineBasicBlock *BB,
                                 unsigned argNum, bool inMem) const;
+
+    /// Utility functions to emit monitor and mwait instructions. These
+    /// need to make sure that the arguments to the intrinsic are in the
+    /// correct registers.
+    MachineBasicBlock *EmitMonitor(MachineInstr *MI,
+                                   MachineBasicBlock *BB) const;
+    MachineBasicBlock *EmitMwait(MachineInstr *MI, MachineBasicBlock *BB) const;
 
     /// Utility function to emit atomic bitwise operations (and, or, xor).
     /// It takes the bitwise instruction to expand, the associated machine basic
@@ -869,6 +878,9 @@ namespace llvm {
                                               MachineBasicBlock *BB) const;
 
     MachineBasicBlock *EmitLoweredTLSCall(MachineInstr *MI,
+                                          MachineBasicBlock *BB) const;
+
+    MachineBasicBlock *emitLoweredTLSAddr(MachineInstr *MI,
                                           MachineBasicBlock *BB) const;
 
     /// Emit nodes that will be selected as "test Op0,Op0", or something

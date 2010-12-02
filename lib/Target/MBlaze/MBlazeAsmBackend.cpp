@@ -9,14 +9,17 @@
 
 #include "llvm/Target/TargetAsmBackend.h"
 #include "MBlaze.h"
-#include "MBlazeFixupKinds.h"
+#include "MBlazeELFWriterInfo.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/MC/MCAssembler.h"
+#include "llvm/MC/MCAsmLayout.h"
+#include "llvm/MC/MCELFSymbolFlags.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCObjectFormat.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionMachO.h"
+#include "llvm/MC/MCValue.h"
 #include "llvm/Support/ELF.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -28,9 +31,9 @@ static unsigned getFixupKindSize(unsigned Kind) {
   switch (Kind) {
   default: assert(0 && "invalid fixup kind!");
   case FK_Data_1: return 1;
-  case MBlaze::reloc_pcrel_2byte:
+  case FK_PCRel_2:
   case FK_Data_2: return 2;
-  case MBlaze::reloc_pcrel_4byte:
+  case FK_PCRel_4:
   case FK_Data_4: return 4;
   case FK_Data_8: return 8;
   }
@@ -41,7 +44,7 @@ namespace {
 class MBlazeAsmBackend : public TargetAsmBackend {
 public:
   MBlazeAsmBackend(const Target &T)
-    : TargetAsmBackend(T) {
+    : TargetAsmBackend() {
   }
 
   bool MayNeedRelaxation(const MCInst &Inst) const;
@@ -55,13 +58,29 @@ public:
   }
 };
 
+static unsigned getRelaxedOpcode(unsigned Op) {
+    switch (Op) {
+    default:            return Op;
+    case MBlaze::ADDI:  return MBlaze::ADDI32;
+    case MBlaze::ORI:   return MBlaze::ORI32;
+    case MBlaze::BRLID: return MBlaze::BRLID32;
+    }
+}
+
 bool MBlazeAsmBackend::MayNeedRelaxation(const MCInst &Inst) const {
-  return false;
+  if (getRelaxedOpcode(Inst.getOpcode()) == Inst.getOpcode())
+    return false;
+
+  bool hasExprOrImm = false;
+  for (unsigned i = 0; i < Inst.getNumOperands(); ++i)
+    hasExprOrImm |= Inst.getOperand(i).isExpr();
+
+  return hasExprOrImm;
 }
 
 void MBlazeAsmBackend::RelaxInstruction(const MCInst &Inst, MCInst &Res) const {
-  assert(0 && "MBlazeAsmBackend::RelaxInstruction() unimplemented");
-  return;
+  Res = Inst;
+  Res.setOpcode(getRelaxedOpcode(Inst.getOpcode()));
 }
 
 bool MBlazeAsmBackend::WriteNopData(uint64_t Count, MCObjectWriter *OW) const {
@@ -76,8 +95,6 @@ bool MBlazeAsmBackend::WriteNopData(uint64_t Count, MCObjectWriter *OW) const {
 } // end anonymous namespace
 
 namespace {
-// FIXME: This should be in a separate file.
-// ELF is an ELF of course...
 class ELFMBlazeAsmBackend : public MBlazeAsmBackend {
   MCELFObjectFormat Format;
 
@@ -97,7 +114,7 @@ public:
                   uint64_t Value) const;
 
   MCObjectWriter *createObjectWriter(raw_ostream &OS) const {
-    return createELFObjectWriter(OS, /*Is64Bit=*/false,
+    return createELFObjectWriter(OS,/*Is64Bit=*/false,
                                  OSType, ELF::EM_MBLAZE,
                                  /*IsLittleEndian=*/false,
                                  /*HasRelocationAddend=*/true);

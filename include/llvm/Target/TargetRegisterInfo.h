@@ -678,21 +678,6 @@ public:
     assert(0 && "Call Frame Pseudo Instructions do not exist on this target!");
   }
 
-  /// processFunctionBeforeCalleeSavedScan - This method is called immediately
-  /// before PrologEpilogInserter scans the physical registers used to determine
-  /// what callee saved registers should be spilled. This method is optional.
-  virtual void processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
-                                                RegScavenger *RS = NULL) const {
-
-  }
-
-  /// processFunctionBeforeFrameFinalized - This method is called immediately
-  /// before the specified function's frame layout (MF.getFrameInfo()) is
-  /// finalized.  Once the frame is finalized, MO_FrameIndex operands are
-  /// replaced with direct constants.  This method is optional.
-  ///
-  virtual void processFunctionBeforeFrameFinalized(MachineFunction &MF) const {
-  }
 
   /// saveScavengerRegister - Spill the register so it can be used by the
   /// register scavenger. Return true if the register was spilled, false
@@ -729,22 +714,6 @@ public:
   /// getFrameRegister - This method should return the register used as a base
   /// for values allocated in the current stack frame.
   virtual unsigned getFrameRegister(const MachineFunction &MF) const = 0;
-
-  /// getFrameIndexOffset - Returns the displacement from the frame register to
-  /// the stack frame of the specified index.
-  virtual int getFrameIndexOffset(const MachineFunction &MF, int FI) const;
-
-  /// getFrameIndexReference - This method should return the base register
-  /// and offset used to reference a frame index location. The offset is
-  /// returned directly, and the base register is returned via FrameReg.
-  virtual int getFrameIndexReference(const MachineFunction &MF, int FI,
-                                     unsigned &FrameReg) const {
-    // By default, assume all frame indices are referenced via whatever
-    // getFrameRegister() says. The target can override this if it's doing
-    // something different.
-    FrameReg = getFrameRegister(MF);
-    return getFrameIndexOffset(MF, FI);
-  }
 
   /// getRARegister - This method should return the register where the return
   /// address can be found.

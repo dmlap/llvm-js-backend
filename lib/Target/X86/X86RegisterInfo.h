@@ -125,17 +125,12 @@ public:
   void eliminateFrameIndex(MachineBasicBlock::iterator MI,
                            int SPAdj, RegScavenger *RS = NULL) const;
 
-  void processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
-                                            RegScavenger *RS = NULL) const;
-
   // Debug information queries.
   unsigned getRARegister() const;
   unsigned getFrameRegister(const MachineFunction &MF) const;
   unsigned getStackRegister() const { return StackPtr; }
   // FIXME: Move to FrameInfok
   unsigned getSlotSize() const { return SlotSize; }
-
-  int getFrameIndexOffset(const MachineFunction &MF, int FI) const;
 
   // Exception handling queries.
   unsigned getEHExceptionRegister() const;

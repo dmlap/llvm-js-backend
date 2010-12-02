@@ -138,6 +138,12 @@ void LLVMSetModuleInlineAsm(LLVMModuleRef M, const char *Asm) {
 }
 
 
+/*--.. Operations on module contexts ......................................--*/
+LLVMContextRef LLVMGetModuleContext(LLVMModuleRef M) {
+  return wrap(&unwrap(M)->getContext());
+}
+
+
 /*===-- Operations on types -----------------------------------------------===*/
 
 /*--.. Operations on all types (mostly) ....................................--*/
@@ -545,6 +551,14 @@ LLVMValueRef LLVMMDNode(LLVMValueRef *Vals, unsigned Count) {
 LLVMValueRef LLVMConstInt(LLVMTypeRef IntTy, unsigned long long N,
                           LLVMBool SignExtend) {
   return wrap(ConstantInt::get(unwrap<IntegerType>(IntTy), N, SignExtend != 0));
+}
+
+LLVMValueRef LLVMConstIntOfArbitraryPrecision(LLVMTypeRef IntTy,
+                                              unsigned NumWords,
+                                              const uint64_t Words[]) {
+    IntegerType *Ty = unwrap<IntegerType>(IntTy);
+    return wrap(ConstantInt::get(Ty->getContext(),
+                                 APInt(Ty->getBitWidth(), NumWords, Words)));
 }
 
 LLVMValueRef LLVMConstIntOfString(LLVMTypeRef IntTy, const char Str[],
