@@ -30,6 +30,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetAsmBackend.h"
+#include "llvm/Target/TargetAsmInfo.h"
 
 using namespace llvm;
 
@@ -71,7 +72,7 @@ class MCELFStreamer : public MCObjectStreamer {
 public:
   MCELFStreamer(MCContext &Context, TargetAsmBackend &TAB,
                   raw_ostream &OS, MCCodeEmitter *Emitter)
-    : MCObjectStreamer(Context, TAB, OS, Emitter, false) {}
+    : MCObjectStreamer(Context, TAB, OS, Emitter) {}
 
   ~MCELFStreamer() {}
 
@@ -129,8 +130,6 @@ public:
                                     unsigned MaxBytesToEmit = 0);
   virtual void EmitCodeAlignment(unsigned ByteAlignment,
                                  unsigned MaxBytesToEmit = 0);
-  virtual void EmitValueToOffset(const MCExpr *Offset,
-                                 unsigned char Value = 0);
 
   virtual void EmitFileDirective(StringRef Filename);
 
@@ -399,13 +398,6 @@ void MCELFStreamer::EmitCodeAlignment(unsigned ByteAlignment,
     getCurrentSectionData()->setAlignment(ByteAlignment);
 }
 
-void MCELFStreamer::EmitValueToOffset(const MCExpr *Offset,
-                                        unsigned char Value) {
-  // TODO: This is exactly the same as MCMachOStreamer. Consider merging into
-  // MCObjectStreamer.
-  new MCOrgFragment(*Offset, Value, getCurrentSectionData());
-}
-
 // Add a symbol for the file name of this module. This is the second
 // entry in the module's symbol table (the first being the null symbol).
 void MCELFStreamer::EmitFileDirective(StringRef Filename) {
@@ -459,23 +451,11 @@ void  MCELFStreamer::fixSymbolsInTLSFixups(const MCExpr *expr) {
 }
 
 void MCELFStreamer::EmitInstToFragment(const MCInst &Inst) {
-  MCInstFragment *IF = new MCInstFragment(Inst, getCurrentSectionData());
+  this->MCObjectStreamer::EmitInstToFragment(Inst);
+  MCInstFragment &F = *cast<MCInstFragment>(getCurrentFragment());
 
-  // Add the fixups and data.
-  //
-  // FIXME: Revisit this design decision when relaxation is done, we may be
-  // able to get away with not storing any extra data in the MCInst.
-  SmallVector<MCFixup, 4> Fixups;
-  SmallString<256> Code;
-  raw_svector_ostream VecOS(Code);
-  getAssembler().getEmitter().EncodeInstruction(Inst, VecOS, Fixups);
-  VecOS.flush();
-
-  for (unsigned i = 0, e = Fixups.size(); i != e; ++i)
-    fixSymbolsInTLSFixups(Fixups[i].getValue());
-
-  IF->getCode() = Code;
-  IF->getFixups() = Fixups;
+  for (unsigned i = 0, e = F.getFixups().size(); i != e; ++i)
+    fixSymbolsInTLSFixups(F.getFixups()[i].getValue());
 }
 
 void MCELFStreamer::EmitInstToData(const MCInst &Inst) {
@@ -499,17 +479,8 @@ void MCELFStreamer::EmitInstToData(const MCInst &Inst) {
 }
 
 void MCELFStreamer::Finish() {
-  // FIXME: duplicated code with the MachO streamer.
-  // Dump out the dwarf file & directory tables and line tables.
-  if (getContext().hasDwarfFiles()) {
-    const MCSection *DwarfLineSection =
-      getContext().getELFSection(".debug_line", 0, 0,
-                                 SectionKind::getDataRelLocal());
-    MCSectionData &DLS =
-      getAssembler().getOrCreateSectionData(*DwarfLineSection);
-    int PointerSize = getAssembler().getBackend().getPointerSize();
-    MCDwarfFileTable::Emit(this, DwarfLineSection, &DLS, PointerSize);
-  }
+  if (!FrameInfos.empty())
+    MCDwarfFrameEmitter::Emit(*this);
 
   for (std::vector<LocalCommon>::const_iterator i = LocalCommons.begin(),
                                                 e = LocalCommons.end();

@@ -51,6 +51,7 @@
         </ol></li>
       <li><a href="#micro">The Low-Level Issues</a>
         <ol>
+          <li><a href="#ll_naming">Name Types, Functions, Variables, and Enumerators Properly</a></li>
           <li><a href="#ll_assert">Assert Liberally</a></li>
           <li><a href="#ll_ns_std">Do not use '<tt>using namespace std</tt>'</a></li>
           <li><a href="#ll_virtual_anch">Provide a virtual method anchor for
@@ -59,7 +60,7 @@
               loop</a></li>
           <li><a href="#ll_iostream"><tt>#include &lt;iostream&gt;</tt> is
               <em>forbidden</em></a></li>
-          <li><a href="#ll_raw_ostream">Use <tt>raw_ostream</tt></a</li>
+          <li><a href="#ll_raw_ostream">Use <tt>raw_ostream</tt></a></li>
           <li><a href="#ll_avoidendl">Avoid <tt>std::endl</tt></a></li>
         </ol></li>
         
@@ -805,6 +806,93 @@ locality.</p>
   <a name="micro">The Low-Level Issues</a>
 </div>
 <!-- ======================================================================= -->
+
+
+<!-- _______________________________________________________________________ -->
+<div class="doc_subsubsection">
+  <a name="ll_naming">Name Types, Functions, Variables, and Enumerators Properly</a>
+</div>
+
+<div class="doc_text">
+<p>Poorly-chosen names can mislead the reader and cause bugs. We cannot
+stress enough how important it is to use <em>descriptive</em> names.
+Pick names that match the semantics and role of the underlying
+entities, within reason.  Avoid abbreviations unless they are well
+known.  After picking a good name, make sure to use consistent capitalization
+for the name, as inconsistency requires clients to either memorize the APIs or
+to look it up to find the exact spelling.
+</p>
+
+<p>In general, names should be in camel case (e.g. <tt>TextFileReader</tt>
+and <tt>isLValue()</tt>).  Different kinds of declarations have different rules:
+</p>
+
+<ul>
+<li><p><b>Type names</b> (including classes, structs, enums, typedefs, etc)
+  should be nouns and start with an upper-case letter (e.g.
+  <tt>TextFileReader</tt>).</p>
+</li>
+  
+<li><p><b>Function names</b> should be verb phrases (as they represent
+    actions), and command-like function should be imperative.  The name should
+    be camel case, and start with a lower case letter (e.g. <tt>openFile()</tt>
+    or <tt>isFoo()</tt>).</p>
+</li>
+
+<li><p><b>Enum declarations</b> (e.g. "enum Foo {...}") are types, so they
+should follow the naming conventions for types.  A common use for enums is as a
+  discriminator for a union, or an indicator of a subclass.  When an enum is
+  used for something like this, it should have a "Kind" suffix (e.g.
+  "ValueKind").</p>
+</li>
+  
+<li><p><b>Enumerators</b> (e.g. enum { Foo, Bar }) and 
+<b>public member variables</b> should start with an upper-case letter, just
+like types.   Unless the enumerators are defined in their own small
+namespace or inside a class, enumerators should have a prefix corresponding
+to the enum declaration name.  For example, <tt>enum ValueKind { ... };</tt>
+may contain enumerators like <tt>VK_Argument</tt>, <tt>VK_BasicBlock</tt>,
+etc.  Enumerators that are just convenience constants are exempt from the
+requirement for a prefix.  For instance:</p>
+  
+<div class="doc_code">
+<pre>
+enum {
+  MaxSize = 42,
+  Density = 12
+};
+</pre>
+</div>
+
+</li>
+</ul>
+  
+
+<p>As an exception, classes that mimic STL classes can have member names
+in STL's style of lower-case words separated by underscores
+(e.g. <tt>begin()</tt>, <tt>push_back()</tt>, and <tt>empty()</tt>).</p>
+
+<p>Here are some examples of bad and good names:</p>
+<div class="doc_code">
+<pre>
+class VehicleMaker {
+  ...
+  Factory&lt;Tire&gt; F;            // Bad -- abbreviation and non-descriptive.
+  Factory&lt;Tire&gt; Factory;      // Better.
+  Factory&lt;Tire&gt; TireFactory;  // Even better -- if VehicleMaker has more than one
+                              // kind of factories.
+};
+
+Vehicle MakeVehicle(VehicleType Type) {
+  VehicleMaker M;                     // Might be OK if having a short life-span.
+  Tire tmp1 = M.makeTire();  // Bad -- 'tmp1' provides no information.
+  Light headlight = M.makeLight("head");  // Good -- descriptive.
+  ...
+}
+</pre>
+</div>
+
+</div>
 
 
 <!-- _______________________________________________________________________ -->

@@ -44,6 +44,9 @@ namespace {
 
     virtual void EmitAssignment(MCSymbol *Symbol, const MCExpr *Value) {}
     virtual void EmitWeakReference(MCSymbol *Alias, const MCSymbol *Symbol){}
+    virtual void EmitDwarfAdvanceLineAddr(int64_t LineDelta,
+                                          const MCSymbol *LastLabel,
+                                          const MCSymbol *Label) {}
 
     virtual void EmitSymbolAttribute(MCSymbol *Symbol, MCSymbolAttr Attribute){}
 
@@ -65,8 +68,8 @@ namespace {
                                 uint64_t Size, unsigned ByteAlignment) {}
     virtual void EmitBytes(StringRef Data, unsigned AddrSpace) {}
 
-    virtual void EmitValue(const MCExpr *Value, unsigned Size,
-                           unsigned AddrSpace) {}
+    virtual void EmitValueImpl(const MCExpr *Value, unsigned Size,
+                               bool isPCRel, unsigned AddrSpace) {}
     virtual void EmitULEB128Value(const MCExpr *Value,
                                   unsigned AddrSpace = 0) {}
     virtual void EmitSLEB128Value(const MCExpr *Value,

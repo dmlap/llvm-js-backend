@@ -24,6 +24,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
+#include "llvm/Target/TargetAsmInfo.h"
 using namespace llvm;
 
 namespace {
@@ -37,29 +38,25 @@ class MCAsmStreamer : public MCStreamer {
   SmallString<128> CommentToEmit;
   raw_svector_ostream CommentStream;
 
-  const TargetLoweringObjectFile *TLOF;
-  int PointerSize;
-
-  unsigned IsLittleEndian : 1;
   unsigned IsVerboseAsm : 1;
   unsigned ShowInst : 1;
+  unsigned UseLoc : 1;
+
+  bool needsSet(const MCExpr *Value);
 
 public:
   MCAsmStreamer(MCContext &Context, formatted_raw_ostream &os,
-                bool isLittleEndian, bool isVerboseAsm,
-                const TargetLoweringObjectFile *tlof, int pointerSize,
+                bool isVerboseAsm,
+                bool useLoc,
                 MCInstPrinter *printer, MCCodeEmitter *emitter, bool showInst)
     : MCStreamer(Context), OS(os), MAI(Context.getAsmInfo()),
       InstPrinter(printer), Emitter(emitter), CommentStream(CommentToEmit),
-      TLOF(tlof), PointerSize(pointerSize),
-      IsLittleEndian(isLittleEndian), IsVerboseAsm(isVerboseAsm),
-      ShowInst(showInst) {
+      IsVerboseAsm(isVerboseAsm),
+      ShowInst(showInst), UseLoc(useLoc) {
     if (InstPrinter && IsVerboseAsm)
       InstPrinter->setCommentStream(CommentStream);
   }
   ~MCAsmStreamer() {}
-
-  bool isLittleEndian() const { return IsLittleEndian; }
 
   inline void EmitEOL() {
     // If we don't have any comments, just emit a \n.
@@ -121,6 +118,9 @@ public:
 
   virtual void EmitAssignment(MCSymbol *Symbol, const MCExpr *Value);
   virtual void EmitWeakReference(MCSymbol *Alias, const MCSymbol *Symbol);
+  virtual void EmitDwarfAdvanceLineAddr(int64_t LineDelta,
+                                        const MCSymbol *LastLabel,
+                                        const MCSymbol *Label);
 
   virtual void EmitSymbolAttribute(MCSymbol *Symbol, MCSymbolAttr Attribute);
 
@@ -147,7 +147,10 @@ public:
 
   virtual void EmitBytes(StringRef Data, unsigned AddrSpace);
 
-  virtual void EmitValue(const MCExpr *Value, unsigned Size,unsigned AddrSpace);
+  virtual void EmitValueImpl(const MCExpr *Value, unsigned Size,
+                             bool isPCRel, unsigned AddrSpace);
+  virtual void EmitIntValue(uint64_t Value, unsigned Size,
+                            unsigned AddrSpace = 0);
 
   virtual void EmitULEB128Value(const MCExpr *Value, unsigned AddrSpace = 0);
 
@@ -295,6 +298,13 @@ void MCAsmStreamer::EmitAssignment(MCSymbol *Symbol, const MCExpr *Value) {
 void MCAsmStreamer::EmitWeakReference(MCSymbol *Alias, const MCSymbol *Symbol) {
   OS << ".weakref " << *Alias << ", " << *Symbol;
   EmitEOL();
+}
+
+void MCAsmStreamer::EmitDwarfAdvanceLineAddr(int64_t LineDelta,
+                                             const MCSymbol *LastLabel,
+                                             const MCSymbol *Label) {
+  EmitDwarfSetLineAddr(LineDelta, Label,
+                       getContext().getTargetAsmInfo().getPointerSize());
 }
 
 void MCAsmStreamer::EmitSymbolAttribute(MCSymbol *Symbol,
@@ -494,9 +504,15 @@ void MCAsmStreamer::EmitBytes(StringRef Data, unsigned AddrSpace) {
   EmitEOL();
 }
 
-void MCAsmStreamer::EmitValue(const MCExpr *Value, unsigned Size,
-                              unsigned AddrSpace) {
+void MCAsmStreamer::EmitIntValue(uint64_t Value, unsigned Size,
+                                 unsigned AddrSpace) {
+  EmitValue(MCConstantExpr::Create(Value, getContext()), Size, AddrSpace);
+}
+
+void MCAsmStreamer::EmitValueImpl(const MCExpr *Value, unsigned Size,
+                                  bool isPCRel, unsigned AddrSpace) {
   assert(CurSection && "Cannot emit contents before setting section!");
+  assert(!isPCRel && "Cannot emit pc relative relocations!");
   const char *Directive = 0;
   switch (Size) {
   default: break;
@@ -510,7 +526,7 @@ void MCAsmStreamer::EmitValue(const MCExpr *Value, unsigned Size,
     int64_t IntValue;
     if (!Value->EvaluateAsAbsolute(IntValue))
       report_fatal_error("Don't know how to emit this value.");
-    if (isLittleEndian()) {
+    if (getContext().getTargetAsmInfo().isLittleEndian()) {
       EmitIntValue((uint32_t)(IntValue >> 0 ), 4, AddrSpace);
       EmitIntValue((uint32_t)(IntValue >> 32), 4, AddrSpace);
     } else {
@@ -528,10 +544,7 @@ void MCAsmStreamer::EmitValue(const MCExpr *Value, unsigned Size,
 void MCAsmStreamer::EmitULEB128Value(const MCExpr *Value, unsigned AddrSpace) {
   int64_t IntValue;
   if (Value->EvaluateAsAbsolute(IntValue)) {
-    SmallString<32> Tmp;
-    raw_svector_ostream OSE(Tmp);
-    MCObjectWriter::EncodeULEB128(IntValue, OSE);
-    EmitBytes(OSE.str(), AddrSpace);
+    EmitULEB128IntValue(IntValue, AddrSpace);
     return;
   }
   assert(MAI.hasLEB128() && "Cannot print a .uleb");
@@ -542,10 +555,7 @@ void MCAsmStreamer::EmitULEB128Value(const MCExpr *Value, unsigned AddrSpace) {
 void MCAsmStreamer::EmitSLEB128Value(const MCExpr *Value, unsigned AddrSpace) {
   int64_t IntValue;
   if (Value->EvaluateAsAbsolute(IntValue)) {
-    SmallString<32> Tmp;
-    raw_svector_ostream OSE(Tmp);
-    MCObjectWriter::EncodeSLEB128(IntValue, OSE);
-    EmitBytes(OSE.str(), AddrSpace);
+    EmitSLEB128IntValue(IntValue, AddrSpace);
     return;
   }
   assert(MAI.hasLEB128() && "Cannot print a .sleb");
@@ -650,7 +660,7 @@ void MCAsmStreamer::EmitFileDirective(StringRef Filename) {
 }
 
 bool MCAsmStreamer::EmitDwarfFileDirective(unsigned FileNo, StringRef Filename){
-  if (!TLOF) {
+  if (UseLoc) {
     OS << "\t.file\t" << FileNo << ' ';
     PrintQuotedString(Filename, OS);
     EmitEOL();
@@ -664,7 +674,7 @@ void MCAsmStreamer::EmitDwarfLocDirective(unsigned FileNo, unsigned Line,
                                           unsigned Discriminator) {
   this->MCStreamer::EmitDwarfLocDirective(FileNo, Line, Column, Flags,
                                           Isa, Discriminator);
-  if (TLOF)
+  if (!UseLoc)
     return;
 
   OS << "\t.loc\t" << FileNo << " " << Line << " " << Column;
@@ -817,7 +827,7 @@ void MCAsmStreamer::AddEncodingComment(const MCInst &Inst) {
         unsigned Bit = (Code[i] >> j) & 1;
         
         unsigned FixupBit;
-        if (IsLittleEndian)
+        if (getContext().getTargetAsmInfo().isLittleEndian())
           FixupBit = i * 8 + j;
         else
           FixupBit = i * 8 + (7-j);
@@ -843,7 +853,7 @@ void MCAsmStreamer::AddEncodingComment(const MCInst &Inst) {
 void MCAsmStreamer::EmitInstruction(const MCInst &Inst) {
   assert(CurSection && "Cannot emit contents before setting section!");
 
-  if (TLOF)
+  if (!UseLoc)
     MCLineEntry::Make(this, getCurrentSection());
 
   // Show the encoding in a comment if we have a code emitter.
@@ -876,30 +886,15 @@ void MCAsmStreamer::EmitRawText(StringRef String) {
 
 void MCAsmStreamer::Finish() {
   // Dump out the dwarf file & directory tables and line tables.
-  if (getContext().hasDwarfFiles() && getContext().hasDwarfLines() && TLOF) {
-    MCDwarfFileTable::Emit(this, TLOF->getDwarfLineSection(), NULL,
-                           PointerSize);
-  }
+  if (getContext().hasDwarfFiles() && !UseLoc)
+    MCDwarfFileTable::Emit(this);
 }
 
 MCStreamer *llvm::createAsmStreamer(MCContext &Context,
                                     formatted_raw_ostream &OS,
-                                    bool isLittleEndian,
-                                    bool isVerboseAsm, MCInstPrinter *IP,
+                                    bool isVerboseAsm, bool useLoc,
+                                    MCInstPrinter *IP,
                                     MCCodeEmitter *CE, bool ShowInst) {
-  return new MCAsmStreamer(Context, OS, isLittleEndian, isVerboseAsm,
-                           NULL, 0, IP, CE, ShowInst);
-}
-
-
-MCStreamer *llvm::createAsmStreamerNoLoc(MCContext &Context,
-                                         formatted_raw_ostream &OS,
-                                         bool isLittleEndian,
-                                         bool isVerboseAsm,
-                                         const TargetLoweringObjectFile *TLOF,
-                                         int PointerSize,
-                                         MCInstPrinter *IP,
-                                         MCCodeEmitter *CE, bool ShowInst) {
-  return new MCAsmStreamer(Context, OS, isLittleEndian, isVerboseAsm,
-                           TLOF, PointerSize, IP, CE, ShowInst);
+  return new MCAsmStreamer(Context, OS, isVerboseAsm, useLoc,
+                           IP, CE, ShowInst);
 }

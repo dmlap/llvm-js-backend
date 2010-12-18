@@ -24,6 +24,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetAsmBackend.h"
+#include "llvm/Target/TargetAsmInfo.h"
 
 using namespace llvm;
 
@@ -31,13 +32,12 @@ namespace {
 
 class MCMachOStreamer : public MCObjectStreamer {
 private:
-  virtual void EmitInstToFragment(const MCInst &Inst);
   virtual void EmitInstToData(const MCInst &Inst);
 
 public:
   MCMachOStreamer(MCContext &Context, TargetAsmBackend &TAB,
                   raw_ostream &OS, MCCodeEmitter *Emitter)
-    : MCObjectStreamer(Context, TAB, OS, Emitter, true) {}
+    : MCObjectStreamer(Context, TAB, OS, Emitter) {}
 
   /// @name MCStreamer Interface
   /// @{
@@ -79,8 +79,6 @@ public:
                                     unsigned MaxBytesToEmit = 0);
   virtual void EmitCodeAlignment(unsigned ByteAlignment,
                                  unsigned MaxBytesToEmit = 0);
-  virtual void EmitValueToOffset(const MCExpr *Offset,
-                                 unsigned char Value = 0);
 
   virtual void EmitFileDirective(StringRef Filename) {
     // FIXME: Just ignore the .file; it isn't important enough to fail the
@@ -127,6 +125,9 @@ void MCMachOStreamer::EmitLabel(MCSymbol *Symbol) {
 }
 
 void MCMachOStreamer::EmitAssemblerFlag(MCAssemblerFlag Flag) {
+  // Let the target do whatever target specific stuff it needs to do.
+  getAssembler().getBackend().HandleAssemblerFlag(Flag);
+  // Do any generic stuff we need to do.
   switch (Flag) {
   case MCAF_SyntaxUnified: return; // no-op here.
   case MCAF_Code16: return; // no-op here.
@@ -336,28 +337,6 @@ void MCMachOStreamer::EmitCodeAlignment(unsigned ByteAlignment,
     getCurrentSectionData()->setAlignment(ByteAlignment);
 }
 
-void MCMachOStreamer::EmitValueToOffset(const MCExpr *Offset,
-                                        unsigned char Value) {
-  new MCOrgFragment(*Offset, Value, getCurrentSectionData());
-}
-
-void MCMachOStreamer::EmitInstToFragment(const MCInst &Inst) {
-  MCInstFragment *IF = new MCInstFragment(Inst, getCurrentSectionData());
-
-  // Add the fixups and data.
-  //
-  // FIXME: Revisit this design decision when relaxation is done, we may be
-  // able to get away with not storing any extra data in the MCInst.
-  SmallVector<MCFixup, 4> Fixups;
-  SmallString<256> Code;
-  raw_svector_ostream VecOS(Code);
-  getAssembler().getEmitter().EncodeInstruction(Inst, VecOS, Fixups);
-  VecOS.flush();
-
-  IF->getCode() = Code;
-  IF->getFixups() = Fixups;
-}
-
 void MCMachOStreamer::EmitInstToData(const MCInst &Inst) {
   MCDataFragment *DF = getOrCreateDataFragment();
 
@@ -376,18 +355,6 @@ void MCMachOStreamer::EmitInstToData(const MCInst &Inst) {
 }
 
 void MCMachOStreamer::Finish() {
-  // Dump out the dwarf file & directory tables and line tables.
-  if (getContext().hasDwarfFiles()) {
-    const MCSection *DwarfLineSection = getContext().getMachOSection("__DWARF",
-                                         "__debug_line",
-                                         MCSectionMachO::S_ATTR_DEBUG,
-                                         0, SectionKind::getDataRelLocal());
-    MCSectionData &DLS =
-      getAssembler().getOrCreateSectionData(*DwarfLineSection);
-    int PointerSize = getAssembler().getBackend().getPointerSize();
-    MCDwarfFileTable::Emit(this, DwarfLineSection, &DLS, PointerSize);
-  }
-
   // We have to set the fragment atom associations so we can relax properly for
   // Mach-O.
 

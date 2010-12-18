@@ -12,18 +12,18 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCCodeEmitter.h"
+#include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Target/TargetAsmBackend.h"
+#include "llvm/Target/TargetAsmInfo.h"
 using namespace llvm;
 
 MCObjectStreamer::MCObjectStreamer(MCContext &Context, TargetAsmBackend &TAB,
-                                   raw_ostream &_OS, MCCodeEmitter *_Emitter,
-                                   bool _PadSectionToAlignment)
+                                   raw_ostream &_OS, MCCodeEmitter *_Emitter)
   : MCStreamer(Context), Assembler(new MCAssembler(Context, TAB,
                                                    *_Emitter,
-                                                   _PadSectionToAlignment,
                                                    _OS)),
     CurSectionData(0)
 {
@@ -76,23 +76,21 @@ const MCExpr *MCObjectStreamer::AddValueSymbols(const MCExpr *Value) {
   return Value;
 }
 
-void MCObjectStreamer::EmitValue(const MCExpr *Value, unsigned Size,
-                                 unsigned AddrSpace) {
+void MCObjectStreamer::EmitValueImpl(const MCExpr *Value, unsigned Size,
+                                     bool isPCRel, unsigned AddrSpace) {
   assert(AddrSpace == 0 && "Address space must be 0!");
   MCDataFragment *DF = getOrCreateDataFragment();
 
   // Avoid fixups when possible.
   int64_t AbsValue;
-  if (AddValueSymbols(Value)->EvaluateAsAbsolute(AbsValue)) {
-    // FIXME: Endianness assumption.
-    for (unsigned i = 0; i != Size; ++i)
-      DF->getContents().push_back(uint8_t(AbsValue >> (i * 8)));
-  } else {
-    DF->addFixup(MCFixup::Create(DF->getContents().size(),
-                                 AddValueSymbols(Value),
-                                 MCFixup::getKindForSize(Size, false)));
-    DF->getContents().resize(DF->getContents().size() + Size, 0);
+  if (AddValueSymbols(Value)->EvaluateAsAbsolute(AbsValue, getAssembler())) {
+    EmitIntValue(AbsValue, Size, AddrSpace);
+    return;
   }
+  DF->addFixup(MCFixup::Create(DF->getContents().size(),
+                               AddValueSymbols(Value),
+                               MCFixup::getKindForSize(Size, isPCRel)));
+  DF->getContents().resize(DF->getContents().size() + Size, 0);
 }
 
 void MCObjectStreamer::EmitLabel(MCSymbol *Symbol) {
@@ -115,11 +113,21 @@ void MCObjectStreamer::EmitLabel(MCSymbol *Symbol) {
 
 void MCObjectStreamer::EmitULEB128Value(const MCExpr *Value,
                                         unsigned AddrSpace) {
+  int64_t IntValue;
+  if (Value->EvaluateAsAbsolute(IntValue, getAssembler())) {
+    EmitULEB128IntValue(IntValue, AddrSpace);
+    return;
+  }
   new MCLEBFragment(*Value, false, getCurrentSectionData());
 }
 
 void MCObjectStreamer::EmitSLEB128Value(const MCExpr *Value,
                                         unsigned AddrSpace) {
+  int64_t IntValue;
+  if (Value->EvaluateAsAbsolute(IntValue, getAssembler())) {
+    EmitSLEB128IntValue(IntValue, AddrSpace);
+    return;
+  }
   new MCLEBFragment(*Value, true, getCurrentSectionData());
 }
 
@@ -172,6 +180,46 @@ void MCObjectStreamer::EmitInstruction(const MCInst &Inst) {
   EmitInstToFragment(Inst);
 }
 
+void MCObjectStreamer::EmitInstToFragment(const MCInst &Inst) {
+  MCInstFragment *IF = new MCInstFragment(Inst, getCurrentSectionData());
+
+  raw_svector_ostream VecOS(IF->getCode());
+  getAssembler().getEmitter().EncodeInstruction(Inst, VecOS, IF->getFixups());
+}
+
+void MCObjectStreamer::EmitDwarfAdvanceLineAddr(int64_t LineDelta,
+                                                const MCSymbol *LastLabel,
+                                                const MCSymbol *Label) {
+  if (!LastLabel) {
+    int PointerSize = getContext().getTargetAsmInfo().getPointerSize();
+    EmitDwarfSetLineAddr(LineDelta, Label, PointerSize);
+    return;
+  }
+  MCSymbolRefExpr::VariantKind Variant = MCSymbolRefExpr::VK_None;
+  const MCExpr *LabelRef =
+    MCSymbolRefExpr::Create(Label, Variant, getContext());
+  const MCExpr *LastLabelRef =
+    MCSymbolRefExpr::Create(LastLabel, Variant, getContext());
+  const MCExpr *AddrDelta =
+    MCBinaryExpr::Create(MCBinaryExpr::Sub, LabelRef, LastLabelRef,
+                         getContext());
+  int64_t Res;
+  if (AddrDelta->EvaluateAsAbsolute(Res, getAssembler())) {
+    MCDwarfLineAddr::Emit(this, LineDelta, Res);
+    return;
+  }
+  new MCDwarfLineAddrFragment(LineDelta, *AddrDelta, getCurrentSectionData());
+}
+
+void MCObjectStreamer::EmitValueToOffset(const MCExpr *Offset,
+                                        unsigned char Value) {
+  new MCOrgFragment(*Offset, Value, getCurrentSectionData());
+}
+
 void MCObjectStreamer::Finish() {
+  // Dump out the dwarf file & directory tables and line tables.
+  if (getContext().hasDwarfFiles())
+    MCDwarfFileTable::Emit(this);
+
   getAssembler().Finish();
 }

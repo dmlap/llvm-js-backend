@@ -29,6 +29,7 @@ namespace llvm {
   class MCLineSection;
   class StringRef;
   class Twine;
+  class TargetAsmInfo;
   class MCSectionMachO;
   class MCSectionELF;
 
@@ -41,6 +42,8 @@ namespace llvm {
 
     /// The MCAsmInfo for this target.
     const MCAsmInfo &MAI;
+
+    const TargetAsmInfo *TAI;
 
     /// Symbols - Bindings of names to symbols.
     StringMap<MCSymbol*> Symbols;
@@ -99,10 +102,12 @@ namespace llvm {
     MCSymbol *CreateSymbol(StringRef Name);
 
   public:
-    explicit MCContext(const MCAsmInfo &MAI);
+    explicit MCContext(const MCAsmInfo &MAI, const TargetAsmInfo *TAI);
     ~MCContext();
 
     const MCAsmInfo &getAsmInfo() const { return MAI; }
+
+    const TargetAsmInfo &getTargetAsmInfo() const { return *TAI; }
 
     /// @name Symbol Management
     /// @{
@@ -179,9 +184,6 @@ namespace llvm {
 
     bool hasDwarfFiles() const {
       return !MCDwarfFiles.empty();
-    }
-    bool hasDwarfLines() const {
-      return !MCLineSectionOrder.empty();
     }
 
     const std::vector<MCDwarfFile *> &getMCDwarfFiles() {

@@ -23,6 +23,7 @@ MCAsmInfo::MCAsmInfo() {
   HasMachoZeroFillDirective = false;
   HasMachoTBSSDirective = false;
   HasStaticCtorDtorReferenceInStaticMode = false;
+  LinkerRequiresNonEmptyDwarfLines = false;
   MaxInstLength = 4;
   PCSymbol = "$";
   SeparatorChar = ';';
@@ -53,6 +54,7 @@ MCAsmInfo::MCAsmInfo() {
   GPRel32Directive = 0;
   GlobalDirective = "\t.globl\t";
   HasSetDirective = true;
+  NeedsSetToChangeDiffSize = false;
   HasLCOMMDirective = false;
   COMMDirectiveAlignmentIsInBytes = true;
   HasDotTypeDotSizeDirective = true;

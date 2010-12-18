@@ -10,17 +10,21 @@
 #ifndef LLVM_MC_MCEXPR_H
 #define LLVM_MC_MCEXPR_H
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/DataTypes.h"
 
 namespace llvm {
 class MCAsmInfo;
 class MCAsmLayout;
+class MCAssembler;
 class MCContext;
+class MCSectionData;
 class MCSymbol;
 class MCValue;
 class raw_ostream;
 class StringRef;
+typedef DenseMap<const MCSectionData*, uint64_t> SectionAddrMap;
 
 /// MCExpr - Base class for the full range of assembler expressions which are
 /// needed for parsing.
@@ -40,10 +44,15 @@ private:
   MCExpr(const MCExpr&); // DO NOT IMPLEMENT
   void operator=(const MCExpr&); // DO NOT IMPLEMENT
 
+  bool EvaluateAsAbsolute(int64_t &Res, const MCAssembler *Asm,
+                          const MCAsmLayout *Layout,
+                          const SectionAddrMap *Addrs) const;
 protected:
   explicit MCExpr(ExprKind _Kind) : Kind(_Kind) {}
 
-  bool EvaluateAsRelocatableImpl(MCValue &Res, const MCAsmLayout *Layout,
+  bool EvaluateAsRelocatableImpl(MCValue &Res, const MCAssembler *Asm,
+                                 const MCAsmLayout *Layout,
+                                 const SectionAddrMap *Addrs,
                                  bool InSet) const;
 public:
   /// @name Accessors
@@ -69,7 +78,11 @@ public:
   /// values. If not given, then only non-symbolic expressions will be
   /// evaluated.
   /// @result - True on success.
-  bool EvaluateAsAbsolute(int64_t &Res, const MCAsmLayout *Layout = 0) const;
+  bool EvaluateAsAbsolute(int64_t &Res) const;
+  bool EvaluateAsAbsolute(int64_t &Res, const MCAssembler &Asm) const;
+  bool EvaluateAsAbsolute(int64_t &Res, const MCAsmLayout &Layout) const;
+  bool EvaluateAsAbsolute(int64_t &Res, const MCAsmLayout &Layout,
+                          const SectionAddrMap &Addrs) const;
 
   /// EvaluateAsRelocatable - Try to evaluate the expression to a relocatable
   /// value, i.e. an expression of the fixed form (a - b + constant).
