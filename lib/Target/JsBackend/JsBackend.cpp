@@ -741,7 +741,7 @@ bool JsWriter::doInitialization(Module &M) {
   IL->AddPrototypes(M);
 
   TAsm = new JsBEMCAsmInfo();
-  TCtx = new MCContext(*TAsm);
+  TCtx = new MCContext(*TAsm, NULL);
   Mang = new Mangler(*TCtx, *TD);
   Out << "[";
   if(M.global_empty()) {
