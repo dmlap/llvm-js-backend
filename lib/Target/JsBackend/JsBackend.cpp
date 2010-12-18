@@ -47,7 +47,6 @@
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 #include "llvm/Support/MathExtras.h"
-#include "llvm/System/Host.h"
 #include "llvm/Config/config.h"
 #include <algorithm>
 using namespace llvm;
@@ -413,6 +412,7 @@ void JsWriter::printConstant(Constant *CPV, bool Static, raw_ostream &Out) {
       Out << "{ \"intertype\": \"getelementptr\", ";
       Out << "\"operands\": ";
       writeOperands(CE->op_begin(), CE->op_end());
+      Out << "}";
       return;
     case Instruction::Select:
       Out << "\"(";
@@ -792,7 +792,8 @@ void JsWriter::printFunction(Function &F) {
     }
   }
   Out << "]";
-  Out << ", \"returnType\": \"" << F.getReturnType()->getDescription() << "\" }";
+  Out << ", \"returnType\": \"" << F.getReturnType()->getDescription() << "\"";
+  Out << ", \"basicBlocks\":\n[";
 
   // print the basic blocks
   Function::iterator BB = F.begin(), E = F.end();
@@ -813,8 +814,7 @@ void JsWriter::printFunction(Function &F) {
       printBasicBlock(BB);
     }
   }
-  Out << ",\n{ \"intertype\": \"functionEnd\", \"lineNum\": ";
-  Out << LineNumber++ <<" }";
+  Out << "]}";
 }
 
 void JsWriter::printLoop(Loop *L) {
@@ -832,14 +832,15 @@ void JsWriter::printBasicBlock(BasicBlock *BB) {
   // Output all of the instructions in the basic block...
   for (BasicBlock::iterator II = BB->begin(), E = --BB->end(); II != E;
        ++II, LineNumber++) {
-    Out << ",\n{ \"ident\": \"" << GetValueName(II) << "\", ";
+    Out << "{ \"ident\": \"" << GetValueName(II) << "\", ";
     Out << "\"intertype\": \"" << II->getOpcodeName() << "\", ";
     Out << "\"lineNum\": " << LineNumber << ", ";
     Out << "\"operands\": ";
     writeOperands(*II);
+    Out << "},\n";
   }
   const TerminatorInst *terminator = BB->getTerminator();
-  Out << ",\n{ \"intertype\": \"" << terminator->getOpcodeName() << "\", ";
+  Out << "{ \"intertype\": \"" << terminator->getOpcodeName() << "\", ";
   Out << "\"lineNum\": " << LineNumber++ << ", ";
   Out << "\"type\": \"" << terminator->getType()->getDescription() << "\", ";
   Out << "\"operands\": ";
